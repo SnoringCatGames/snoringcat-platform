@@ -58,6 +58,10 @@ def login(
         provider = body.get("provider", "")
         auth_code = body.get("auth_code", "")
         redirect_uri = body.get("redirect_uri", "")
+        # game_id binds the issued JWT to a specific game so per-game
+        # handlers reject cross-game token reuse. Older clients that
+        # don't yet send a game_id get DEFAULT_GAME_ID baked in.
+        game_id = body.get("game_id", "")
 
         if not provider or not auth_code:
             return _error(
@@ -120,6 +124,7 @@ def login(
             player_id,
             auth_result.display_name,
             auth_result.provider,
+            game_id=game_id,
         )
         jwt_token = auth_token.to_jwt(
             auth_service.jwt_secret
@@ -205,6 +210,8 @@ def anonymous_login(
     try:
         body = json.loads(event.get("body", "{}"))
         device_id = body.get("device_id", "")
+        # game_id binds the issued JWT to a specific game.
+        game_id = body.get("game_id", "")
 
         if not device_id:
             return _error(
@@ -257,6 +264,7 @@ def anonymous_login(
             display_name,
             "anonymous",
             is_anonymous=True,
+            game_id=game_id,
         )
         jwt_token = auth_token.to_jwt(
             auth_service.jwt_secret
@@ -337,6 +345,12 @@ def guest_login(
     an anonymous client starts matchmaking.
     """
     try:
+        body = json.loads(event.get("body", "{}"))
+        # game_id binds the issued JWT to a specific game.
+        game_id = body.get("game_id", "") or os.environ.get(
+            "DEFAULT_GAME_ID", "hopnbop"
+        )
+
         player_id = f"PL_guest_{uuid.uuid4().hex[:16]}"
 
         now = datetime.now()
@@ -349,6 +363,7 @@ def guest_login(
             is_guest=True,
             issued_at=now,
             expires_at=expires_at,
+            game_id=game_id,
         )
         jwt_secret = auth_service.jwt_secret
         jwt_token = auth_token.to_jwt(jwt_secret)
@@ -399,6 +414,9 @@ def refresh(
         body = json.loads(event.get("body", "{}"))
         player_id = body.get("player_id", "")
         refresh_token = body.get("refresh_token", "")
+        # Carry game_id forward into the rotated token. Clients
+        # typically pass the game_id they used at sign-in time.
+        game_id = body.get("game_id", "")
 
         if not player_id or not refresh_token:
             return _error(
@@ -440,6 +458,7 @@ def refresh(
             profile.display_name,
             provider,
             is_anonymous=profile.is_anonymous,
+            game_id=game_id,
         )
         new_jwt = auth_token.to_jwt(
             auth_service.jwt_secret

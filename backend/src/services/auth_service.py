@@ -29,7 +29,17 @@ class AuthResult:
 
 @dataclass
 class AuthToken:
-    """JWT token with player information."""
+    """JWT token with player information.
+
+    The `game_id` field binds the token to a specific game. It comes
+    from the `game_id` parameter passed to the auth endpoint at
+    sign-in time. Per-game handlers reject requests whose token
+    game_id disagrees with the URL path's game_id (see
+    utils.game_id_resolver).
+
+    Tokens issued by older clients that did not pass a game_id fall
+    back to DEFAULT_GAME_ID ("hopnbop") for backward compatibility.
+    """
 
     player_id: str
     display_name: str
@@ -38,6 +48,7 @@ class AuthToken:
     issued_at: datetime
     expires_at: datetime
     is_guest: bool = False
+    game_id: str = ""
 
     def to_jwt(self, secret: str) -> str:
         """Encode as JWT."""
@@ -47,6 +58,7 @@ class AuthToken:
             "provider": self.provider,
             "anon": self.is_anonymous,
             "guest": self.is_guest,
+            "game_id": self.game_id,
             "iat": int(self.issued_at.timestamp()),
             "exp": int(self.expires_at.timestamp()),
         }
@@ -72,6 +84,13 @@ class AuthToken:
             issued_at=datetime.fromtimestamp(payload["iat"]),
             expires_at=datetime.fromtimestamp(payload["exp"]),
             is_guest=payload.get("guest", False),
+            # Tokens issued before the multi-game refactor have no
+            # `game_id` claim. Fall back to DEFAULT_GAME_ID so old
+            # tokens remain valid through the rollout window.
+            game_id=payload.get(
+                "game_id",
+                os.environ.get("DEFAULT_GAME_ID", "hopnbop"),
+            ),
         )
 
 
@@ -407,9 +426,20 @@ class AuthService:
         display_name: str,
         provider: str,
         is_anonymous: bool = False,
+        game_id: str = "",
     ) -> AuthToken:
-        """Create an AuthToken for an authenticated player."""
+        """Create an AuthToken for an authenticated player.
+
+        `game_id` is the game the user signed in from. Auth handlers
+        accept it from the request body. If empty, falls back to
+        DEFAULT_GAME_ID so legacy clients that don't yet send a
+        game_id keep working.
+        """
         now = datetime.now()
+        if not game_id:
+            game_id = os.environ.get(
+                "DEFAULT_GAME_ID", "hopnbop"
+            )
         return AuthToken(
             player_id=player_id,
             display_name=display_name,
@@ -417,6 +447,7 @@ class AuthService:
             is_anonymous=is_anonymous,
             issued_at=now,
             expires_at=now + self.token_lifetime,
+            game_id=game_id,
         )
 
     # --- Helpers ---
