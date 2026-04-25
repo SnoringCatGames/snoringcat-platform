@@ -1,0 +1,15 @@
+# Copy this file to samconfig.toml and fill in your values
+# samconfig.toml is gitignored to prevent committing secrets
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "hopnbop-backend"
+region = "us-west-2"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = [
+    "JWTSecret=YOUR_JWT_SECRET_HERE",
+    "SteamAPIKey=YOUR_STEAM_API_KEY",
+    "SteamAppID=YOUR_STEAM_APP_ID",
+    "MatchmakingConfigName=hopnbop-ffa-matchmaker"
+]

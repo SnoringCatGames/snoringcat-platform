@@ -1,0 +1,9 @@
+{
+  "httpMethod": "POST",
+  "path": "/matchmaking/join",
+  "headers": {
+    "Authorization": "Bearer DEBUG_TOKEN",
+    "Content-Type": "application/json"
+  },
+  "body": "{\"player_count\": 2, \"client_id\": \"test_client_123\"}"
+}

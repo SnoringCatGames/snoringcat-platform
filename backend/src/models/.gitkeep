@@ -1,3 +1,0 @@
-# Pydantic request/response models.
-# Source for OpenAPI spec generation. Annotate every handler with
-# typed models so oasdiff can detect breaking schema changes.
