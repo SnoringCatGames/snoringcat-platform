@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# AWS SAM
+backend/.aws-sam/
+samconfig.toml
+!samconfig.toml.example
+
+# Godot
+.godot/
+.import/
+*.import
+export.cfg
+export_presets.cfg
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local dev
+*.local
+.env
+.env.local

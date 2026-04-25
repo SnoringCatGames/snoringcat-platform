@@ -1,0 +1,3 @@
+# Utils directory.
+# Holds cross-cutting helpers: auth_decorators, game_id_resolver, etc.
+# Populated in Phase 1.

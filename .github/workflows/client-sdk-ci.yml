@@ -1,0 +1,54 @@
+name: Client SDK CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'addons/snoringcat_platform_client/**'
+      - '.github/workflows/client-sdk-ci.yml'
+  pull_request:
+    paths:
+      - 'addons/snoringcat_platform_client/**'
+      - '.github/workflows/client-sdk-ci.yml'
+
+env:
+  GODOT_VERSION: 4.5
+  GODOT_RELEASE_TAG: 4.5-stable
+
+jobs:
+  compliance-suite-mock:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_RELEASE_TAG }}-linux
+
+      - name: Download Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot
+          curl -L -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${{ env.GODOT_RELEASE_TAG }}/Godot_v${{ env.GODOT_RELEASE_TAG }}_linux.x86_64.zip"
+          unzip /tmp/godot.zip -d ~/godot
+          mv ~/godot/Godot_v${{ env.GODOT_RELEASE_TAG }}_linux.x86_64 ~/godot/godot
+
+      - name: Verify Godot
+        run: ~/godot/godot --version
+
+      - name: Run compliance suite (mock mode)
+        env:
+          PLATFORM_COMPLIANCE_MODE: mock
+        run: |
+          if [ -d addons/snoringcat_platform_client/test/compliance ] \
+              && [ "$(find addons/snoringcat_platform_client/test/compliance -name 'test_*.gd' | head -1)" ]; then
+            echo "TODO: stand up a fixture Godot project that includes this addon and run GUT against it."
+            echo "::notice::Compliance suite scaffolding only — tests get added in Phase 2."
+          else
+            echo "::notice::No compliance tests yet — Phase 2 will populate them."
+          fi

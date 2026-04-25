@@ -1,0 +1,7 @@
+# Side-panel framework.
+# Phase 2: extract from hopnbop_private/src/ui/settings_panel/:
+#   - side_panel.gd / side_panel_manager.gd
+#   - settings_row.gd + generic row subclasses (action, toggle,
+#     text, sub_panel_trigger, screen_trigger, link, log_out,
+#     link_account, delete_account, export_data)
+# Game-specific rows (e.g. level_pref_row.gd) stay in the game.

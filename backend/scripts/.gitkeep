@@ -1,0 +1,3 @@
+# Deploy and migration scripts.
+# - deploy.ps1               (Phase 1)
+# - migrate-from-hopnbop.py  (Phase 1)

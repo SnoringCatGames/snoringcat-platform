@@ -1,0 +1,6 @@
+# Game-agnostic utilities.
+# Phase 2: extract from hopnbop_private/src/core/:
+#   - pixel_viewport_manager.gd
+#   - font_fallback_config.gd
+#   - localized_name_config.gd
+#   - window_manager.gd
