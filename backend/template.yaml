@@ -1,6 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Hop 'n Bop GameLift Backend v0.7.1
+Description: Snoring Cat Platform Backend (shared multi-game stack)
+
+# This stack hosts the shared backend for all Snoring Cat multiplayer
+# titles. Per-game scoping is via the `game_id` JWT claim and the
+# `games` config table; per-game GameLift fleets and matchmakers are
+# referenced by ID from the games table at request time.
+#
+# Tables drop the legacy `hopnbop-` prefix in favor of `snoringcat-`.
+# The old `hopnbop-*` tables continue to exist alongside this stack
+# until the Phase 2 client cutover; migrate-from-hopnbop.py copies
+# data over.
 
 Globals:
   Function:
@@ -9,25 +19,54 @@ Globals:
     MemorySize: 512
     Environment:
       Variables:
+        # NOTE: GAME_VERSION and PROTOCOL_VERSION here are legacy from
+        # the single-game era. Per-game versions live in the `games`
+        # config table now. These remain for backward compatibility
+        # with handlers not yet refactored.
         GAME_VERSION: "0.30.0"
         PROTOCOL_VERSION: "2"
-        PLAYERS_TABLE: !Ref PlayersTable
-        MATCH_HISTORY_TABLE: !Ref MatchHistoryTable
-        PROVIDER_MAPPINGS_TABLE: !Ref ProviderMappingsTable
-        MATCHMAKING_CONFIG: !Ref MatchmakingConfigName
+        # Shared (cross-game) tables.
+        ACCOUNTS_TABLE: !Ref AccountsTable
+        IDENTITIES_TABLE: !Ref IdentitiesTable
+        FRIENDS_TABLE: !Ref FriendsTable
+        PRESENCE_TABLE: !Ref PresenceTable
         CONSENT_AUDIT_TABLE: !Ref ConsentAuditTable
         SETTINGS_TABLE: !Ref SettingsTable
+        # Per-game tables (composite key includes game_id).
+        GAME_PROFILES_TABLE: !Ref GameProfilesTable
+        MATCH_HISTORY_TABLE: !Ref MatchHistoryTable
         LEADERBOARD_TABLE: !Ref LeaderboardTable
-        FRIENDS_TABLE: !Ref FriendsTable
         PARTIES_TABLE: !Ref PartiesTable
-        HOSTED_ZONE_ID: !Ref GameHostedZoneId
-        POWERTOOLS_METRICS_NAMESPACE: HopNBop
         ACTIVE_SESSIONS_TABLE: !Ref ActiveSessionsTable
         FLEET_STATE_TABLE: !Ref FleetStateTable
+        # Config table.
+        GAMES_TABLE: !Ref GamesTable
+        # Legacy aliases (kept until handlers stop reading them).
+        # PLAYERS_TABLE points at the new accounts table; per-game fields
+        # have moved to GAME_PROFILES_TABLE. PROVIDER_MAPPINGS_TABLE was
+        # renamed to identities.
+        PLAYERS_TABLE: !Ref AccountsTable
+        PROVIDER_MAPPINGS_TABLE: !Ref IdentitiesTable
+        # Matchmaking and fleet refs are now per-game (looked up from
+        # the games table). These globals stay for legacy handler paths.
+        MATCHMAKING_CONFIG: !Ref MatchmakingConfigName
+        HOSTED_ZONE_ID: !Ref GameHostedZoneId
         FLEET_ID: !Ref FleetId
         GAMELIFT_LOCATION: !Ref AWS::Region
+        POWERTOOLS_METRICS_NAMESPACE: SnoringCatPlatform
+        # The `game_id` to use for legacy unauthenticated endpoints
+        # and for any handler that has not yet been game-scoped.
+        # New code reads game_id from the JWT or the URL path.
+        DEFAULT_GAME_ID: !Ref DefaultGameId
 
 Parameters:
+  DefaultGameId:
+    Type: String
+    Description: |
+      Fallback game_id for legacy handlers that do not yet read it
+      from the JWT or URL path. Set to "hopnbop" while migrating.
+    Default: 'hopnbop'
+
   SteamAppID:
     Type: String
     Description: Steam App ID
@@ -35,7 +74,9 @@ Parameters:
 
   MatchmakingConfigName:
     Type: String
-    Description: GameLift matchmaking configuration name
+    Description: |
+      Legacy default GameLift matchmaking configuration name. New
+      per-game routing reads matchmaker from the games config table.
     Default: 'hopnbop-ffa-matchmaker'
 
   AlertEmail:
@@ -45,7 +86,7 @@ Parameters:
 
   GameHostedZoneId:
     Type: String
-    Description: Route 53 hosted zone ID for hopnbop.net (used for game session DNS records)
+    Description: Route 53 hosted zone ID for game session DNS records (legacy default)
     Default: 'Z05562172A1JF6AX39U2N'
 
   FleetId:
@@ -80,7 +121,11 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource:
+              # Read both legacy hopnbop secrets (oauth client secrets,
+              # signing keys, etc.) and new snoringcat-platform secrets
+              # so we can rotate to the new naming on our own schedule.
               - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:hopnbop/*'
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:snoringcat-platform/*'
 
   # Shared IAM policy for GameLift fleet capacity operations.
   # Used by the fleet warmup/status/idle-check Lambdas and by the
@@ -111,16 +156,16 @@ Resources:
           STEAM_APP_ID: !Ref SteamAppID
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - !Ref SecretsManagerPolicy
       Events:
         Login:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/login
+            Path: /v1/auth/login
             Method: post
 
   AuthAnonFunction:
@@ -130,16 +175,16 @@ Resources:
       Handler: handlers.auth_handler.anonymous_login
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - !Ref SecretsManagerPolicy
       Events:
         AnonLogin:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/anon
+            Path: /v1/auth/anon
             Method: post
 
   AuthGuestFunction:
@@ -154,7 +199,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/guest
+            Path: /v1/auth/guest
             Method: post
 
   AuthRefreshFunction:
@@ -164,14 +209,14 @@ Resources:
       Handler: handlers.auth_handler.refresh
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         Refresh:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/refresh
+            Path: /v1/auth/refresh
             Method: post
 
   AuthLinkFunction:
@@ -184,16 +229,16 @@ Resources:
           STEAM_APP_ID: !Ref SteamAppID
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - !Ref SecretsManagerPolicy
       Events:
         Link:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/link
+            Path: /v1/auth/link
             Method: post
 
   AuthUnlinkFunction:
@@ -203,16 +248,16 @@ Resources:
       Handler: handlers.auth_handler.unlink_account
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - !Ref SecretsManagerPolicy
       Events:
         Unlink:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/unlink
+            Path: /v1/auth/unlink
             Method: post
 
   AuthMergeFunction:
@@ -222,9 +267,9 @@ Resources:
       Handler: handlers.auth_handler.merge_accounts
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
@@ -239,7 +284,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/merge
+            Path: /v1/auth/merge
             Method: post
 
   AuthDeleteAccountFunction:
@@ -249,9 +294,9 @@ Resources:
       Handler: handlers.auth_handler.delete_account
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - DynamoDBCrudPolicy:
@@ -268,7 +313,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /auth/account
+            Path: /v1/auth/account
             Method: delete
 
   ExportPlayerDataFunction:
@@ -278,11 +323,11 @@ Resources:
       Handler: handlers.player_handler.export_player_data
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref ProviderMappingsTable
+            TableName: !Ref IdentitiesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref SettingsTable
         - DynamoDBCrudPolicy:
@@ -293,7 +338,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /player/export
+            Path: /v1/player/export
             Method: get
 
   JoinMatchmakingFunction:
@@ -317,7 +362,7 @@ Resources:
                 - route53:ChangeResourceRecordSets
               Resource: !Sub "arn:aws:route53:::hostedzone/${GameHostedZoneId}"
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ActiveSessionsTable
         - !Ref SecretsManagerPolicy
@@ -326,7 +371,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /matchmaking/join
+            Path: /v1/matchmaking/join
             Method: post
 
   StartMatchmakingFunction:
@@ -341,7 +386,7 @@ Resources:
                 - gamelift:StartMatchmaking
               Resource: '*'
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ActiveSessionsTable
         - !Ref SecretsManagerPolicy
@@ -350,7 +395,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /matchmaking/start
+            Path: /v1/matchmaking/start
             Method: post
 
   GetMatchStatusFunction:
@@ -378,7 +423,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /matchmaking/status/{ticket_id}
+            Path: /v1/matchmaking/status/{ticket_id}
             Method: get
 
   WarmupDnsFunction:
@@ -403,7 +448,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /internal/dns/warmup
+            Path: /v1/internal/dns/warmup
             Method: post
 
   LeaveMatchmakingFunction:
@@ -425,7 +470,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /matchmaking/leave
+            Path: /v1/matchmaking/leave
             Method: post
 
   # Active Session Check
@@ -445,7 +490,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /session/active
+            Path: /v1/session/active
             Method: get
 
   # Match Result Functions
@@ -456,7 +501,7 @@ Resources:
       Handler: handlers.match_handler.submit_match_result
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - DynamoDBCrudPolicy:
@@ -471,7 +516,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /matches/result
+            Path: /v1/matches/result
             Method: post
 
   GetLeaderboardFunction:
@@ -481,7 +526,7 @@ Resources:
       Handler: handlers.match_handler.get_leaderboard
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref LeaderboardTable
         - !Ref SecretsManagerPolicy
@@ -490,7 +535,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /leaderboard
+            Path: /v1/leaderboard
             Method: get
 
   GetPlayerStatsFunction:
@@ -500,7 +545,7 @@ Resources:
       Handler: handlers.match_handler.get_player_stats
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - !Ref SecretsManagerPolicy
@@ -509,7 +554,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /players/{player_id}/stats
+            Path: /v1/players/{player_id}/stats
             Method: get
 
   # Player Profile & Settings Functions
@@ -520,7 +565,7 @@ Resources:
       Handler: handlers.player_handler.get_player_profile
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - !Ref SecretsManagerPolicy
@@ -529,7 +574,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /player/profile
+            Path: /v1/player/profile
             Method: get
 
   GetPlayerSettingsFunction:
@@ -546,7 +591,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /player/settings
+            Path: /v1/player/settings
             Method: get
 
   SavePlayerSettingsFunction:
@@ -563,7 +608,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /player/settings
+            Path: /v1/player/settings
             Method: put
 
   GetMatchHistoryFunction:
@@ -573,7 +618,7 @@ Resources:
       Handler: handlers.player_handler.get_match_history
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref MatchHistoryTable
         - !Ref SecretsManagerPolicy
@@ -582,7 +627,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /player/history
+            Path: /v1/player/history
             Method: get
 
   # Leaderboard Maintenance Functions
@@ -615,7 +660,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /version
+            Path: /v1/version
             Method: get
 
   # Telemetry Functions
@@ -631,7 +676,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /telemetry/crash
+            Path: /v1/telemetry/crash
             Method: post
 
   # Friends Functions
@@ -644,14 +689,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         ListFriends:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends
+            Path: /v1/friends
             Method: get
 
   AddFriendFunction:
@@ -663,14 +708,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         AddFriend:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/add
+            Path: /v1/friends/add
             Method: post
 
   RemoveFriendFunction:
@@ -682,14 +727,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         RemoveFriend:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/remove
+            Path: /v1/friends/remove
             Method: post
 
   AcceptFriendRequestFunction:
@@ -701,14 +746,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         AcceptFriendRequest:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/accept
+            Path: /v1/friends/accept
             Method: post
 
   RejectFriendRequestFunction:
@@ -720,14 +765,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         RejectFriendRequest:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/reject
+            Path: /v1/friends/reject
             Method: post
 
   CancelFriendRequestFunction:
@@ -739,14 +784,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         CancelFriendRequest:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/cancel
+            Path: /v1/friends/cancel
             Method: post
 
   GetFriendNotificationsFunction:
@@ -758,14 +803,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         GetFriendNotifications:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/notifications
+            Path: /v1/friends/notifications
             Method: get
 
   MarkFriendsSeenFunction:
@@ -775,14 +820,14 @@ Resources:
       Handler: handlers.friends_handler.mark_seen
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         MarkFriendsSeen:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/seen
+            Path: /v1/friends/seen
             Method: post
 
   SearchFriendCodeFunction:
@@ -792,14 +837,14 @@ Resources:
       Handler: handlers.friends_handler.search_by_code
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         SearchFriendCode:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /friends/search
+            Path: /v1/friends/search
             Method: get
 
   # Presence Functions
@@ -812,14 +857,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         PresenceHeartbeat:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /presence/heartbeat
+            Path: /v1/presence/heartbeat
             Method: post
 
   # Party Functions
@@ -837,7 +882,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/create
+            Path: /v1/party/create
             Method: post
 
   InviteToPartyFunction:
@@ -851,14 +896,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         InviteToParty:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/invite
+            Path: /v1/party/invite
             Method: post
 
   JoinPartyFunction:
@@ -875,7 +920,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/join
+            Path: /v1/party/join
             Method: post
 
   LeavePartyFunction:
@@ -892,7 +937,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/leave
+            Path: /v1/party/leave
             Method: post
 
   KickFromPartyFunction:
@@ -909,7 +954,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/kick
+            Path: /v1/party/kick
             Method: post
 
   GetPartyStatusFunction:
@@ -921,14 +966,14 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref PartiesTable
         - DynamoDBReadPolicy:
-            TableName: !Ref PlayersTable
+            TableName: !Ref AccountsTable
         - !Ref SecretsManagerPolicy
       Events:
         GetPartyStatus:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/status
+            Path: /v1/party/status
             Method: get
 
   StartPartyMatchmakingFunction:
@@ -952,7 +997,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /party/start
+            Path: /v1/party/start
             Method: post
 
   # Fleet Warmup and Idle Shutdown Functions
@@ -972,7 +1017,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /fleet/warmup
+            Path: /v1/fleet/warmup
             Method: post
 
   FleetStatusFunction:
@@ -991,7 +1036,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref GameBackendAPI
-            Path: /fleet/status
+            Path: /v1/fleet/status
             Method: get
 
   FleetIdleCheckFunction:
@@ -1180,11 +1225,21 @@ Resources:
           ]
         }
 
-  # DynamoDB Tables
-  PlayersTable:
+  # ============================================================
+  # DynamoDB Tables — global (cross-game)
+  # ============================================================
+
+  # Global player accounts. PK = player_id (UUID).
+  # Phase 1f moves per-game stats out to GameProfilesTable; until then
+  # this table mirrors the legacy hopnbop-players schema (including
+  # rating, matches_played, wins, losses, display_name) so existing
+  # match_service and player_service continue to work.
+  # Once GameProfilesTable is in use, the rating-index GSI here
+  # is dropped in favor of the equivalent GSI on GameProfilesTable.
+  AccountsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-players
+      TableName: snoringcat-accounts
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1221,10 +1276,12 @@ Resources:
           Projection:
             ProjectionType: KEYS_ONLY
 
-  ProviderMappingsTable:
+  # OAuth identity → account mapping. PK = "{provider}#{external_id}".
+  # Renamed from ProviderMappingsTable.
+  IdentitiesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-provider-mappings
+      TableName: snoringcat-identities
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1235,10 +1292,140 @@ Resources:
         - AttributeName: provider_composite
           KeyType: HASH
 
+  # Global friends graph. PK = player_id, SK = friend_id.
+  # Friendships span all games; each row holds status (pending,
+  # accepted) and timestamps.
+  FriendsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-friends
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: player_id
+          AttributeType: S
+        - AttributeName: friend_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: player_id
+          KeyType: HASH
+        - AttributeName: friend_id
+          KeyType: RANGE
+
+  # Global presence. PK = player_id. Single row per player with the
+  # game they're currently in, status, optional rich_presence string,
+  # and TTL (so stale presence decays without active cleanup).
+  PresenceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-presence
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: player_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: player_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  ConsentAuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-consent-audit
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: player_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: player_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  # Cloud-synced settings. PK = player_id (single-key for now).
+  # Phase 1h adds SK = `scope` ("global" or "game#{game_id}") along
+  # with the corresponding settings_service refactor; the migration
+  # rewrites existing rows with scope="global".
+  SettingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-settings
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: player_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: player_id
+          KeyType: HASH
+
+  # ============================================================
+  # DynamoDB Tables — per-game
+  # ============================================================
+
+  # Per-game player profile. PK = player_id, SK = game_id.
+  # Holds rating, matches_played, wins, losses, optional per-game
+  # display_name override, first_played, game-specific JSON blob.
+  # rating-index allows ranged leaderboard queries scoped by
+  # rating_partition (game_id + tier).
+  GameProfilesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-game-profiles
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: player_id
+          AttributeType: S
+        - AttributeName: game_id
+          AttributeType: S
+        - AttributeName: rating_partition
+          AttributeType: S
+        - AttributeName: rating
+          AttributeType: N
+      KeySchema:
+        - AttributeName: player_id
+          KeyType: HASH
+        - AttributeName: game_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: rating-index
+          KeySchema:
+            - AttributeName: rating_partition
+              KeyType: HASH
+            - AttributeName: rating
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - display_name
+              - matches_played
+              - wins
+              - losses
+              - game_id
+
+  # Per-player match history. PK = player_id, SK = match_timestamp.
+  # Schema is unchanged from the legacy hopnbop-match-history table
+  # to avoid breaking match_handler before it learns about game_id.
+  # Phase 1g changes the SK to "{game_id}#{match_timestamp}" along
+  # with the corresponding handler updates.
+  # NOTE: rows written by the new platform stack include `game_id`
+  # as a non-key attribute. Use a Scan with FilterExpression
+  # `game_id = :game_id` until the SK refactor lands.
   MatchHistoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-match-history
+      TableName: snoringcat-match-history
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1253,41 +1440,12 @@ Resources:
         - AttributeName: match_timestamp
           KeyType: RANGE
 
-  ConsentAuditTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: hopnbop-consent-audit
-      BillingMode: PAY_PER_REQUEST
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      AttributeDefinitions:
-        - AttributeName: player_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: player_id
-          KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: expires_at
-        Enabled: true
-
-  SettingsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: hopnbop-settings
-      BillingMode: PAY_PER_REQUEST
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      AttributeDefinitions:
-        - AttributeName: player_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: player_id
-          KeyType: HASH
-
+  # Leaderboards. PK = leaderboard_id where the id is
+  # "{game_id}#{board_name}" (e.g. "hopnbop#global", "next#weekly").
   LeaderboardTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-leaderboard
+      TableName: snoringcat-leaderboard
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1302,28 +1460,12 @@ Resources:
         - AttributeName: score_player
           KeyType: RANGE
 
-  FriendsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: hopnbop-friends
-      BillingMode: PAY_PER_REQUEST
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      AttributeDefinitions:
-        - AttributeName: player_id
-          AttributeType: S
-        - AttributeName: friend_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: player_id
-          KeyType: HASH
-        - AttributeName: friend_id
-          KeyType: RANGE
-
+  # Parties. PK = party_id. Row carries `game_id` attribute.
+  # Party service rejects cross-game invites.
   PartiesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-parties
+      TableName: snoringcat-parties
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1337,10 +1479,12 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
+  # Active GameLift sessions per player. PK = player_id.
+  # Row holds `game_id` attribute alongside session_id, fleet_id, etc.
   ActiveSessionsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-active-sessions
+      TableName: snoringcat-active-sessions
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1354,10 +1498,13 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
+  # Fleet idle-tracking state. PK = state_key where the key is
+  # "game#{game_id}" so each game's fleet has its own
+  # last_activity_at row read by the scheduled idle-check Lambda.
   FleetStateTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: hopnbop-fleet-state
+      TableName: snoringcat-fleet-state
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -1366,6 +1513,31 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: state_key
+          KeyType: HASH
+
+  # ============================================================
+  # DynamoDB Tables — config
+  # ============================================================
+
+  # Per-game runtime config. PK = game_id. Each row holds:
+  #   display_name, icon_url, fleet_id, gamelift_location,
+  #   matchmaker_name, matchmaker_ruleset, physics_fps,
+  #   base_dns_zone, supported_transports (list), protocol_version,
+  #   latest_game_version, feature_flags (map), created_at, updated_at.
+  # Lambda handlers read this row and cache it in warm container
+  # memory with a ~5 minute TTL.
+  GamesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: snoringcat-games
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: game_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: game_id
           KeyType: HASH
 
 Outputs:
@@ -1373,20 +1545,56 @@ Outputs:
     Description: 'API Gateway endpoint URL'
     Value: !Sub 'https://${GameBackendAPI}.execute-api.${AWS::Region}.amazonaws.com/prod'
 
-  PlayersTableName:
-    Description: 'DynamoDB players table'
-    Value: !Ref PlayersTable
+  AccountsTableName:
+    Description: 'DynamoDB accounts table (global player accounts)'
+    Value: !Ref AccountsTable
 
-  ProviderMappingsTableName:
-    Description: 'DynamoDB provider mappings table'
-    Value: !Ref ProviderMappingsTable
+  IdentitiesTableName:
+    Description: 'DynamoDB identities table (OAuth identity → account mapping)'
+    Value: !Ref IdentitiesTable
+
+  GameProfilesTableName:
+    Description: 'DynamoDB game-profiles table (per-game player data)'
+    Value: !Ref GameProfilesTable
+
+  GamesTableName:
+    Description: 'DynamoDB games config table'
+    Value: !Ref GamesTable
+
+  PresenceTableName:
+    Description: 'DynamoDB presence table'
+    Value: !Ref PresenceTable
+
+  FriendsTableName:
+    Description: 'DynamoDB friends table (global friend graph)'
+    Value: !Ref FriendsTable
 
   MatchHistoryTableName:
     Description: 'DynamoDB match history table'
     Value: !Ref MatchHistoryTable
 
+  LeaderboardTableName:
+    Description: 'DynamoDB leaderboard table'
+    Value: !Ref LeaderboardTable
+
+  PartiesTableName:
+    Description: 'DynamoDB parties table'
+    Value: !Ref PartiesTable
+
+  ActiveSessionsTableName:
+    Description: 'DynamoDB active-sessions table'
+    Value: !Ref ActiveSessionsTable
+
+  FleetStateTableName:
+    Description: 'DynamoDB fleet-state table'
+    Value: !Ref FleetStateTable
+
+  SettingsTableName:
+    Description: 'DynamoDB settings table'
+    Value: !Ref SettingsTable
+
   ConsentAuditTableName:
-    Description: 'DynamoDB consent audit table'
+    Description: 'DynamoDB consent-audit table'
     Value: !Ref ConsentAuditTable
 
   AlarmTopicArn:
