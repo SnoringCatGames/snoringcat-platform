@@ -36,7 +36,13 @@ param(
     [switch]$DryRun
 )
 
-$ErrorActionPreference = "Stop"
+# Stop on PowerShell errors but NOT on native command stderr.
+# `sam build` writes its normal progress to stderr ("Starting Build
+# inside a container", etc.); with $ErrorActionPreference=Stop and
+# a stderr redirect anywhere upstream, PS5.1 wraps each line as a
+# NativeCommandError and aborts before sam even finishes. We rely
+# on $LASTEXITCODE checks below to catch real sam failures.
+$ErrorActionPreference = "Continue"
 
 Write-Host "=== Snoring Cat Platform Backend deploy ===" -ForegroundColor Cyan
 Write-Host "Stack:        $StackName"
