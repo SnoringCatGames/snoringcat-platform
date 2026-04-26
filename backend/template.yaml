@@ -1058,14 +1058,18 @@ Resources:
             # no active game sessions and >30 min since last
             # activity.
             Schedule: rate(5 minutes)
-            Name: hopnbop-fleet-idle-check
+            Name: snoringcat-platform-fleet-idle-check
             Description: Periodic fleet idle check for scale-to-zero
 
   # Monitoring and Alerting
+  # Resource names use the snoringcat-platform- prefix to avoid
+  # collision with the existing hopnbop stack's resources during
+  # the parallel-deploy window. Once the old stack is torn down,
+  # the prefix is purely cosmetic but stays for clarity.
   AlarmNotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: hopnbop-alarms
+      TopicName: snoringcat-platform-alarms
 
   AlarmEmailSubscription:
     Type: AWS::SNS::Subscription
@@ -1078,7 +1082,7 @@ Resources:
   LambdaErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: hopnbop-lambda-errors
+      AlarmName: snoringcat-platform-lambda-errors
       AlarmDescription: Lambda function errors detected
       Namespace: AWS/Lambda
       MetricName: Errors
@@ -1094,7 +1098,7 @@ Resources:
   ApiErrorRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: hopnbop-api-5xx-errors
+      AlarmName: snoringcat-platform-api-5xx-errors
       AlarmDescription: API Gateway 5xx error rate above 5 percent
       Namespace: AWS/ApiGateway
       MetricName: 5XXError
@@ -1113,7 +1117,7 @@ Resources:
   DynamoDBThrottleAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: hopnbop-dynamodb-throttles
+      AlarmName: snoringcat-platform-dynamodb-throttles
       AlarmDescription: DynamoDB throttle events detected
       Namespace: AWS/DynamoDB
       MetricName: ThrottledRequests
@@ -1129,9 +1133,14 @@ Resources:
   CrashRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: hopnbop-crash-rate
+      AlarmName: snoringcat-platform-crash-rate
       AlarmDescription: Client crash reports exceeding threshold
-      Namespace: HopNBop
+      # The new stack publishes custom metrics under namespace
+      # `SnoringCatPlatform` (set in Globals.Function.Environment).
+      # The legacy `HopNBop` namespace is still emitted by the old
+      # stack until cutover; the legacy alarm there continues to
+      # watch it.
+      Namespace: SnoringCatPlatform
       MetricName: crash_report
       Statistic: Sum
       Period: 300
@@ -1146,7 +1155,7 @@ Resources:
   MonitoringDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
-      DashboardName: hopnbop-monitoring
+      DashboardName: snoringcat-platform-monitoring
       DashboardBody: !Sub |
         {
           "widgets": [
@@ -1195,11 +1204,11 @@ Resources:
               "type": "metric",
               "x": 12, "y": 6, "width": 12, "height": 6,
               "properties": {
-                "title": "DynamoDB (Players Table)",
+                "title": "DynamoDB (Accounts Table)",
                 "metrics": [
-                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${PlayersTable}", {"stat": "Sum"}],
-                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${PlayersTable}", {"stat": "Sum"}],
-                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${PlayersTable}", {"stat": "Sum"}]
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${AccountsTable}", {"stat": "Sum"}],
+                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${AccountsTable}", {"stat": "Sum"}],
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${AccountsTable}", {"stat": "Sum"}]
                 ],
                 "period": 300,
                 "region": "${AWS::Region}"
@@ -1211,12 +1220,12 @@ Resources:
               "properties": {
                 "title": "Game Analytics",
                 "metrics": [
-                  ["HopNBop", "auth_success", {"stat": "Sum"}],
-                  ["HopNBop", "auth_failure", {"stat": "Sum"}],
-                  ["HopNBop", "match_completed", {"stat": "Sum"}],
-                  ["HopNBop", "player_connected", {"stat": "Sum"}],
-                  ["HopNBop", "crash_report", {"stat": "Sum"}],
-                  ["HopNBop", "fatal_crash", {"stat": "Sum"}]
+                  ["SnoringCatPlatform", "auth_success", {"stat": "Sum"}],
+                  ["SnoringCatPlatform", "auth_failure", {"stat": "Sum"}],
+                  ["SnoringCatPlatform", "match_completed", {"stat": "Sum"}],
+                  ["SnoringCatPlatform", "player_connected", {"stat": "Sum"}],
+                  ["SnoringCatPlatform", "crash_report", {"stat": "Sum"}],
+                  ["SnoringCatPlatform", "fatal_crash", {"stat": "Sum"}]
                 ],
                 "period": 300,
                 "region": "${AWS::Region}"
