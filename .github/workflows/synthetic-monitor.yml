@@ -12,13 +12,14 @@ on:
   # Also runnable on demand from the Actions tab.
   workflow_dispatch: {}
 
+env:
+  API_URL: https://r20b7wqop6.execute-api.us-west-2.amazonaws.com/prod
+
 jobs:
   probe-version:
     runs-on: ubuntu-latest
     steps:
       - name: GET /v1/version
-        env:
-          API_URL: https://r20b7wqop6.execute-api.us-west-2.amazonaws.com/prod
         run: |
           set -e
           echo "Probing $API_URL/v1/version ..."
@@ -38,8 +39,51 @@ jobs:
           gv=$(echo "$body" | jq -e -r '.game_version')
           echo "OK protocol_version=$pv game_version=$gv"
 
-      - name: Notify on failure (placeholder)
-        if: failure()
+  probe-auth-anon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /v1/auth/anon
+        run: |
+          set -e
+          # Stable device_id so we don't bloat the accounts table:
+          # this hourly probe reuses the same anon account row.
+          # Same convention the GUT compliance suite uses.
+          device_id="compliance-anon-fixed-1"
+          echo "Probing $API_URL/v1/auth/anon ..."
+          body=$(
+            curl -fsS -m 10 --retry 2 --retry-delay 5 \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"device_id\":\"$device_id\"}" \
+              "$API_URL/v1/auth/anon"
+          )
+          # Don't echo the full body — it contains a JWT.
+          echo "Got response of $(echo -n "$body" | wc -c) bytes"
+          # Required fields per the platform contract.
+          status=$(echo "$body" | jq -e -r '.status')
+          [ "$status" = "success" ] || {
+            echo "::error::expected status=success, got $status"
+            exit 1
+          }
+          echo "$body" | jq -e -r '.jwt_token' > /dev/null
+          echo "$body" | jq -e -r '.refresh_token' > /dev/null
+          echo "$body" | jq -e -r '.player_id' > /dev/null
+          # JWT shape: 3 dot-separated base64url segments.
+          token=$(echo "$body" | jq -r '.jwt_token')
+          segments=$(echo "$token" | tr '.' '\n' | wc -l)
+          [ "$segments" = "3" ] || {
+            echo "::error::JWT has $segments segments, expected 3"
+            exit 1
+          }
+          echo "OK auth-anon: token+refresh+player_id present;" \
+            "JWT well-formed"
+
+  notify-on-failure:
+    runs-on: ubuntu-latest
+    needs: [probe-version, probe-auth-anon]
+    if: failure()
+    steps:
+      - name: Surface failure context
         run: |
           # GitHub already emails repo admins on any scheduled
           # workflow failure. If we eventually want SNS / Slack
