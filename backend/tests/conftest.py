@@ -193,8 +193,14 @@ def _reinit_handler_services():
     # Patch the handler module-level service instances.
     try:
         from handlers import auth_handler
+        from services import profile_service as prof_mod
+
+        importlib.reload(prof_mod)
 
         auth_handler.player_service = ps_mod.PlayerService()
+        auth_handler.profile_service = (
+            prof_mod.ProfileService()
+        )
         auth_handler.provider_mapping_service = (
             pm_mod.ProviderMappingService()
         )

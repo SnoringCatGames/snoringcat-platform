@@ -19,6 +19,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from services.auth_service import AuthService, AuthToken
 from services.player_service import PlayerService
+from services.profile_service import ProfileService
 from services.provider_mapping_service import ProviderMappingService
 from services.settings_service import SettingsService
 from services.leaderboard_service import LeaderboardService
@@ -31,6 +32,12 @@ metrics = Metrics()
 # Initialize services.
 auth_service = AuthService(token_lifetime_hours=24)
 player_service = PlayerService()
+# profile_service writes to the new game_profiles table; auth_handler
+# dual-writes alongside player_service so the new table populates
+# as players sign in. account_service is intentionally NOT used as a
+# writer yet — player_service remains the sole writer to the accounts
+# row so the two services don't fight over the same item.
+profile_service = ProfileService()
 provider_mapping_service = ProviderMappingService()
 settings_service = SettingsService()
 leaderboard_service = LeaderboardService()
@@ -38,6 +45,7 @@ friends_service = FriendsService()
 
 _GAME_VERSION = os.environ.get("GAME_VERSION", "0.1.0")
 _PROTOCOL_VERSION = int(os.environ.get("PROTOCOL_VERSION", "1"))
+_DEFAULT_GAME_ID = os.environ.get("DEFAULT_GAME_ID", "hopnbop")
 
 # CORS headers included in every response.
 _HEADERS = {
@@ -118,6 +126,29 @@ def login(
                 ),
             )
         )
+
+        # Dual-write the per-game profile row. This is the new
+        # game-aware view of the same player. Eventually replaces
+        # the per-game fields on the legacy accounts row, but for
+        # now both exist side by side. Use the resolved game_id
+        # (caller-supplied, falls back to DEFAULT_GAME_ID) so the
+        # row is keyed correctly.
+        try:
+            asyncio.run(
+                profile_service.get_or_create(
+                    player_id,
+                    game_id or _DEFAULT_GAME_ID,
+                )
+            )
+        except Exception as e:
+            # Profile dual-write failures must not block sign-in
+            # — the legacy player row was already written above.
+            # Log loudly so we notice.
+            logger.warning(
+                "profile_service dual-write failed: "
+                f"player_id={player_id} game_id={game_id} "
+                f"err={e}"
+            )
 
         # Issue tokens.
         auth_token = auth_service.create_auth_token(
@@ -257,6 +288,21 @@ def anonymous_login(
                 consent_legal_version=consent_legal_version,
             )
         )
+
+        # Dual-write the per-game profile row (see login() comment).
+        try:
+            asyncio.run(
+                profile_service.get_or_create(
+                    player_id,
+                    game_id or _DEFAULT_GAME_ID,
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                "profile_service dual-write failed: "
+                f"player_id={player_id} game_id={game_id} "
+                f"err={e}"
+            )
 
         # Issue tokens.
         auth_token = auth_service.create_auth_token(
