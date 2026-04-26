@@ -8,10 +8,14 @@
 ##         "sdk_version": "0.1.0",
 ##     })
 ##
-## All subsystems (auth, friends, party, presence, settings, etc.)
-## hang off this autoload as child references. Subsystems are NOT
-## populated yet. Phase 2 of the platform extraction wires them
-## up as files migrate over from hopnbop_private.
+## Once initialized, subsystem accessors are populated:
+##
+##     Platform.api          — generic HTTP client (PlatformApiClient).
+##     Platform.token_store  — encrypted token persistence.
+##
+## Higher-level helpers (auth flows, friends, party, presence,
+## settings, matchmaking, screens) are added in subsequent
+## extraction passes.
 extends Node
 
 
@@ -23,15 +27,19 @@ var game_id: String = ""
 var api_base_url: String = ""
 var sdk_version: String = ""
 
-# Subsystem references (populated incrementally during Phase 2).
-# var auth: AuthClient
-# var account: AccountClient
-# var friends: FriendsClient
-# var party: PartyManager
-# var presence: PresenceClient
-# var settings: SettingsManager
-# var matchmaking: MatchmakingClient
-# var screens: ScreenManager
+# Subsystem references. Null until initialize() runs.
+var token_store: PlatformAuthTokenStore
+var api: PlatformApiClient
+
+# Future subsystems (populated incrementally during Phase 2):
+# var auth: PlatformAuthClient
+# var account: PlatformAccountClient
+# var friends: PlatformFriendsClient
+# var party: PlatformPartyManager
+# var presence: PlatformPresenceClient
+# var settings: PlatformSettingsManager
+# var matchmaking: PlatformMatchmakingClient
+# var screens: PlatformScreenManager
 
 
 func initialize(config: Dictionary) -> void:
@@ -45,7 +53,24 @@ func initialize(config: Dictionary) -> void:
 	api_base_url = config.api_base_url
 	sdk_version = config.get("sdk_version", "unknown")
 
-	# TODO Phase 2: instantiate and wire subsystems here.
+	# Encrypted JWT/refresh-token persistence. Stays in memory
+	# until the consuming game wants to call save_tokens().
+	# Per-game auth file path keeps multiple games' tokens
+	# isolated (so a single device can be signed into Hop 'n Bop
+	# AND another future game without overwriting either side).
+	var auth_file_path: String = config.get(
+		"auth_file_path",
+		"user://%s_auth.cfg" % game_id,
+	)
+	token_store = PlatformAuthTokenStore.new(auth_file_path)
+
+	# Generic HTTP client. add_child() runs _ready, which sets
+	# up the inner HTTPRequest node.
+	api = PlatformApiClient.new()
+	api.name = "PlatformApiClient"
+	api.base_url = api_base_url
+	api.token_store = token_store
+	add_child(api)
 
 	is_initialized = true
 	initialized.emit()
