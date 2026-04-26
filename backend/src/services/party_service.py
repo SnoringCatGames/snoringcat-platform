@@ -15,16 +15,30 @@ _MAX_PARTY_SIZE = 4
 
 @dataclass
 class Party:
-    """Represents a party."""
+    """Represents a party.
+
+    The `game_id` field binds the party to one game. Members must
+    all be currently in the same game (verified at invite time
+    via presence_service); cross-game invites are rejected.
+
+    Existing rows from before the multi-game refactor have no
+    `game_id` attribute and are read with the empty string,
+    which matches the legacy single-game behavior.
+    """
 
     party_id: str
     leader_id: str
+    game_id: str = ""
     members: List[str] = field(default_factory=list)
     invited: List[str] = field(default_factory=list)
     status: str = "lobby"
     matchmaking_ticket_id: Optional[str] = None
     created_at: int = 0
     expires_at: int = 0
+
+
+class CrossGameInviteError(ValueError):
+    """Raised when an invitee is in a different game."""
 
 
 class PartyService:
@@ -38,13 +52,19 @@ class PartyService:
         self._table = self._dynamodb.Table(table_name)
 
     async def create_party(
-        self, leader_id: str
+        self, leader_id: str, game_id: str = ""
     ) -> Party:
-        """Create a new party with the given leader."""
+        """Create a new party with the given leader.
+
+        `game_id` defaults to empty for backward compatibility with
+        callers that haven't been game-scoped yet. New handlers
+        always pass a real game_id from the JWT.
+        """
         now = int(time.time())
         party = Party(
             party_id=f"pty_{uuid.uuid4().hex[:12]}",
             leader_id=leader_id,
+            game_id=game_id,
             members=[leader_id],
             invited=[],
             status="lobby",
@@ -100,8 +120,18 @@ class PartyService:
         party_id: str,
         inviter_id: str,
         invitee_id: str,
+        invitee_game_id: Optional[str] = None,
     ) -> Party:
-        """Invite a player to the party."""
+        """Invite a player to the party.
+
+        If `invitee_game_id` is supplied (typically read from the
+        invitee's presence row), the call rejects invites where
+        the invitee is in a different game than the party.
+
+        Older call sites that don't pass invitee_game_id skip the
+        cross-game check, preserving legacy behavior. The
+        platform_handler should always pass it.
+        """
         party = await self.get_party(party_id)
         if party is None:
             raise ValueError("Party not found")
@@ -118,6 +148,19 @@ class PartyService:
         )
         if total >= _MAX_PARTY_SIZE:
             raise ValueError("Party is full")
+
+        # Reject cross-game invites. Only checked when both sides
+        # have a game_id; legacy parties (game_id="") accept any
+        # invitee.
+        if (
+            invitee_game_id
+            and party.game_id
+            and invitee_game_id != party.game_id
+        ):
+            raise CrossGameInviteError(
+                f"Invitee is in {invitee_game_id!r}, "
+                f"party is in {party.game_id!r}"
+            )
 
         party.invited.append(invitee_id)
         self._update_party(party)
@@ -264,6 +307,10 @@ class PartyService:
             "created_at": party.created_at,
             "expires_at": party.expires_at,
         }
+        # Only persist game_id when it was supplied — legacy parties
+        # left it empty and we keep their item shape unchanged.
+        if party.game_id:
+            item["game_id"] = party.game_id
         if party.matchmaking_ticket_id:
             item["matchmaking_ticket_id"] = (
                 party.matchmaking_ticket_id
@@ -276,6 +323,7 @@ class PartyService:
         return Party(
             party_id=item["party_id"],
             leader_id=item["leader_id"],
+            game_id=item.get("game_id", ""),
             members=item.get("members", []),
             invited=item.get("invited", []),
             status=item.get("status", "lobby"),
