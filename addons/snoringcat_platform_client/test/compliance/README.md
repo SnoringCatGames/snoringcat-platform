@@ -28,14 +28,20 @@ The suite runs in one of two modes, controlled by an env var:
 
 (Filled in incrementally as Phase 2 ports each subsystem.)
 
-| Subsystem      | Test file                | Status   |
-|----------------|--------------------------|----------|
-| Auth           | `test_auth.gd`           | TODO P2  |
-| Account        | `test_account.gd`        | TODO P2  |
-| Friends        | `test_friends.gd`        | TODO P2  |
-| Party          | `test_party.gd`          | TODO P2  |
-| Presence       | `test_presence.gd`       | TODO P4  |
-| Settings       | `test_settings.gd`       | TODO P2  |
-| Matchmaking    | `test_matchmaking.gd`    | TODO P2  |
-| Match loopback | `test_match_loopback.gd` | TODO P3  |
-| API surface    | `test_api_surface.gd`    | TODO P2  |
+| Subsystem      | Test file                | Status      |
+|----------------|--------------------------|-------------|
+| Version        | `test_version.gd`        | LIVE only   |
+| Auth (anon)    | `test_auth_anon.gd`      | LIVE only   |
+| Auth (link)    | `test_auth_link.gd`      | TODO        |
+| Account        | `test_account.gd`        | TODO        |
+| Friends        | `test_friends.gd`        | TODO        |
+| Party          | `test_party.gd`          | TODO        |
+| Presence       | `test_presence.gd`       | TODO P4     |
+| Settings       | `test_settings.gd`       | TODO        |
+| Matchmaking    | `test_matchmaking.gd`    | TODO        |
+| Match loopback | `test_match_loopback.gd` | TODO P3     |
+| API surface    | `test_api_surface.gd`    | TODO        |
+
+"LIVE only" means the test currently requires `PLATFORM_COMPLIANCE_MODE=live`
+(the default) and hits the real backend. "TODO" tests will land as
+each subsystem's mock-mode HTTP interception is built out.
