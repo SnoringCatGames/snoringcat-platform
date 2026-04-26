@@ -15,7 +15,7 @@ sys.path.append(
     os.path.join(os.path.dirname(__file__), "..")
 )
 
-from services.presence_service import PresenceService
+from services.online_status_service import OnlineStatusService
 from services.friends_service import FriendsService
 from services.auth_service import AuthToken
 from services.rate_limiter import RateLimiter
@@ -35,7 +35,10 @@ _HEADERS = {
     ),
 }
 
-presence_service = PresenceService()
+# Legacy heartbeat tracker on the players/accounts table.
+# A new game-aware presence_service handles the multi-game model;
+# this handler will switch to it once the matching client SDK lands.
+presence_service = OnlineStatusService()
 friends_service = FriendsService()
 rate_limiter = RateLimiter()
 
