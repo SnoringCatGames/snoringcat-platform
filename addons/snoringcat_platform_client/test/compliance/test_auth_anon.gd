@@ -44,13 +44,16 @@ func test_anon_sign_in_returns_token_and_player_id() -> void:
 	# bare-minimum account snapshot. Future schema additions are
 	# fine; missing required keys here would break every game.
 	assert_true(
-		result.body.has("token"),
-		"missing token: %s" % str(result.body))
+		result.body.has("jwt_token"),
+		"missing jwt_token: %s" % str(result.body))
 	assert_true(
 		result.body.has("player_id"),
 		"missing player_id: %s" % str(result.body))
+	assert_true(
+		result.body.has("refresh_token"),
+		"missing refresh_token: %s" % str(result.body))
 
-	var token: String = result.body.get("token", "")
+	var token: String = result.body.get("jwt_token", "")
 	assert_true(
 		token.length() > 50,
 		"token suspiciously short: %d chars" % token.length())
@@ -72,7 +75,7 @@ func test_anon_token_contains_game_id_claim() -> void:
 	var result: Dictionary = await _helper.next_response(api)
 
 	assert_true(result.ok, "anon sign-in must succeed")
-	var token: String = result.body.get("token", "")
+	var token: String = result.body.get("jwt_token", "")
 	var parts := token.split(".")
 	assert_eq(parts.size(), 3, "JWT format")
 
@@ -91,9 +94,14 @@ func test_anon_token_contains_game_id_claim() -> void:
 	assert_true(
 		claims.has("game_id"),
 		"JWT missing game_id claim: %s" % str(claims))
+	# The standard JWT subject claim "sub" carries the player_id;
+	# the platform doesn't duplicate it under a "player_id" key.
 	assert_true(
-		claims.has("player_id"),
-		"JWT missing player_id claim: %s" % str(claims))
+		claims.has("sub"),
+		"JWT missing sub (player_id) claim: %s" % str(claims))
+	assert_eq(
+		claims.get("sub", ""), result.body.get("player_id", ""),
+		"sub claim should match response.player_id")
 	assert_true(
 		claims.has("exp"),
 		"JWT missing exp claim: %s" % str(claims))
