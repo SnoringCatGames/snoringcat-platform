@@ -102,28 +102,33 @@ try {
     Write-Host "[3/3] Running sam deploy..." -ForegroundColor Yellow
     Write-Host "      (5-10 minutes; CloudFormation changeset phase is silent)" -ForegroundColor DarkGray
 
-    # --no-confirm-changeset prevents interactive prompts (which
-    # would hang non-interactive runs).
-    $deployOutput = sam deploy `
+    # Flags:
+    #   --no-confirm-changeset       no interactive prompts
+    #   --capabilities CAPABILITY_IAM allow CFN to create IAM roles
+    #   --resolve-s3                 auto-create the SAM-managed
+    #                                bucket for the deployment
+    #                                artifact (no samconfig.toml
+    #                                required to track it)
+    #   --s3-prefix                  group artifacts under a
+    #                                stack-specific S3 prefix
+    sam deploy `
         --stack-name $StackName `
         --no-confirm-changeset `
+        --capabilities CAPABILITY_IAM `
+        --resolve-s3 `
+        --s3-prefix $StackName `
         --profile $Profile `
         --region $Region `
         --parameter-overrides "DefaultGameId=$DefaultGameId" `
-        --tags "Project=snoringcat-platform" "Component=backend" "Version=$PlatformVersion" `
-        2>&1 | Tee-Object -Variable stdoutCopy
+        --tags "Project=snoringcat-platform" "Component=backend" "Version=$PlatformVersion"
     $deployExit = $LASTEXITCODE
 
-    # sam deploy exits non-zero when there are no changes; treat
-    # that as a no-op success.
+    # Newer sam returns exit 0 on "no changes to deploy"; we treat
+    # any non-zero as a real failure and rely on the sam output
+    # above (printed directly, not captured) for diagnostics.
     if ($deployExit -ne 0) {
-        $joined = ($deployOutput | Out-String)
-        if ($joined -match "No changes to deploy") {
-            Write-Host "No changes to deploy (stack already up to date)." -ForegroundColor DarkGray
-        } else {
-            Write-Error "sam deploy failed (exit $deployExit)"
-            exit 1
-        }
+        Write-Error "sam deploy failed (exit $deployExit). See sam output above."
+        exit 1
     }
     Write-Host "Deploy complete." -ForegroundColor Green
 } finally {
