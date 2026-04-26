@@ -1,6 +1,0 @@
-# Input device management.
-# Phase 2: extract from hopnbop_private:
-#   - src/core/input_device_manager.gd
-#   - src/core/device_config.gd
-#   - src/ui/any_device_input_poller.gd
-#   - src/ui/screen_focus_navigator.gd
