@@ -8,6 +8,10 @@ const _Helper = preload(
 	"res://addons/snoringcat_platform_client/test/"
 	+ "compliance/compliance_helper.gd"
 )
+## Stable device_id so the test reuses the same account each
+## run instead of bloating the accounts table. The "compliance-"
+## prefix lets ops grep for and prune these later if needed.
+const _COMPLIANCE_DEVICE_ID := "compliance-anon-fixed-1"
 
 var _helper
 
@@ -23,7 +27,9 @@ func test_anon_sign_in_returns_token_and_player_id() -> void:
 		return
 	var api: Node = _helper.make_api_client(self)
 	await get_tree().process_frame
-	api.do_post("/v1/auth/anon", {})
+	api.do_post("/v1/auth/anon", {
+		"device_id": _COMPLIANCE_DEVICE_ID,
+	})
 	var result: Dictionary = await _helper.next_response(api)
 
 	assert_true(
@@ -60,7 +66,9 @@ func test_anon_token_contains_game_id_claim() -> void:
 		return
 	var api: Node = _helper.make_api_client(self)
 	await get_tree().process_frame
-	api.do_post("/v1/auth/anon", {})
+	api.do_post("/v1/auth/anon", {
+		"device_id": _COMPLIANCE_DEVICE_ID,
+	})
 	var result: Dictionary = await _helper.next_response(api)
 
 	assert_true(result.ok, "anon sign-in must succeed")
