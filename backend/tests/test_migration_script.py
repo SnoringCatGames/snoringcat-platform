@@ -377,7 +377,7 @@ class TestLeaderboard:
     def test_does_not_double_prefix(
         self, migrate, dynamodb
     ):
-        """A row that already has a # in the id is left alone."""
+        """An id already prefixed with the game_id is left alone."""
         _put_legacy_leaderboard(
             dynamodb, leaderboard_id="hopnbop#weekly"
         )
@@ -394,6 +394,33 @@ class TestLeaderboard:
         item = leaderboard.get_item(
             Key={
                 "leaderboard_id": "hopnbop#weekly",
+                "score_player": "1500#p_test001",
+            }
+        )["Item"]
+        assert item is not None
+
+    def test_weekly_with_inner_hash_gets_prefixed(
+        self, migrate, dynamodb
+    ):
+        """Real-world case: weekly#2026-W12 should become
+        hopnbop#weekly#2026-W12, not be left alone because it
+        already has a `#` somewhere."""
+        _put_legacy_leaderboard(
+            dynamodb, leaderboard_id="weekly#2026-W12"
+        )
+        plans = migrate._build_transforms("hopnbop")
+        plan = next(
+            p for p in plans if p.name == "leaderboard"
+        )
+
+        migrate._run_plan(plan, dynamodb, apply=True)
+
+        leaderboard = dynamodb.Table(
+            "snoringcat-leaderboard"
+        )
+        item = leaderboard.get_item(
+            Key={
+                "leaderboard_id": "hopnbop#weekly#2026-W12",
                 "score_player": "1500#p_test001",
             }
         )["Item"]

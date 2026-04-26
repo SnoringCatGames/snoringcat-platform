@@ -327,8 +327,12 @@ def _build_transforms(game_id: str):
     def _leaderboard_transform(item):
         new = dict(item)
         leaderboard_id = item.get("leaderboard_id", "")
-        # Only prepend "{game_id}#" if it isn't already there.
-        if "#" not in leaderboard_id:
+        # Always prefix with `{game_id}#` so per-game leaderboard
+        # queries find the right rows. Idempotent: if the id is
+        # already prefixed, leave it alone. Real prod ids like
+        # "weekly#2026-W12" contain `#` for the week number, so
+        # checking for any `#` would incorrectly skip them.
+        if not leaderboard_id.startswith(f"{game_id}#"):
             new["leaderboard_id"] = (
                 f"{game_id}#{leaderboard_id}"
             )
