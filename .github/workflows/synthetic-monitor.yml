@@ -33,16 +33,10 @@ jobs:
           )
           echo "Body: $body"
           # Validate shape: must be JSON with the expected keys.
-          echo "$body" | python -c '
-          import json, sys
-          d = json.loads(sys.stdin.read())
-          assert "protocol_version" in d, \
-              f"missing protocol_version in {d}"
-          assert "game_version" in d, \
-              f"missing game_version in {d}"
-          print(f"OK protocol_version={d[\"protocol_version\"]} "
-                f"game_version={d[\"game_version\"]}")
-          '
+          # jq's `-e` exits non-zero if the filter is null/false.
+          pv=$(echo "$body" | jq -e -r '.protocol_version')
+          gv=$(echo "$body" | jq -e -r '.game_version')
+          echo "OK protocol_version=$pv game_version=$gv"
 
       - name: Notify on failure (placeholder)
         if: failure()
