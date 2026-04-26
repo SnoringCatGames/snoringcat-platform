@@ -1,147 +1,121 @@
-# Backend Deployment Script
-# Usage: .\scripts\deploy-backend.ps1
+# Snoring Cat Platform Backend deploy script.
 #
-# Syncs GAME_VERSION in template.yaml from project.godot,
-# then runs sam build and sam deploy.
+# Usage (from the repo root):
+#   .\backend\scripts\deploy.ps1
+#
+# Optional flags:
+#   -StackName     Override the CloudFormation stack name.
+#                  Default: snoringcat-platform-backend
+#   -Profile       AWS CLI profile. Default: hopnbop
+#   -Region        AWS region. Default: us-west-2
+#   -DefaultGameId The fallback game_id baked into the stack
+#                  for legacy unauthenticated handlers.
+#                  Default: hopnbop
+#   -DryRun        Skip `sam deploy`; just build and report.
+#
+# What this script does NOT do:
+#   - Touch the existing `hopnbop-backend` SAM stack or any
+#     `hopnbop-*` DynamoDB tables. Those keep running until the
+#     Phase 2 client cutover.
+#   - Discover or bind to a GameLift fleet. Per-game fleet IDs
+#     live in the `games` config table; this script doesn't
+#     pass a fleet override at all.
+#   - Run the migration script. See migrate-from-hopnbop.py
+#     when you are ready for that step.
 #
 # Prerequisites:
-#   - AWS CLI configured (aws sso login --profile hopnbop)
-#   - AWS SAM CLI installed
-#   - Python 3.12
+#   - AWS SSO logged in: aws sso login --profile <Profile>
+#   - Docker Desktop running (sam build --use-container)
+#   - SAM CLI installed and on PATH
 
 param(
+    [string]$StackName = "snoringcat-platform-backend",
     [string]$Profile = "hopnbop",
-    [string]$Region = "us-west-2"
+    [string]$Region = "us-west-2",
+    [string]$DefaultGameId = "hopnbop",
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Backend Deployment ===" -ForegroundColor Cyan
-
-# Read version from project.godot (single source of truth).
-$projectGodot = Get-Content "project.godot" -Raw
-if ($projectGodot -match 'config/version="([^"]+)"') {
-    $Version = $Matches[1]
-} else {
-    Write-Error "Could not read config/version from project.godot"
-    exit 1
-}
-
-Write-Host "Version: $Version"
-
-# Read protocol version from project.godot.
-if ($projectGodot -match 'config/protocol_version=(\d+)') {
-    $ProtocolVersion = $Matches[1]
-} else {
-    Write-Error "Could not read config/protocol_version from project.godot"
-    exit 1
-}
-
-Write-Host "Protocol version: $ProtocolVersion"
+Write-Host "=== Snoring Cat Platform Backend deploy ===" -ForegroundColor Cyan
+Write-Host "Stack:        $StackName"
+Write-Host "Profile:      $Profile"
+Write-Host "Region:       $Region"
+Write-Host "DefaultGameId: $DefaultGameId"
 Write-Host ""
 
-# Step 1: Sync GAME_VERSION and PROTOCOL_VERSION
-# in template.yaml.
-Write-Host "[1/3] Syncing versions in template.yaml..." -ForegroundColor Yellow
+# Resolve repo paths regardless of where the script was invoked
+# from (works whether you ran it from repo root or backend/).
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$BackendDir = Split-Path -Parent $ScriptDir
 
-$templatePath = "backend/template.yaml"
-$templateContent = Get-Content $templatePath -Raw
-
-if ($templateContent -match 'GAME_VERSION:\s*"([^"]+)"') {
-    $currentVersion = $Matches[1]
-    if ($currentVersion -ne $Version) {
-        $templateContent = $templateContent -replace (
-            'GAME_VERSION:\s*"[^"]+"'),
-            "GAME_VERSION: `"$Version`""
-        Write-Host "  Updated GAME_VERSION: $currentVersion -> $Version" -ForegroundColor Green
+# --- Step 1: Read platform version from CHANGELOG.md.
+# Source of truth is the [Unreleased] / latest [x.y.z] header
+# at the top of CHANGELOG.md. We only use this for log output
+# and CloudFormation tags; the per-game `protocol_version` is
+# now in the games config table, not here.
+Write-Host "[1/3] Reading platform version..." -ForegroundColor Yellow
+$ChangelogPath = Join-Path (Split-Path -Parent $BackendDir) "CHANGELOG.md"
+if (Test-Path $ChangelogPath) {
+    $Changelog = Get-Content $ChangelogPath -Raw
+    if ($Changelog -match '##\s*\[(\d+\.\d+\.\d+)\]') {
+        $PlatformVersion = $Matches[1]
+        Write-Host "  Platform version: $PlatformVersion" -ForegroundColor Green
     } else {
-        Write-Host "  GAME_VERSION already $Version" -ForegroundColor DarkGray
+        $PlatformVersion = "unreleased"
+        Write-Host "  No semver header in CHANGELOG.md; using 'unreleased'." -ForegroundColor DarkGray
     }
 } else {
-    Write-Error "Could not find GAME_VERSION in $templatePath"
-    exit 1
+    $PlatformVersion = "unreleased"
+    Write-Host "  CHANGELOG.md not found; using 'unreleased'." -ForegroundColor DarkGray
 }
+Write-Host ""
 
-if ($templateContent -match 'PROTOCOL_VERSION:\s*"(\d+)"') {
-    $currentProtocol = $Matches[1]
-    if ($currentProtocol -ne $ProtocolVersion) {
-        $templateContent = $templateContent -replace (
-            'PROTOCOL_VERSION:\s*"\d+"'),
-            "PROTOCOL_VERSION: `"$ProtocolVersion`""
-        Write-Host "  Updated PROTOCOL_VERSION: $currentProtocol -> $ProtocolVersion" -ForegroundColor Green
-    } else {
-        Write-Host "  PROTOCOL_VERSION already $ProtocolVersion" -ForegroundColor DarkGray
-    }
-} else {
-    Write-Error "Could not find PROTOCOL_VERSION in $templatePath"
-    exit 1
-}
-
-Set-Content -Path $templatePath -Value $templateContent -NoNewline
-
-# Step 2: Discover current GameLift container fleet ID.
-# Passed to the SAM deploy as a parameter override so the
-# fleet warmup and idle-check Lambdas know which fleet to
-# operate on. The fleet ID changes whenever the fleet is
-# recreated (e.g., to switch billing type), so we look it
-# up fresh on each deploy rather than hard-coding.
-#
-# Note: list-fleets returns managed EC2 fleets only, so
-# container fleets require the separate list-container-fleets
-# API.
-Write-Host "[2/4] Looking up fleet ID..." -ForegroundColor Yellow
-
-$FleetJson = aws gamelift list-container-fleets --profile $Profile --region $Region --output json
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "aws gamelift list-container-fleets failed"
-    exit 1
-}
-
-$FleetData = $FleetJson | ConvertFrom-Json
-$Fleets = $FleetData.ContainerFleets
-if ($null -eq $Fleets -or $Fleets.Count -eq 0) {
-    Write-Warning "No GameLift container fleets found. Deploying with empty FleetId (warmup will be disabled)."
-    $FleetId = ""
-} elseif ($Fleets.Count -gt 1) {
-    $FleetId = $Fleets[0].FleetId
-    Write-Warning "Multiple container fleets found. Using the first: $FleetId"
-} else {
-    $FleetId = $Fleets[0].FleetId
-    Write-Host "  Fleet ID: $FleetId" -ForegroundColor Green
-}
-
-# Step 3: SAM build.
-Write-Host "[3/4] Running sam build..." -ForegroundColor Yellow
-
-Push-Location backend
+# --- Step 2: SAM build.
+Write-Host "[2/3] Running sam build..." -ForegroundColor Yellow
+Push-Location $BackendDir
 try {
-    # --use-container builds inside a Lambda-like Docker
-    # image so native extensions (bcrypt) are compiled
-    # for Amazon Linux, not the local OS.
+    # --use-container builds inside the AWS Lambda Python 3.12
+    # image so native deps (bcrypt) are compiled for Amazon Linux,
+    # not the local OS. Docker Desktop must be running.
     sam build --use-container --profile $Profile --region $Region
     if ($LASTEXITCODE -ne 0) {
         Write-Error "sam build failed"
         exit 1
     }
     Write-Host "Build complete." -ForegroundColor Green
+    Write-Host ""
 
-    # Step 4: SAM deploy. Passes FleetId as a parameter
-    # override. AlertEmail is set via samconfig.toml (one-time
-    # configuration); it is intentionally not passed here.
-    Write-Host "[4/4] Running sam deploy..." -ForegroundColor Yellow
+    # --- Step 3: SAM deploy.
+    if ($DryRun) {
+        Write-Host "[3/3] Skipping sam deploy (-DryRun)." -ForegroundColor DarkGray
+        return
+    }
 
-    $deployOutput = sam deploy --no-confirm-changeset --profile $Profile --region $Region `
-        --parameter-overrides "FleetId=$FleetId" 2>&1 | Tee-Object -Variable stdoutCopy
+    Write-Host "[3/3] Running sam deploy..." -ForegroundColor Yellow
+    Write-Host "      (5-10 minutes; CloudFormation changeset phase is silent)" -ForegroundColor DarkGray
+
+    # --no-confirm-changeset prevents interactive prompts (which
+    # would hang non-interactive runs).
+    $deployOutput = sam deploy `
+        --stack-name $StackName `
+        --no-confirm-changeset `
+        --profile $Profile `
+        --region $Region `
+        --parameter-overrides "DefaultGameId=$DefaultGameId" `
+        --tags "Project=snoringcat-platform" "Component=backend" "Version=$PlatformVersion" `
+        2>&1 | Tee-Object -Variable stdoutCopy
     $deployExit = $LASTEXITCODE
-    # sam deploy exits non-zero when there are no changes to
-    # deploy. That is a success outcome for our purposes, so
-    # match the specific message and treat it as a no-op.
+
+    # sam deploy exits non-zero when there are no changes; treat
+    # that as a no-op success.
     if ($deployExit -ne 0) {
-        $joinedOutput = ($deployOutput | Out-String)
-        if ($joinedOutput -match "No changes to deploy") {
-            Write-Host "No changes to deploy (stack up to date)." -ForegroundColor DarkGray
+        $joined = ($deployOutput | Out-String)
+        if ($joined -match "No changes to deploy") {
+            Write-Host "No changes to deploy (stack already up to date)." -ForegroundColor DarkGray
         } else {
-            Write-Error "sam deploy failed"
+            Write-Error "sam deploy failed (exit $deployExit)"
             exit 1
         }
     }
@@ -151,5 +125,11 @@ try {
 }
 
 Write-Host ""
-Write-Host "=== Backend deployment complete ===" -ForegroundColor Green
-Write-Host "Version: $Version"
+Write-Host "=== Platform backend deploy complete ===" -ForegroundColor Green
+Write-Host "Version: $PlatformVersion"
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  - Populate the games config table for each game (see"
+Write-Host "    docs/per-game-config.md for the schema)."
+Write-Host "  - For Hop 'n Bop migration: run migrate-from-hopnbop.py"
+Write-Host "    in dry-run mode first."
