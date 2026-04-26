@@ -628,6 +628,147 @@ def _create_dynamodb_tables():
         BillingMode="PAY_PER_REQUEST",
     )
 
+    # Per-game new tables (mirrors of the legacy hopnbop-* per-game
+    # tables; created so the migration script tests can write to
+    # them, and so eventual handler refactors can target the new
+    # names).
+    dynamodb.create_table(
+        TableName="snoringcat-friends",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+            {"AttributeName": "friend_id", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+            {"AttributeName": "friend_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-match-history",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+            {
+                "AttributeName": "match_timestamp",
+                "KeyType": "RANGE",
+            },
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+            {
+                "AttributeName": "match_timestamp",
+                "AttributeType": "N",
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-leaderboard",
+        KeySchema=[
+            {
+                "AttributeName": "leaderboard_id",
+                "KeyType": "HASH",
+            },
+            {
+                "AttributeName": "score_player",
+                "KeyType": "RANGE",
+            },
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "leaderboard_id",
+                "AttributeType": "S",
+            },
+            {
+                "AttributeName": "score_player",
+                "AttributeType": "S",
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-parties",
+        KeySchema=[
+            {"AttributeName": "party_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "party_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-active-sessions",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-fleet-state",
+        KeySchema=[
+            {"AttributeName": "state_key", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "state_key", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-settings",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-consent-audit",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    # Legacy hopnbop-* tables that the migration reads but conftest
+    # didn't yet create (active-sessions, consent-audit). Without
+    # these, the migration script bails on ResourceNotFoundException.
+    dynamodb.create_table(
+        TableName="hopnbop-active-sessions",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="hopnbop-consent-audit",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "player_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
 
 def _create_secrets():
     """Create Secrets Manager secrets used by the backend."""
