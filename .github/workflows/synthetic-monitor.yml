@@ -1,0 +1,57 @@
+name: Synthetic monitor
+
+# Hourly probe of the live snoringcat-platform-backend stack.
+# Hits /v1/version, validates the response shape, fails the
+# workflow run on any anomaly. GitHub emails the repo owner on
+# every failed scheduled run by default — simpler than wiring
+# SNS for a first pass; revisit if/when we need richer routing.
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  # Also runnable on demand from the Actions tab.
+  workflow_dispatch: {}
+
+jobs:
+  probe-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: GET /v1/version
+        env:
+          API_URL: https://r20b7wqop6.execute-api.us-west-2.amazonaws.com/prod
+        run: |
+          set -e
+          echo "Probing $API_URL/v1/version ..."
+          # -f fails on non-2xx, -sS keeps it quiet but shows
+          # transport errors, -m caps the request at 10 seconds.
+          # --retry-delay 5 + --retry 2 gives a small cushion
+          # against transient TLS/DNS blips (which would
+          # otherwise burn through the alert budget).
+          body=$(
+            curl -fsS -m 10 --retry 2 --retry-delay 5 \
+              "$API_URL/v1/version"
+          )
+          echo "Body: $body"
+          # Validate shape: must be JSON with the expected keys.
+          echo "$body" | python -c '
+          import json, sys
+          d = json.loads(sys.stdin.read())
+          assert "protocol_version" in d, \
+              f"missing protocol_version in {d}"
+          assert "game_version" in d, \
+              f"missing game_version in {d}"
+          print(f"OK protocol_version={d[\"protocol_version\"]} "
+                f"game_version={d[\"game_version\"]}")
+          '
+
+      - name: Notify on failure (placeholder)
+        if: failure()
+        run: |
+          # GitHub already emails repo admins on any scheduled
+          # workflow failure. If we eventually want SNS / Slack
+          # / etc., wire it here. For now the email is enough.
+          echo "::error::Synthetic monitor probe failed."
+          echo "::error::Check the platform stack:"
+          echo "::error::  aws cloudformation describe-stacks \\"
+          echo "::error::    --stack-name snoringcat-platform-backend \\"
+          echo "::error::    --profile hopnbop --region us-west-2"
