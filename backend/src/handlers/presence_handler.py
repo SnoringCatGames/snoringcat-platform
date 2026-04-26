@@ -16,6 +16,7 @@ sys.path.append(
 )
 
 from services.online_status_service import OnlineStatusService
+from services.presence_service import PresenceService
 from services.friends_service import FriendsService
 from services.auth_service import AuthToken
 from services.rate_limiter import RateLimiter
@@ -35,10 +36,13 @@ _HEADERS = {
     ),
 }
 
-# Legacy heartbeat tracker on the players/accounts table.
-# A new game-aware presence_service handles the multi-game model;
-# this handler will switch to it once the matching client SDK lands.
-presence_service = OnlineStatusService()
+# `online_status_service` writes the legacy
+# online_last_seen_at column on accounts; kept for any external
+# consumer that hasn't migrated. `presence_service` writes the
+# new per-game presence row that party invite gating and the
+# friends UI badges read from.
+online_status_service = OnlineStatusService()
+presence_service = PresenceService()
 friends_service = FriendsService()
 rate_limiter = RateLimiter()
 
@@ -93,9 +97,28 @@ def _error_response(
 def heartbeat(
     event: Dict[str, Any], context: LambdaContext
 ) -> Dict:
-    """POST /presence/heartbeat - Update the caller's
-    online_last_seen_at and return the IDs of friends
-    who are currently online."""
+    """POST /presence/heartbeat - Update the caller's presence
+    row (game_id + optional rich_presence/status) and return the
+    list of friends currently online with their game/status.
+
+    Request body (all optional):
+        {
+            "status": "online" | "in_match" | "away",
+            "rich_presence": "<short string for the UI>",
+            "session_id": "<game session id>"
+        }
+
+    Response:
+        {
+            "status": "success",
+            "online_friend_ids": [...],   # legacy field; just IDs
+            "online_friends": [           # rich field; per friend
+                {"player_id": "...", "game_id": "...",
+                 "status": "...", "rich_presence": "..."},
+                ...
+            ]
+        }
+    """
     try:
         auth_token = _authenticate(event)
         if auth_token.is_anonymous:
@@ -115,10 +138,25 @@ def heartbeat(
                 429, "RATE_LIMIT", "Too many requests"
             )
 
+        body = json.loads(event.get("body", "{}") or "{}")
+        status_value = body.get("status", "online")
+        rich_presence = body.get("rich_presence", "")
+        session_id = body.get("session_id", "")
+
+        # Write to BOTH the new presence table (game-aware row
+        # with TTL) and the legacy online_last_seen_at column.
+        # Old read paths can keep working until they migrate.
         asyncio.run(
-            presence_service.update_heartbeat(
-                player_id
+            presence_service.heartbeat(
+                player_id=player_id,
+                game_id=auth_token.game_id,
+                status=status_value,
+                rich_presence=rich_presence,
+                session_id=session_id,
             )
+        )
+        asyncio.run(
+            online_status_service.update_heartbeat(player_id)
         )
 
         friend_ids = asyncio.run(
@@ -127,11 +165,25 @@ def heartbeat(
             )
         )
 
-        online_ids = asyncio.run(
-            presence_service.get_online_friend_ids(
-                friend_ids
-            )
+        # Read the new presence rows for friends. Friends without
+        # a fresh row are simply absent from the result map (the
+        # service treats expired rows as absent).
+        friend_presence_map = asyncio.run(
+            presence_service.batch_get(friend_ids)
         )
+
+        online_friends = [
+            {
+                "player_id": pid,
+                "game_id": p.game_id,
+                "status": p.status,
+                "rich_presence": p.rich_presence,
+            }
+            for pid, p in friend_presence_map.items()
+        ]
+        # Legacy field: just the IDs, for clients that haven't
+        # migrated to the rich shape.
+        online_friend_ids = [f["player_id"] for f in online_friends]
 
         return {
             "statusCode": 200,
@@ -139,7 +191,8 @@ def heartbeat(
             "body": json.dumps(
                 {
                     "status": "success",
-                    "online_friend_ids": online_ids,
+                    "online_friend_ids": online_friend_ids,
+                    "online_friends": online_friends,
                 }
             ),
         }

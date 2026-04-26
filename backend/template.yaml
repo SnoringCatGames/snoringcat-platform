@@ -862,8 +862,12 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref FriendsTable
+        # AccountsTable for the legacy online_last_seen_at write.
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
+        # PresenceTable for the new game-aware presence rows.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PresenceTable
         - !Ref SecretsManagerPolicy
       Events:
         PresenceHeartbeat:
