@@ -159,6 +159,9 @@ Resources:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IdentitiesTable
+        # Phase 1f follow-up dual-write to GameProfilesTable.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameProfilesTable
         - !Ref SecretsManagerPolicy
       Events:
         Login:
@@ -178,6 +181,9 @@ Resources:
             TableName: !Ref AccountsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IdentitiesTable
+        # Phase 1f follow-up dual-write to GameProfilesTable.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameProfilesTable
         - !Ref SecretsManagerPolicy
       Events:
         AnonLogin:
