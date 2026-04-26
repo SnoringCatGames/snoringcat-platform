@@ -903,6 +903,10 @@ Resources:
             TableName: !Ref FriendsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref AccountsTable
+        # Read presence to look up the invitee's current game_id
+        # for cross-game invite rejection.
+        - DynamoDBReadPolicy:
+            TableName: !Ref PresenceTable
         - !Ref SecretsManagerPolicy
       Events:
         InviteToParty:

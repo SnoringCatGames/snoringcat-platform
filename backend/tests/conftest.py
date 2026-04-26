@@ -272,11 +272,24 @@ def _reinit_handler_services():
 
     try:
         from services import party_service as pty_mod
+        from services import presence_service as pres_mod
         from handlers import party_handler
 
         importlib.reload(pty_mod)
+        importlib.reload(pres_mod)
         party_handler.party_service = (
             pty_mod.PartyService()
+        )
+        party_handler.presence_service = (
+            pres_mod.PresenceService()
+        )
+        # Rebind exception classes after reload. Without this,
+        # handler's `except CrossGameInviteError` still points
+        # at the pre-reload class object and fails to catch the
+        # post-reload class instances raised by the new
+        # PartyService.
+        party_handler.CrossGameInviteError = (
+            pty_mod.CrossGameInviteError
         )
         if fs_mod is not None:
             party_handler.friends_service = (

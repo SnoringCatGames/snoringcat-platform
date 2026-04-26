@@ -11,8 +11,12 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from services.party_service import PartyService
+from services.party_service import (
+    PartyService,
+    CrossGameInviteError,
+)
 from services.friends_service import FriendsService
+from services.presence_service import PresenceService
 from services.auth_service import AuthToken
 from services.rate_limiter import RateLimiter
 from services import secrets_service
@@ -22,6 +26,7 @@ tracer = Tracer()
 
 party_service = PartyService()
 friends_service = FriendsService()
+presence_service = PresenceService()
 rate_limiter = RateLimiter()
 
 # CORS headers included in every response.
@@ -125,8 +130,17 @@ def create_party(
         if existing is not None:
             return _party_response(existing)
 
+        # Stamp the party with the leader's current game_id so
+        # cross-game invites can be rejected later. Tokens issued
+        # by very old clients with no game_id claim fall back to
+        # AuthToken.game_id="" and create legacy parties (no
+        # cross-game enforcement); see party_service.create_party
+        # for the legacy semantics.
         party = asyncio.run(
-            party_service.create_party(player_id)
+            party_service.create_party(
+                player_id,
+                game_id=auth_token.game_id,
+            )
         )
         return _party_response(party)
 
@@ -186,13 +200,34 @@ def invite_to_party(
                 "Can only invite friends",
             )
 
+        # Read the invitee's current presence so the service can
+        # reject cross-game invites. If the invitee has no presence
+        # row (offline, never connected, or row expired), pass an
+        # empty string — the service treats unknown game_id as
+        # "don't know, allow" so offline friends remain inviteable.
+        invitee_presence = asyncio.run(
+            presence_service.get(invitee_id)
+        )
+        invitee_game_id = (
+            invitee_presence.game_id
+            if invitee_presence is not None
+            else ""
+        )
+
         party = asyncio.run(
             party_service.invite_player(
-                party_id, player_id, invitee_id
+                party_id,
+                player_id,
+                invitee_id,
+                invitee_game_id=invitee_game_id,
             )
         )
         return _party_response(party)
 
+    except CrossGameInviteError as e:
+        return _error_response(
+            400, "CROSS_GAME_INVITE", str(e)
+        )
     except PermissionError as e:
         msg = str(e)
         if "leader" in msg.lower():

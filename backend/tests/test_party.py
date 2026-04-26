@@ -577,6 +577,71 @@ class TestInviteHandler:
         assert status == 200
         assert "DEBUG_bob" in body["party"]["invited"]
 
+    def test_invite_rejected_when_invitee_in_other_game(
+        self, aws_mock,
+    ):
+        """Cross-game invites: handler reads invitee's presence,
+        passes invitee_game_id to the service, returns
+        CROSS_GAME_INVITE 400 when the games don't match.
+        """
+        from handlers import party_handler
+        from services.party_service import PartyService
+
+        _create_player("alice", "Alice", "AAA")
+        _create_player("bob", "Bob", "BBB")
+        _create_friendship("alice", "bob")
+
+        # Bypass create_party (DEBUG token has empty game_id) and
+        # construct a party with an explicit game_id directly.
+        party_svc = PartyService()
+        party = _run(
+            party_svc.create_party(
+                "DEBUG_alice", game_id="hopnbop"
+            )
+        )
+        # Reload module-level service so the handler reads the
+        # party we just wrote.
+        party_handler.party_service = party_svc
+
+        # Bob's presence says he's in a different game.
+        dynamodb = boto3.resource(
+            "dynamodb", region_name=TEST_REGION
+        )
+        presence_table = dynamodb.Table("snoringcat-presence")
+        # Far-future TTL so the row is fresh.
+        presence_table.put_item(
+            Item={
+                "player_id": "DEBUG_bob",
+                "game_id": "nextgame",
+                "status": "online",
+                "rich_presence": "",
+                "session_id": "",
+                "updated_at": 9999999999,
+                "ttl": 9999999999,
+            }
+        )
+
+        # Alice tries to invite Bob.
+        invite_event = _make_event(
+            body={
+                "party_id": party.party_id,
+                "player_id": "DEBUG_bob",
+            },
+            headers=_auth_headers("alice"),
+        )
+        status, body = _parse_response(
+            party_handler.invite_to_party(
+                invite_event, _CONTEXT
+            )
+        )
+
+        assert status == 400, (
+            f"expected 400, got {status} body={body}"
+        )
+        assert body["error_code"] == "CROSS_GAME_INVITE"
+        assert "nextgame" in body["message"]
+        assert "hopnbop" in body["message"]
+
 
 class TestKickHandler:
     def test_kick_success(self, aws_mock):
