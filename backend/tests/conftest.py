@@ -25,6 +25,10 @@ def _aws_env(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    # Legacy table env vars (still consumed by player_service,
+    # provider_mapping_service, etc.). Bound to the legacy
+    # hopnbop-* names that conftest's _create_dynamodb_tables
+    # creates.
     monkeypatch.setenv("PLAYERS_TABLE", "hopnbop-players")
     monkeypatch.setenv(
         "PROVIDER_MAPPINGS_TABLE", "hopnbop-provider-mappings"
@@ -56,6 +60,26 @@ def _aws_env(monkeypatch):
     # Empty FLEET_ID disables real GameLift calls in tests.
     monkeypatch.setenv("FLEET_ID", "")
     monkeypatch.setenv("GAMELIFT_LOCATION", TEST_REGION)
+    # New platform env vars consumed by the new services
+    # (account_service, profile_service, game_config_service,
+    # presence_service). These bind to dedicated tables created
+    # alongside the legacy ones below.
+    monkeypatch.setenv(
+        "ACCOUNTS_TABLE", "snoringcat-accounts"
+    )
+    monkeypatch.setenv(
+        "IDENTITIES_TABLE", "snoringcat-identities"
+    )
+    monkeypatch.setenv(
+        "GAME_PROFILES_TABLE", "snoringcat-game-profiles"
+    )
+    monkeypatch.setenv(
+        "GAMES_TABLE", "snoringcat-games"
+    )
+    monkeypatch.setenv(
+        "PRESENCE_TABLE", "snoringcat-presence"
+    )
+    monkeypatch.setenv("DEFAULT_GAME_ID", "hopnbop")
 
 
 @pytest.fixture
@@ -460,6 +484,140 @@ def _create_dynamodb_tables():
                 "AttributeName": "state_key",
                 "AttributeType": "S",
             }
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    # ----- New platform tables -----
+    # These match the schemas in template.yaml. The legacy
+    # hopnbop-* tables above continue to coexist so existing
+    # tests don't break during the migration window.
+
+    dynamodb.create_table(
+        TableName="snoringcat-accounts",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "player_id",
+                "AttributeType": "S",
+            },
+            {
+                "AttributeName": "friend_code",
+                "AttributeType": "S",
+            },
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "friend-code-index",
+                "KeySchema": [
+                    {
+                        "AttributeName": "friend_code",
+                        "KeyType": "HASH",
+                    },
+                ],
+                "Projection": {
+                    "ProjectionType": "KEYS_ONLY",
+                },
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-identities",
+        KeySchema=[
+            {
+                "AttributeName": "provider_composite",
+                "KeyType": "HASH",
+            },
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "provider_composite",
+                "AttributeType": "S",
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-game-profiles",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+            {"AttributeName": "game_id", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "player_id",
+                "AttributeType": "S",
+            },
+            {
+                "AttributeName": "game_id",
+                "AttributeType": "S",
+            },
+            {
+                "AttributeName": "rating_partition",
+                "AttributeType": "S",
+            },
+            {
+                "AttributeName": "rating",
+                "AttributeType": "N",
+            },
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "rating-index",
+                "KeySchema": [
+                    {
+                        "AttributeName": "rating_partition",
+                        "KeyType": "HASH",
+                    },
+                    {
+                        "AttributeName": "rating",
+                        "KeyType": "RANGE",
+                    },
+                ],
+                "Projection": {
+                    "ProjectionType": "INCLUDE",
+                    "NonKeyAttributes": [
+                        "display_name",
+                        "matches_played",
+                        "wins",
+                        "losses",
+                        "game_id",
+                    ],
+                },
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-games",
+        KeySchema=[
+            {"AttributeName": "game_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "game_id",
+                "AttributeType": "S",
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="snoringcat-presence",
+        KeySchema=[
+            {"AttributeName": "player_id", "KeyType": "HASH"},
+        ],
+        AttributeDefinitions=[
+            {
+                "AttributeName": "player_id",
+                "AttributeType": "S",
+            },
         ],
         BillingMode="PAY_PER_REQUEST",
     )
