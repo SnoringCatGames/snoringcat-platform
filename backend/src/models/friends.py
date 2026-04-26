@@ -124,6 +124,36 @@ class RejectFriendRequest(_BaseModel):
     friend_id: str
 
 
+class CancelFriendRequest(_BaseModel):
+    """POST /v1/friends/cancel body. Withdraws an outgoing
+    friend request that hasn't been accepted yet."""
+
+    friend_id: str = Field(
+        description=(
+            "Player who received the request being cancelled."
+        ),
+    )
+
+
+class MarkFriendsSeenRequest(_BaseModel):
+    """POST /v1/friends/seen body. Marks all incoming friend
+    requests as seen (clears the unread badge)."""
+
+    # No body fields. The action applies to the authenticated
+    # user's full incoming-request list.
+    pass
+
+
+class SearchFriendCodeRequest(_BaseModel):
+    """Query params for GET /v1/friends/search?code=ABC123."""
+
+    code: str = Field(
+        description="6-character friend_code to look up.",
+        min_length=6,
+        max_length=6,
+    )
+
+
 # --------- Responses --------------------------------------------
 
 

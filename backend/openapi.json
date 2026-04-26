@@ -200,6 +200,22 @@
         "title": "AuthSuccessResponse",
         "type": "object"
       },
+      "CancelFriendRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/cancel body. Withdraws an outgoing\nfriend request that hasn't been accepted yet.",
+        "properties": {
+          "friend_id": {
+            "description": "Player who received the request being cancelled.",
+            "title": "Friend Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "friend_id"
+        ],
+        "title": "CancelFriendRequest",
+        "type": "object"
+      },
       "ErrorResponse": {
         "additionalProperties": false,
         "description": "Standard error envelope for non-2xx responses.\n\nEvery handler returns this shape on validation failures,\nauth failures, and unexpected exceptions. The OpenAPI doc\nreferences this as the default response for 4xx/5xx.",
@@ -226,6 +242,53 @@
           "message"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "FleetStatusResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/fleet/status response (also returned by warmup).\n\nStatus values:\n  - 'cold'      \u2014 fleet is at DESIRED=0; warmup may scale it up.\n  - 'warming'   \u2014 fleet is scaling up; not yet ready.\n  - 'ready'     \u2014 fleet has at least one ACTIVE instance with\n                   an IDLE game session slot.\n  - 'unavailable' \u2014 no fleet configured for this game (the\n                   games config row has fleet_id=\"\").",
+        "properties": {
+          "estimated_remaining_sec": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Remaining seconds before fleet is expected ready. Null when status is 'ready' or 'unavailable'.",
+            "title": "Estimated Remaining Sec"
+          },
+          "fleet_status": {
+            "title": "Fleet Status",
+            "type": "string"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fleet_status"
+        ],
+        "title": "FleetStatusResponse",
+        "type": "object"
+      },
+      "FleetWarmupRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/fleet/warmup body.",
+        "properties": {
+          "source": {
+            "default": "unknown",
+            "description": "Where the warmup was triggered from ('app_startup', 'lobby_toggle', 'manual'). Used for telemetry / debugging.",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "title": "FleetWarmupRequest",
         "type": "object"
       },
       "FriendInfo": {
@@ -397,6 +460,59 @@
         "title": "FriendsListResponse",
         "type": "object"
       },
+      "GameSessionInfo": {
+        "additionalProperties": false,
+        "description": "Connection details for a placed game session.",
+        "properties": {
+          "game_session_id": {
+            "title": "Game Session Id",
+            "type": "string"
+          },
+          "matchmaking_ticket_id": {
+            "title": "Matchmaking Ticket Id",
+            "type": "string"
+          },
+          "player_session_ids": {
+            "description": "GameLift player session IDs for the matched players. Pass these to the server on connect for validation.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Player Session Ids",
+            "type": "array"
+          },
+          "server_hostname": {
+            "description": "DNS hostname for the session (e.g. s-{ip}.game.snoringcat.games). Web clients must use the hostname for valid TLS.",
+            "title": "Server Hostname",
+            "type": "string"
+          },
+          "server_ip": {
+            "description": "Public IPv4 of the GameLift container.",
+            "title": "Server Ip",
+            "type": "string"
+          },
+          "server_port": {
+            "description": "ENet UDP port. WebSocket / WebRTC signaling lives at server_port + 1 (TCP, behind nginx).",
+            "title": "Server Port",
+            "type": "integer"
+          },
+          "transport_type": {
+            "description": "One of 'enet', 'webrtc', 'websocket'.",
+            "title": "Transport Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_ip",
+          "server_port",
+          "server_hostname",
+          "player_session_ids",
+          "game_session_id",
+          "transport_type",
+          "matchmaking_ticket_id"
+        ],
+        "title": "GameSessionInfo",
+        "type": "object"
+      },
       "GuestLoginRequest": {
         "additionalProperties": false,
         "description": "POST /v1/auth/guest body. Body is optional.",
@@ -415,6 +531,87 @@
           }
         },
         "title": "GuestLoginRequest",
+        "type": "object"
+      },
+      "InviteToPartyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "invitee_id": {
+            "title": "Invitee Id",
+            "type": "string"
+          },
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "invitee_id"
+        ],
+        "title": "InviteToPartyRequest",
+        "type": "object"
+      },
+      "JoinPartyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id"
+        ],
+        "title": "JoinPartyRequest",
+        "type": "object"
+      },
+      "KickFromPartyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          },
+          "target_player_id": {
+            "title": "Target Player Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "target_player_id"
+        ],
+        "title": "KickFromPartyRequest",
+        "type": "object"
+      },
+      "LeaveMatchmakingRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/matchmaking/leave body.",
+        "properties": {
+          "ticket_id": {
+            "title": "Ticket Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ],
+        "title": "LeaveMatchmakingRequest",
+        "type": "object"
+      },
+      "LeavePartyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id"
+        ],
+        "title": "LeavePartyRequest",
         "type": "object"
       },
       "LinkAccountRequest": {
@@ -447,6 +644,49 @@
           "auth_code"
         ],
         "title": "LinkAccountRequest",
+        "type": "object"
+      },
+      "MarkFriendsSeenRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/seen body. Marks all incoming friend\nrequests as seen (clears the unread badge).",
+        "properties": {},
+        "title": "MarkFriendsSeenRequest",
+        "type": "object"
+      },
+      "MatchmakingStatusResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/matchmaking/status/{ticket_id} response.\n\n`match_state` cycles through: queued \u2192 searching \u2192\nplacing \u2192 completed (or cancelled / timed_out / failed).\n`session` is null until match_state == \"completed\".",
+        "properties": {
+          "match_state": {
+            "title": "Match State",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GameSessionInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          },
+          "ticket_id": {
+            "title": "Ticket Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "match_state"
+        ],
+        "title": "MatchmakingStatusResponse",
         "type": "object"
       },
       "MergeRequest": {
@@ -553,6 +793,133 @@
           "auth_code"
         ],
         "title": "OAuthLoginRequest",
+        "type": "object"
+      },
+      "PartyInfo": {
+        "additionalProperties": false,
+        "description": "Common party state returned by create/invite/join/status/etc.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "game_id": {
+            "description": "The game this party is bound to. Cross-game invites are rejected server-side.",
+            "title": "Game Id",
+            "type": "string"
+          },
+          "invited": {
+            "items": {
+              "$ref": "#/components/schemas/PartyMember"
+            },
+            "title": "Invited",
+            "type": "array"
+          },
+          "leader_id": {
+            "title": "Leader Id",
+            "type": "string"
+          },
+          "matchmaking_ticket_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Matchmaking Ticket Id"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/PartyMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          },
+          "status": {
+            "description": "'lobby', 'matchmaking', 'in_match', or 'ended'.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "leader_id",
+          "game_id",
+          "members",
+          "invited",
+          "status",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "PartyInfo",
+        "type": "object"
+      },
+      "PartyMember": {
+        "additionalProperties": false,
+        "description": "One row in the party.members or party.invited list when\nrendered for the client. Display name is fetched from the\naccounts table at response-build time.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "player_id": {
+            "title": "Player Id",
+            "type": "string"
+          },
+          "profile_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Image Url"
+          }
+        },
+        "required": [
+          "player_id",
+          "display_name"
+        ],
+        "title": "PartyMember",
+        "type": "object"
+      },
+      "PartyResponse": {
+        "additionalProperties": false,
+        "description": "Returned by create/invite/join/leave/status.",
+        "properties": {
+          "party": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PartyInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null when the player is not currently in any party (used by /party/status)."
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "PartyResponse",
         "type": "object"
       },
       "PresenceBatchReadRequest": {
@@ -764,6 +1131,91 @@
           "friend_id"
         ],
         "title": "RemoveFriendRequest",
+        "type": "object"
+      },
+      "SearchFriendCodeResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/friends/search response.",
+        "properties": {
+          "found": {
+            "title": "Found",
+            "type": "boolean"
+          },
+          "player": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FriendInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "found"
+        ],
+        "title": "SearchFriendCodeResponse",
+        "type": "object"
+      },
+      "StartMatchmakingRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/matchmaking/start body.",
+        "properties": {
+          "matchmaking_attributes": {
+            "additionalProperties": true,
+            "description": "Free-form attributes passed to FlexMatch (level preferences, latency hints, etc.).",
+            "title": "Matchmaking Attributes",
+            "type": "object"
+          }
+        },
+        "title": "StartMatchmakingRequest",
+        "type": "object"
+      },
+      "StartMatchmakingResponse": {
+        "additionalProperties": false,
+        "description": "POST /v1/matchmaking/start response.",
+        "properties": {
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          },
+          "ticket_id": {
+            "description": "Poll /v1/matchmaking/status/{ticket_id}.",
+            "title": "Ticket Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket_id"
+        ],
+        "title": "StartMatchmakingResponse",
+        "type": "object"
+      },
+      "StartPartyMatchmakingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "matchmaking_attributes": {
+            "additionalProperties": true,
+            "title": "Matchmaking Attributes",
+            "type": "object"
+          },
+          "party_id": {
+            "title": "Party Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id"
+        ],
+        "title": "StartPartyMatchmakingRequest",
         "type": "object"
       },
       "SuccessResponse": {
@@ -1175,6 +1627,76 @@
         ]
       }
     },
+    "/v1/fleet/status": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetStatusResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Get current fleet warmup status",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
+    "/v1/fleet/warmup": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetWarmupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetStatusResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Trigger fleet warmup; returns current status",
+        "tags": [
+          "fleet"
+        ]
+      }
+    },
     "/v1/friends": {
       "get": {
         "responses": {
@@ -1295,6 +1817,51 @@
           }
         ],
         "summary": "Send a friend request",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/cancel": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelFriendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel an outgoing friend request",
         "tags": [
           "friends"
         ]
@@ -1422,6 +1989,506 @@
         "summary": "Remove an accepted friend",
         "tags": [
           "friends"
+        ]
+      }
+    },
+    "/v1/friends/search": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchFriendCodeResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Look up a player by friend code",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/seen": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkFriendsSeenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Mark all incoming friend requests as seen",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/matchmaking/leave": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaveMatchmakingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel an in-flight matchmaking ticket",
+        "tags": [
+          "matchmaking"
+        ]
+      }
+    },
+    "/v1/matchmaking/start": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartMatchmakingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartMatchmakingResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Start a solo matchmaking ticket",
+        "tags": [
+          "matchmaking"
+        ]
+      }
+    },
+    "/v1/matchmaking/status/{ticket_id}": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchmakingStatusResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Poll matchmaking ticket status",
+        "tags": [
+          "matchmaking"
+        ]
+      }
+    },
+    "/v1/party/create": {
+      "post": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create a new party (caller becomes leader)",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/invite": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteToPartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Invite a friend to the party (cross-game rejected)",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/join": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinPartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Accept a party invite",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/kick": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KickFromPartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Kick a member from the party (leader only)",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/leave": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeavePartyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Leave the current party",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/start": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartPartyMatchmakingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartMatchmakingResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Start matchmaking with the entire party",
+        "tags": [
+          "party"
+        ]
+      }
+    },
+    "/v1/party/status": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get the caller's current party state",
+        "tags": [
+          "party"
         ]
       }
     },

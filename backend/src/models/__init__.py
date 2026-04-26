@@ -37,7 +37,16 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from . import auth, common, friends, presence, version
+from . import (
+    auth,
+    common,
+    fleet,
+    friends,
+    matchmaking,
+    party,
+    presence,
+    version,
+)
 
 
 @dataclass(frozen=True)
@@ -179,6 +188,126 @@ ENDPOINTS: list[EndpointSpec] = [
         response_model=friends.FriendNotificationsResponse,
         tags=("friends",),
     ),
+    EndpointSpec(
+        path="/v1/friends/cancel",
+        method="post",
+        summary="Cancel an outgoing friend request",
+        request_model=friends.CancelFriendRequest,
+        response_model=common.SuccessResponse,
+        tags=("friends",),
+    ),
+    EndpointSpec(
+        path="/v1/friends/seen",
+        method="post",
+        summary="Mark all incoming friend requests as seen",
+        request_model=friends.MarkFriendsSeenRequest,
+        response_model=common.SuccessResponse,
+        tags=("friends",),
+    ),
+    EndpointSpec(
+        path="/v1/friends/search",
+        method="get",
+        summary="Look up a player by friend code",
+        response_model=friends.SearchFriendCodeResponse,
+        tags=("friends",),
+    ),
+    # --- Party (auth required) -------------------------------
+    EndpointSpec(
+        path="/v1/party/create",
+        method="post",
+        summary="Create a new party (caller becomes leader)",
+        response_model=party.PartyResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/invite",
+        method="post",
+        summary="Invite a friend to the party (cross-game rejected)",
+        request_model=party.InviteToPartyRequest,
+        response_model=party.PartyResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/join",
+        method="post",
+        summary="Accept a party invite",
+        request_model=party.JoinPartyRequest,
+        response_model=party.PartyResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/leave",
+        method="post",
+        summary="Leave the current party",
+        request_model=party.LeavePartyRequest,
+        response_model=common.SuccessResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/kick",
+        method="post",
+        summary="Kick a member from the party (leader only)",
+        request_model=party.KickFromPartyRequest,
+        response_model=party.PartyResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/status",
+        method="get",
+        summary="Get the caller's current party state",
+        response_model=party.PartyResponse,
+        tags=("party",),
+    ),
+    EndpointSpec(
+        path="/v1/party/start",
+        method="post",
+        summary="Start matchmaking with the entire party",
+        request_model=party.StartPartyMatchmakingRequest,
+        response_model=party.StartMatchmakingResponse,
+        tags=("party",),
+    ),
+    # --- Matchmaking (auth required) -------------------------
+    EndpointSpec(
+        path="/v1/matchmaking/start",
+        method="post",
+        summary="Start a solo matchmaking ticket",
+        request_model=matchmaking.StartMatchmakingRequest,
+        response_model=matchmaking.StartMatchmakingResponse,
+        tags=("matchmaking",),
+    ),
+    EndpointSpec(
+        path="/v1/matchmaking/status/{ticket_id}",
+        method="get",
+        summary="Poll matchmaking ticket status",
+        response_model=matchmaking.MatchmakingStatusResponse,
+        tags=("matchmaking",),
+    ),
+    EndpointSpec(
+        path="/v1/matchmaking/leave",
+        method="post",
+        summary="Cancel an in-flight matchmaking ticket",
+        request_model=matchmaking.LeaveMatchmakingRequest,
+        response_model=common.SuccessResponse,
+        tags=("matchmaking",),
+    ),
+    # --- Fleet (unauthenticated) -----------------------------
+    EndpointSpec(
+        path="/v1/fleet/warmup",
+        method="post",
+        summary="Trigger fleet warmup; returns current status",
+        request_model=fleet.FleetWarmupRequest,
+        response_model=fleet.FleetStatusResponse,
+        auth_required=False,
+        tags=("fleet",),
+    ),
+    EndpointSpec(
+        path="/v1/fleet/status",
+        method="get",
+        summary="Get current fleet warmup status",
+        response_model=fleet.FleetStatusResponse,
+        auth_required=False,
+        tags=("fleet",),
+    ),
     # --- Presence (auth required) ----------------------------
     EndpointSpec(
         path="/v1/presence",
@@ -213,7 +342,10 @@ __all__ = [
     "EndpointSpec",
     "auth",
     "common",
+    "fleet",
     "friends",
+    "matchmaking",
+    "party",
     "presence",
     "version",
 ]
