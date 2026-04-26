@@ -31,8 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f tests/requirements.txt ]; then \
-            pip install -r tests/requirements.txt; \
+          if [ -f tests/requirements-test.txt ]; then \
+            pip install -r tests/requirements-test.txt; \
           fi
           if [ -f src/requirements.txt ]; then \
             pip install -r src/requirements.txt; \
@@ -79,6 +79,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python deps for OpenAPI generation
+        if: steps.check_baseline.outputs.exists == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          # The generator only needs pydantic + the project's
+          # model imports (no boto3 / no Lambda runtime).
+          pip install -r src/requirements.txt
+
       - name: Generate OpenAPI from PR branch
         if: steps.check_baseline.outputs.exists == 'true'
         run: |
@@ -89,9 +97,13 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/Tufin/oasdiff/main/install.sh | sh
 
-      - name: Diff against baseline
+      - name: Diff against baseline (breaking-change check)
         if: steps.check_baseline.outputs.exists == 'true'
         run: |
+          # Fails the PR if any /v1/... route changed in a
+          # breaking way (removed field, added required field,
+          # changed type, removed enum value, etc.). Additive
+          # changes pass.
           oasdiff breaking openapi.json /tmp/openapi-pr.json \
             --match-path '/v1/.*' \
             --fail-on ERR

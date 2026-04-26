@@ -1,0 +1,1573 @@
+{
+  "components": {
+    "schemas": {
+      "AcceptFriendRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/accept body.",
+        "properties": {
+          "friend_id": {
+            "description": "Player who sent the request to accept.",
+            "title": "Friend Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "friend_id"
+        ],
+        "title": "AcceptFriendRequest",
+        "type": "object"
+      },
+      "AddFriendRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/add body.",
+        "properties": {
+          "friend_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Add by 6-character friend_code. Either friend_code or player_id is required.",
+            "title": "Friend Code"
+          },
+          "player_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Add by player_id directly. Useful when the UI already has the ID (e.g. invite from a match).",
+            "title": "Player Id"
+          }
+        },
+        "title": "AddFriendRequest",
+        "type": "object"
+      },
+      "AnonLoginRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/anon body.",
+        "properties": {
+          "consent_accepted_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Consent Accepted At"
+          },
+          "consent_legal_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Consent Legal Version"
+          },
+          "device_id": {
+            "description": "A stable per-device identifier the client generates and persists. Repeat sign-ins from the same device return the same player_id.",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "game_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Game Id"
+          }
+        },
+        "required": [
+          "device_id"
+        ],
+        "title": "AnonLoginRequest",
+        "type": "object"
+      },
+      "AuthSuccessResponse": {
+        "additionalProperties": false,
+        "description": "Returned by login / anon / guest / refresh / merge.",
+        "properties": {
+          "consent_accepted_at": {
+            "default": 0,
+            "title": "Consent Accepted At",
+            "type": "integer"
+          },
+          "consent_legal_version": {
+            "default": "",
+            "title": "Consent Legal Version",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "JWT expiry as Unix seconds.",
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "game_version": {
+            "description": "Server-side display version. Legacy single-game field; per-game versions live in the games table.",
+            "title": "Game Version",
+            "type": "string"
+          },
+          "is_anonymous": {
+            "title": "Is Anonymous",
+            "type": "boolean"
+          },
+          "jwt_token": {
+            "description": "Bearer token. Pass as 'Authorization: Bearer <jwt_token>' on subsequent requests.",
+            "title": "Jwt Token",
+            "type": "string"
+          },
+          "linked_providers": {
+            "description": "Names of OAuth providers linked to this account (e.g. ['google', 'steam']).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Linked Providers",
+            "type": "array"
+          },
+          "player_id": {
+            "title": "Player Id",
+            "type": "string"
+          },
+          "profile_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Image Url"
+          },
+          "protocol_version": {
+            "description": "Server-side network protocol version. Legacy single-game field.",
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "rating": {
+            "description": "Per-game rating from the legacy account row. After Phase 1f-Q the per-game rating moves to the game_profiles row; this response field stays for backward compatibility.",
+            "title": "Rating",
+            "type": "integer"
+          },
+          "refresh_token": {
+            "description": "Use with POST /v1/auth/refresh to rotate the JWT without re-signing in. Single-use; rotates on every refresh.",
+            "title": "Refresh Token",
+            "type": "string"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jwt_token",
+          "refresh_token",
+          "player_id",
+          "display_name",
+          "is_anonymous",
+          "rating",
+          "game_version",
+          "protocol_version",
+          "expires_at",
+          "linked_providers"
+        ],
+        "title": "AuthSuccessResponse",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "description": "Standard error envelope for non-2xx responses.\n\nEvery handler returns this shape on validation failures,\nauth failures, and unexpected exceptions. The OpenAPI doc\nreferences this as the default response for 4xx/5xx.",
+        "properties": {
+          "error_code": {
+            "description": "Stable machine-readable code clients can branch on (e.g. MISSING_PARAMS, INVALID_REFRESH).",
+            "title": "Error Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable error message. Not stable; do not branch on this.",
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "default": "error",
+            "description": "Always the literal string 'error' for failures.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_code",
+          "message"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "FriendInfo": {
+        "additionalProperties": false,
+        "description": "One row in the friends list.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "friend_code": {
+            "default": "",
+            "title": "Friend Code",
+            "type": "string"
+          },
+          "player_id": {
+            "title": "Player Id",
+            "type": "string"
+          },
+          "presence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FriendPresence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null when the friend is offline (no recent presence heartbeat). Populated otherwise."
+          },
+          "profile_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Image Url"
+          }
+        },
+        "required": [
+          "player_id",
+          "display_name"
+        ],
+        "title": "FriendInfo",
+        "type": "object"
+      },
+      "FriendNotificationsResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/friends/notifications response.",
+        "properties": {
+          "incoming_requests": {
+            "items": {
+              "$ref": "#/components/schemas/FriendRequestInfo"
+            },
+            "title": "Incoming Requests",
+            "type": "array"
+          },
+          "outgoing_requests": {
+            "items": {
+              "$ref": "#/components/schemas/FriendRequestInfo"
+            },
+            "title": "Outgoing Requests",
+            "type": "array"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "incoming_requests",
+          "outgoing_requests"
+        ],
+        "title": "FriendNotificationsResponse",
+        "type": "object"
+      },
+      "FriendPresence": {
+        "additionalProperties": false,
+        "description": "A friend's current presence (from snoringcat-presence).\n\nAbsent / null means the friend is offline.",
+        "properties": {
+          "game_id": {
+            "description": "The game the friend is currently in (e.g. 'hopnbop'). Empty if the friend is online but not in any specific game.",
+            "title": "Game Id",
+            "type": "string"
+          },
+          "rich_presence": {
+            "default": "",
+            "description": "Game-supplied free-text presence string (e.g. 'In lobby', 'Playing 1v1').",
+            "title": "Rich Presence",
+            "type": "string"
+          },
+          "status": {
+            "description": "Free-form status string. Standard values: 'online', 'in_match', 'away'.",
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "Unix seconds the presence was last refreshed.",
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "status",
+          "updated_at"
+        ],
+        "title": "FriendPresence",
+        "type": "object"
+      },
+      "FriendRequestInfo": {
+        "additionalProperties": false,
+        "description": "A pending friend request (incoming or outgoing).",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "direction": {
+            "description": "Either 'incoming' or 'outgoing'.",
+            "title": "Direction",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "player_id": {
+            "description": "The other player's ID (sender for incoming, recipient for outgoing).",
+            "title": "Player Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "player_id",
+          "display_name",
+          "direction",
+          "created_at"
+        ],
+        "title": "FriendRequestInfo",
+        "type": "object"
+      },
+      "FriendsListResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/friends response.",
+        "properties": {
+          "friends": {
+            "items": {
+              "$ref": "#/components/schemas/FriendInfo"
+            },
+            "title": "Friends",
+            "type": "array"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "friends"
+        ],
+        "title": "FriendsListResponse",
+        "type": "object"
+      },
+      "GuestLoginRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/guest body. Body is optional.",
+        "properties": {
+          "game_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Game Id"
+          }
+        },
+        "title": "GuestLoginRequest",
+        "type": "object"
+      },
+      "LinkAccountRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/link body. Adds an OAuth identity to the\ncurrently-signed-in (anonymous or guest) account.",
+        "properties": {
+          "auth_code": {
+            "title": "Auth Code",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redirect Uri"
+          }
+        },
+        "required": [
+          "provider",
+          "auth_code"
+        ],
+        "title": "LinkAccountRequest",
+        "type": "object"
+      },
+      "MergeRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/merge body.",
+        "properties": {
+          "auth_code": {
+            "title": "Auth Code",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Redirect Uri"
+          }
+        },
+        "required": [
+          "provider",
+          "auth_code"
+        ],
+        "title": "MergeRequest",
+        "type": "object"
+      },
+      "OAuthLoginRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/login body.",
+        "properties": {
+          "auth_code": {
+            "description": "Provider-issued authorization code or token.",
+            "title": "Auth Code",
+            "type": "string"
+          },
+          "consent_accepted_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Unix seconds when the user accepted the legal consent. Stored on the account; used by the account-export endpoint.",
+            "title": "Consent Accepted At"
+          },
+          "consent_legal_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Version string of the legal documents the user accepted (e.g. 'v1.2').",
+            "title": "Consent Legal Version"
+          },
+          "game_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The game the user is signing in from. Bound into the issued JWT so per-game handlers can reject cross-game token reuse. Empty/missing falls back to the platform's DEFAULT_GAME_ID.",
+            "title": "Game Id"
+          },
+          "provider": {
+            "description": "OAuth provider id (steam, epic, google, facebook, apple).",
+            "title": "Provider",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Redirect URI used during browser OAuth flows (google, facebook, apple). Required for those providers; ignored for steam/epic.",
+            "title": "Redirect Uri"
+          }
+        },
+        "required": [
+          "provider",
+          "auth_code"
+        ],
+        "title": "OAuthLoginRequest",
+        "type": "object"
+      },
+      "PresenceBatchReadRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/presence/batch body.\n\nReturns presence rows for all supplied player_ids that have\na fresh row. Players with no row (offline) are omitted from\nthe response, not returned as nulls.",
+        "properties": {
+          "player_ids": {
+            "description": "Up to 100 player IDs to look up. Larger requests are chunked server-side.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Player Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "player_ids"
+        ],
+        "title": "PresenceBatchReadRequest",
+        "type": "object"
+      },
+      "PresenceBatchReadResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "presence": {
+            "description": "One entry per online player; offline players are omitted.",
+            "items": {
+              "$ref": "#/components/schemas/PresenceInfo"
+            },
+            "title": "Presence",
+            "type": "array"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "presence"
+        ],
+        "title": "PresenceBatchReadResponse",
+        "type": "object"
+      },
+      "PresenceHeartbeatRequest": {
+        "additionalProperties": false,
+        "description": "PUT /v1/presence body.\n\nClients call this every 60-90 seconds while running. The\nserver stores the row with a TTL, so missing two heartbeats\ndecays the player to offline.",
+        "properties": {
+          "game_id": {
+            "description": "The game the player is currently in. Required.",
+            "title": "Game Id",
+            "type": "string"
+          },
+          "rich_presence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free-text presence the friends UI may surface (e.g. 'In lobby', 'Playing 1v1').",
+            "title": "Rich Presence"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional GameLift game-session ID for friends who can join.",
+            "title": "Session Id"
+          },
+          "status": {
+            "default": "online",
+            "description": "Free-form status string. Standard values: 'online', 'in_match', 'away'.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "title": "PresenceHeartbeatRequest",
+        "type": "object"
+      },
+      "PresenceHeartbeatResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "presence": {
+            "$ref": "#/components/schemas/PresenceInfo"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "presence"
+        ],
+        "title": "PresenceHeartbeatResponse",
+        "type": "object"
+      },
+      "PresenceInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "game_id": {
+            "title": "Game Id",
+            "type": "string"
+          },
+          "player_id": {
+            "title": "Player Id",
+            "type": "string"
+          },
+          "rich_presence": {
+            "default": "",
+            "title": "Rich Presence",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "player_id",
+          "game_id",
+          "status",
+          "updated_at"
+        ],
+        "title": "PresenceInfo",
+        "type": "object"
+      },
+      "RefreshRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/refresh body.",
+        "properties": {
+          "game_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Carry the original game_id forward into the rotated JWT.",
+            "title": "Game Id"
+          },
+          "player_id": {
+            "title": "Player Id",
+            "type": "string"
+          },
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "player_id",
+          "refresh_token"
+        ],
+        "title": "RefreshRequest",
+        "type": "object"
+      },
+      "RejectFriendRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/reject body.",
+        "properties": {
+          "friend_id": {
+            "title": "Friend Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "friend_id"
+        ],
+        "title": "RejectFriendRequest",
+        "type": "object"
+      },
+      "RemoveFriendRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/friends/remove body.",
+        "properties": {
+          "friend_id": {
+            "title": "Friend Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "friend_id"
+        ],
+        "title": "RemoveFriendRequest",
+        "type": "object"
+      },
+      "SuccessResponse": {
+        "additionalProperties": false,
+        "description": "Generic 'no body' success used by void endpoints.",
+        "properties": {
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "SuccessResponse",
+        "type": "object"
+      },
+      "UnlinkAccountRequest": {
+        "additionalProperties": false,
+        "description": "POST /v1/auth/unlink body.",
+        "properties": {
+          "provider": {
+            "description": "Provider to unlink (e.g. 'google').",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "UnlinkAccountRequest",
+        "type": "object"
+      },
+      "VersionResponse": {
+        "additionalProperties": false,
+        "description": "GET /v1/version response.\n\nUnauthenticated. Clients fetch this at app startup to verify\nthey're protocol-compatible with the platform before\nattempting auth.",
+        "properties": {
+          "game_version": {
+            "description": "Legacy GAME_VERSION env var on the backend. Per-game versions live in the games config table.",
+            "title": "Game Version",
+            "type": "string"
+          },
+          "platform_version": {
+            "description": "Display version of the platform backend (semver).",
+            "title": "Platform Version",
+            "type": "string"
+          },
+          "protocol_version": {
+            "description": "Legacy single-game protocol_version. Per-game protocol_versions are in the games config table.",
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "status": {
+            "default": "success",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_version",
+          "game_version",
+          "protocol_version"
+        ],
+        "title": "VersionResponse",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "JWT",
+        "description": "JWT issued by /v1/auth/*. Includes player_id and game_id claims.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Shared backend for Snoring Cat multiplayer titles. URL-versioned (/v1/, /v2/, ...) so older game clients keep working across platform releases. See docs/api-spec.md for the human-readable overview.",
+    "title": "Snoring Cat Platform API",
+    "version": "v1"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/auth/account": {
+      "delete": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Delete current account (GDPR)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/anon": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnonLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Anonymous sign-in via device_id",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/guest": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Issue ephemeral guest JWT",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/link": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Link OAuth identity to current account",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Sign in via OAuth provider",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/merge": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Merge two accounts (sign in with provider that already has one)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Rotate JWT using refresh token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/unlink": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlinkAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unlink an OAuth identity",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/friends": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FriendsListResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List friends with presence",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/accept": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptFriendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Accept incoming friend request",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/add": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddFriendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Send a friend request",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/notifications": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FriendNotificationsResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List incoming + outgoing friend requests",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/reject": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectFriendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Reject incoming friend request",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/friends/remove": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveFriendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Remove an accepted friend",
+        "tags": [
+          "friends"
+        ]
+      }
+    },
+    "/v1/presence": {
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresenceHeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresenceHeartbeatResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Heartbeat presence (game_id, status, rich text)",
+        "tags": [
+          "presence"
+        ]
+      }
+    },
+    "/v1/presence/batch": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresenceBatchReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresenceBatchReadResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read presence for many players at once",
+        "tags": [
+          "presence"
+        ]
+      }
+    },
+    "/v1/version": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            },
+            "description": "Successful response."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error envelope used by all non-2xx responses."
+          }
+        },
+        "summary": "Server + per-game version metadata",
+        "tags": [
+          "misc"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Production. The actual API Gateway URL is also reachable; this hostname is the future canonical alias.",
+      "url": "https://api.snoringcat.games"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Sign-in and account linking.",
+      "name": "auth"
+    },
+    {
+      "description": "Global cross-game friends graph.",
+      "name": "friends"
+    },
+    {
+      "description": "Cross-game presence (which game am I in).",
+      "name": "presence"
+    },
+    {
+      "description": "Versioning, telemetry, ad-hoc utilities.",
+      "name": "misc"
+    }
+  ]
+}
