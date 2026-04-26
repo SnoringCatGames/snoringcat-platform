@@ -38,10 +38,14 @@ signal request_failed(
 
 # Configured by Platform.initialize() at app startup.
 var base_url: String = ""
-## Optional reference to an AuthTokenStore. When set, the
+## Optional PlatformAuthTokenStore reference. When set, the
 ## client adds `Authorization: Bearer <jwt>` headers
-## automatically when a JWT exists.
-var token_store: PlatformAuthTokenStore
+## automatically whenever the token store has a non-empty
+## jwt_token. Untyped so we don't trip Godot 4.6's
+## class_name lookup ordering when this addon's files are
+## first parsed (PlatformAuthTokenStore lives in a sibling
+## file in the same addon).
+var token_store
 
 # In-flight request bookkeeping.
 var _http: HTTPRequest
@@ -55,18 +59,19 @@ func _ready() -> void:
 
 
 ## Issue a GET. Result arrives via response_received signal.
-func get(path: String) -> void:
+## (Named do_get because the bare name `get` collides with
+## the built-in Object.get(StringName) method.)
+func do_get(path: String) -> void:
 	_send(path, HTTPClient.METHOD_GET, "")
 
 
-## Issue a POST with a JSON body. Result arrives via
-## response_received signal.
-func post(path: String, body: Dictionary) -> void:
+## Issue a POST with a JSON body.
+func do_post(path: String, body: Dictionary) -> void:
 	_send(path, HTTPClient.METHOD_POST, JSON.stringify(body))
 
 
 ## Issue a PUT with a JSON body.
-func put(path: String, body: Dictionary) -> void:
+func do_put(path: String, body: Dictionary) -> void:
 	_send(path, HTTPClient.METHOD_PUT, JSON.stringify(body))
 
 

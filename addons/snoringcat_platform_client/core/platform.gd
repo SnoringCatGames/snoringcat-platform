@@ -28,8 +28,11 @@ var api_base_url: String = ""
 var sdk_version: String = ""
 
 # Subsystem references. Null until initialize() runs.
-var token_store: PlatformAuthTokenStore
-var api: PlatformApiClient
+# Untyped to avoid Godot 4.6's class_name lookup ordering
+# issue when the autoload script is parsed before its
+# sibling addon files have registered their class_names.
+var token_store
+var api
 
 # Future subsystems (populated incrementally during Phase 2):
 # var auth: PlatformAuthClient
@@ -62,11 +65,22 @@ func initialize(config: Dictionary) -> void:
 		"auth_file_path",
 		"user://%s_auth.cfg" % game_id,
 	)
-	token_store = PlatformAuthTokenStore.new(auth_file_path)
+	# preload() resolves at script-load time and sidesteps the
+	# class_name registration ordering issue with sibling addon
+	# files. The class_name decls in those files are still
+	# correct for external consumers.
+	var TokenStoreScript := preload(
+		"res://addons/snoringcat_platform_client"
+		+ "/core/auth_token_store.gd")
+	var ApiClientScript := preload(
+		"res://addons/snoringcat_platform_client"
+		+ "/core/api_client.gd")
+
+	token_store = TokenStoreScript.new(auth_file_path)
 
 	# Generic HTTP client. add_child() runs _ready, which sets
 	# up the inner HTTPRequest node.
-	api = PlatformApiClient.new()
+	api = ApiClientScript.new()
 	api.name = "PlatformApiClient"
 	api.base_url = api_base_url
 	api.token_store = token_store
