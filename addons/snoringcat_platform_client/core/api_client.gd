@@ -1,76 +1,68 @@
-class_name PlatformApiClient
 extends Node
-## Thin generic HTTP client for the snoringcat-platform backend.
+## Generic HTTP client for snoringcat-platform.
 ##
-## Provides `get(path)` and `post(path, body)` helpers that
-## auto-prefix the configured base URL and attach the current
-## JWT (when one exists in the AuthTokenStore). One in-flight
-## request at a time per instance; overlapping requests should
-## use multiple instances or queue on the response signal.
+## NO `class_name` on this script — Godot 4.6 has a parser-cache
+## bug where preloading a class_name'd script that lives next to
+## other class_name'd scripts in the same addon yields stale
+## content from a previous parse. Until that's resolved upstream,
+## consumers reach this class via runtime `load()` (not preload).
 ##
-## This is the minimum needed for the first end-to-end smoke
-## test (Platform.api.get("/v1/version")). Higher-level
-## per-endpoint helpers (auth flows, leaderboard, friends, etc.)
-## are added incrementally as those subsystems migrate over
-## from hopnbop_private/src/core/backend_api_client.gd.
+## Usage:
+##   var Script = load("res://addons/.../api_client.gd")
+##   var api = Script.new()
+##   api.base_url = "https://..."
+##   root.add_child(api)
+##   api.response_received.connect(_on_response)
+##   await get_tree().process_frame  # let HTTPRequest enter tree
+##   api.do_get("/v1/version")
 
-
-## Emitted on every request completion. `ok` is true when the
-## HTTP status was 2xx; `body` is the parsed JSON dict (or
-## empty dict for non-JSON / error responses); `status_code` is
-## the HTTP status code. `path` is the request path so callers
-## can disambiguate when one client services multiple requests.
 signal response_received(
 	ok: bool,
 	status_code: int,
 	body: Dictionary,
 	path: String,
 )
+signal request_failed(error: String, path: String)
 
-## Emitted on transport-level failure (DNS, TCP, TLS, etc.).
-## A non-2xx HTTP response is NOT a failure — that fires
-## response_received(ok=false, ...).
-signal request_failed(
-	error: String,
-	path: String,
-)
-
-
-# Configured by Platform.initialize() at app startup.
 var base_url: String = ""
-## Optional PlatformAuthTokenStore reference. When set, the
-## client adds `Authorization: Bearer <jwt>` headers
-## automatically whenever the token store has a non-empty
-## jwt_token. Untyped so we don't trip Godot 4.6's
-## class_name lookup ordering when this addon's files are
-## first parsed (PlatformAuthTokenStore lives in a sibling
-## file in the same addon).
+## Optional reference to a token store with a `jwt_token`
+## property (e.g. PlatformAuthTokenStore). When set, requests
+## include `Authorization: Bearer <jwt>`. Untyped to dodge the
+## class_name parser-cache bug.
 var token_store
 
-# In-flight request bookkeeping.
 var _http: HTTPRequest
 var _current_path := ""
 
 
 func _ready() -> void:
+	_ensure_http_request()
+
+
+func _ensure_http_request() -> void:
+	# Lazy init so callers that fire a request immediately after
+	# add_child (before _ready runs) still work.
+	if is_instance_valid(_http):
+		return
 	_http = HTTPRequest.new()
+	# use_threads is REQUIRED in --headless. Without it, the
+	# polling-based completion path never fires (HTTPRequest's
+	# internal state never advances past CONNECTING). Threaded
+	# mode dispatches via a worker so the main loop's frame rate
+	# doesn't matter.
+	_http.use_threads = true
 	add_child(_http)
 	_http.request_completed.connect(_on_request_completed)
 
 
-## Issue a GET. Result arrives via response_received signal.
-## (Named do_get because the bare name `get` collides with
-## the built-in Object.get(StringName) method.)
 func do_get(path: String) -> void:
 	_send(path, HTTPClient.METHOD_GET, "")
 
 
-## Issue a POST with a JSON body.
 func do_post(path: String, body: Dictionary) -> void:
 	_send(path, HTTPClient.METHOD_POST, JSON.stringify(body))
 
 
-## Issue a PUT with a JSON body.
 func do_put(path: String, body: Dictionary) -> void:
 	_send(path, HTTPClient.METHOD_PUT, JSON.stringify(body))
 
@@ -81,10 +73,10 @@ func _send(
 	body: String,
 ) -> void:
 	if base_url.is_empty():
-		push_error(
-			"PlatformApiClient.base_url not configured")
+		push_error("api_client.base_url not configured")
 		request_failed.emit("not_configured", path)
 		return
+	_ensure_http_request()
 	_current_path = path
 	var url := base_url.rstrip("/") + path
 	var err := _http.request(
