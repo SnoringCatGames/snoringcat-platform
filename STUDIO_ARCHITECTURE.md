@@ -141,12 +141,12 @@ manual checklist" for the workflow.
 **Doc:** `MIGRATION_PLAN.md` &rarr; recommended improvements
 &rarr; #7.
 
-Used for **Hetzner Cloud + Hetzner DNS + AWS decommission**
-only. Not used for Edgegap (no clean Pulumi provider) or
-Docker Compose / Nakama runtime config (just files on a box).
-Reason: phased autonomous execution benefits from idempotent
-declarative state &mdash; if a phase fails halfway, Pulumi
-recovers cleanly.
+Used for **Hetzner Cloud (compute) + Cloudflare (DNS) + AWS
+decommission** only. Not used for Edgegap (no clean Pulumi
+provider) or Docker Compose / Nakama runtime config (just
+files on a box). Reason: phased autonomous execution benefits
+from idempotent declarative state &mdash; if a phase fails
+halfway, Pulumi recovers cleanly.
 
 State stored in S3 bucket `hopnbop-pulumi-state` (us-west-2,
 versioned + encrypted). Encryption passphrase
@@ -178,15 +178,34 @@ internal-perspective. Checks `nakama.snoringcat.games/healthcheck`,
 the website, the game server WS endpoint, etc. Free tier (50
 monitors, 5-min interval). Pings Discord on failure.
 
-### Hetzner DNS (consolidated into Hetzner Console)
+### Cloudflare DNS for all studio domains
 
-DNS for studio domains. Hetzner notified 2026-04-27 that the
-standalone `dns.hetzner.com` console is being merged into the
-unified `console.hetzner.com`. Read-only after **2026-05-20**.
-Existing zones may have been auto-migrated to "DNS Migrated" or
-"konsoleH" projects. The unified `HCLOUD_TOKEN` may now cover
-DNS as well, eliminating the need for a separate DNS-scoped
-token.
+All DNS is on Cloudflare. Each domain is its own Cloudflare
+zone:
+
+- `snoringcat.games`
+- `snoringcatgames.com`
+- `hopnbop.net` (after Phase F migration)
+
+Hetzner DNS is **not** used. Originally we'd planned Hetzner
+DNS for studio domains, but Cloudflare Pages requires the
+domain to be a Cloudflare zone before you can attach it as a
+custom domain — so DNS moved to Cloudflare during pre-flight,
+which also gives free DDoS protection, faster propagation, and
+single-pane management with Pages.
+
+All subdomain records (`nakama.snoringcat.games`,
+`grafana.snoringcat.games`, `nakama-staging.snoringcat.games`)
+are managed by Pulumi via the Cloudflare provider as part of
+the `snoringcat-platform` stack. Records that just point at
+Hetzner public IPs are DNS-only (gray cloud, not proxied) since
+Nakama uses long-lived WebSocket / gRPC traffic that doesn't
+benefit from the Cloudflare edge proxy.
+
+(For context, the Hetzner DNS standalone console at
+`dns.hetzner.com` went read-only on 2026-05-20 anyway, and was
+folded into the unified `console.hetzner.com` &mdash; but this
+doesn't affect us since we're not using Hetzner DNS.)
 
 ---
 
@@ -245,8 +264,9 @@ Auxiliary one-shot infrastructure:
   --profile hopnbop`, Pulumi adopt-and-destroy stack
   `aws-decommission`, then gone.
 - **CloudFront + S3** for `hopnbop-website`: gone after Phase F.
-- **CloudFlare DNS** if/when domains move there: optional, can
-  stay in Hetzner DNS.
+- **Cloudflare** is fully integrated into the architecture (not
+  optional / not auxiliary): all DNS zones, all static-site
+  hosting via Pages.
 
 ---
 
@@ -401,24 +421,45 @@ where credentials live, and how to rotate. Rotation procedure
 detail is in `hopnbop_private/MIGRATION_PLAN.md` &rarr; "Key and
 credential rotation."
 
-### Hetzner Cloud + Hetzner DNS
+### Hetzner Cloud (compute only — DNS is on Cloudflare)
 
-- **Dashboard:** https://console.hetzner.com (unified, includes
-  Cloud and DNS)
+- **Dashboard:** https://console.hetzner.com
 - **Account:** `admin@snoringcat.games`
 - **Project:** `snoringcat-platform`
 - **What's hosted:** Nakama box (CAX11), Postgres box (CAX11),
-  staging box (CX21, after Phase G), private network, firewall,
-  DNS for `snoringcat.games`, `snoringcatgames.com`, and
-  `hopnbop.net` (post-Phase-F).
+  staging box (CX21, after Phase G), private network,
+  firewall.
 - **API token:** `HCLOUD_TOKEN` &mdash; in age-encrypted
   credentials. Permissions: Read &amp; Write at project level.
-- **DNS API token:** `HETZNER_DNS_TOKEN` (may be the same as
-  `HCLOUD_TOKEN` after console unification).
 - **Cost:** ~$10-15/mo (2x CAX11 + 1x CX21 staging + minor
   bandwidth).
-- **Where to look first:** Cloud "Servers" tab; DNS "Zones"
-  tab.
+- **Where to look first:** Cloud "Servers" tab.
+
+### Cloudflare (DNS + Pages)
+
+- **Dashboard:** https://dash.cloudflare.com
+- **Account:** Levi's personal Cloudflare account (`admin@snoringcat.games`)
+- **Zones:** `snoringcat.games`, `snoringcatgames.com`,
+  `hopnbop.net` (post-Phase-F). Each is a separate zone.
+- **Pages projects:**
+  - `snoringcat-games` &mdash; deploys from
+    `SnoringCatGames/snoringcat.games` repo. Custom domains:
+    `snoringcat.games`, `www.snoringcat.games`,
+    `snoringcatgames.com`, `www.snoringcatgames.com`.
+  - `hopnbop-website` &mdash; (post-Phase-F) deploys from
+    `SnoringCatGames/hopnbop_private`'s `web/` build. Custom
+    domains: `hopnbop.net`, `www.hopnbop.net`.
+- **API token:** `CLOUDFLARE_API_TOKEN` &mdash; in
+  age-encrypted credentials. Scopes: Account &rarr; Cloudflare
+  Pages: Edit; Account &rarr; Account Settings: Read; Zone
+  &rarr; DNS: Edit (all zones).
+- **Account ID:** `CLOUDFLARE_ACCOUNT_ID` &mdash; in
+  age-encrypted credentials.
+- **Cost:** $0 on free tier (unlimited bandwidth on Pages, no
+  proxy charges).
+- **Where to look first:** Zones for DNS; Workers &amp; Pages
+  for static site projects; Logs / Analytics per zone for
+  traffic patterns.
 
 ### Edgegap
 
@@ -434,23 +475,6 @@ credential rotation."
   when no matches running.
 - **Where to look first:** "Apps" tab for hopnbop-server;
   "Deployments" tab for active game servers.
-
-### Cloudflare Pages
-
-- **Dashboard:** https://dash.cloudflare.com/&mdash;sign in
-- **Account:** TBD &mdash; created during pre-flight.
-- **Projects:**
-  - `snoringcat-games` (Cloudflare Pages project, deploys
-    from `SnoringCatGames/snoringcat.games`) &rarr;
-    `snoringcat.games`, `snoringcatgames.com`, plus `www.*`
-  - `hopnbop-website` (deploys from
-    `SnoringCatGames/hopnbop_private`'s `web/` build output)
-    &rarr; `hopnbop.net`, `www.hopnbop.net` (post-Phase-F)
-- **Deploy mechanism:** auto-deploys from `main` on git push.
-  Each branch gets a preview URL.
-- **Cost:** $0 on free tier (500 builds/mo, unlimited
-  bandwidth).
-- **Where to look first:** Workers &amp; Pages tab.
 
 ### GitHub
 
@@ -536,11 +560,15 @@ $99/yr, Steam Direct $100/game, Epic free.
 
 ### Domain registrar
 
-- **Currently:** TBD (whichever registrar Levi has for
-  `snoringcat.games`, `snoringcatgames.com`, `hopnbop.net`,
-  `levi.dev`, `levilindsey.com`).
-- **Status:** nameservers point at Hetzner DNS (or are being
-  pointed there during migration).
+- **`snoringcat.games`, `snoringcatgames.com`:** registered at
+  **Squarespace** (formerly Google Domains). Nameservers
+  delegated to Cloudflare. Manage at
+  https://account.squarespace.com.
+- **`hopnbop.net`:** TBD registrar; nameservers will be
+  delegated to Cloudflare in Phase F (currently delegated to
+  AWS Route 53).
+- **`levi.dev`, `levilindsey.com`:** Levi's personal domains;
+  not part of the studio infrastructure.
 
 ---
 
