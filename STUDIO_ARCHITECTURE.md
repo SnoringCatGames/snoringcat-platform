@@ -112,7 +112,7 @@ maintenance burden.
 
 ### Cloudflare Pages for static sites
 
-**Doc:** the `DEPLOYMENT.md` files in `snoringcat-website` and
+**Doc:** the `DEPLOYMENT.md` files in `snoringcat.games` and
 (post-Phase-F) `hopnbop_private`.
 
 Both static sites (`snoringcat.games` marketing + `hopnbop.net`
@@ -317,12 +317,12 @@ as a submodule under `third_party/`.
 - **Key docs:** `CLAUDE.md`, `PLATFORM_ARCHITECTURE.md`, this
   file (`STUDIO_ARCHITECTURE.md`), `CHANGELOG.md`, `README.md`.
 
-#### `SnoringCatGames/snoringcat-website` (private)
+#### `SnoringCatGames/snoringcat.games` (private)
 
 The studio marketing site at `snoringcat.games`. Static site
 on Cloudflare Pages.
 
-- **Path:** `Repositories/snoringcat-website/`
+- **Path:** `Repositories/snoringcat.games/`
 - **Language:** HTML, vanilla JS, CSS.
 - **Deploy:** Cloudflare Pages auto-deploys from `main` on push.
 - **Key docs:** `README.md`, `DEPLOYMENT.md`. Routing rules in
@@ -369,7 +369,7 @@ removed when DNS cuts over to Cloudflare Pages.
 
 - **Path:** `Repositories/levi.dev/`
 - **Touch points with studio:** the `apps/snoring-cat/` directory
-  (extracted to `snoringcat-website` repo on 2026-04-27); the
+  (extracted to `snoringcat.games` repo on 2026-04-27); the
   `domains` array in `package.json` (will lose snoringcat
   entries post-cutover).
 
@@ -440,10 +440,12 @@ credential rotation."
 - **Dashboard:** https://dash.cloudflare.com/&mdash;sign in
 - **Account:** TBD &mdash; created during pre-flight.
 - **Projects:**
-  - `snoringcat-website` &rarr; `snoringcat.games`,
-    `snoringcatgames.com`, plus `www.*`
-  - `hopnbop-website` &rarr; `hopnbop.net`, `www.hopnbop.net`
-    (post-Phase-F)
+  - `snoringcat-games` (Cloudflare Pages project, deploys
+    from `SnoringCatGames/snoringcat.games`) &rarr;
+    `snoringcat.games`, `snoringcatgames.com`, plus `www.*`
+  - `hopnbop-website` (deploys from
+    `SnoringCatGames/hopnbop_private`'s `web/` build output)
+    &rarr; `hopnbop.net`, `www.hopnbop.net` (post-Phase-F)
 - **Deploy mechanism:** auto-deploys from `main` on git push.
   Each branch gets a preview URL.
 - **Cost:** $0 on free tier (500 builds/mo, unlimited
@@ -626,7 +628,7 @@ for the full matrix. Quick reference:
 4. Reference `PLATFORM_ARCHITECTURE.md` from the new game's
    `CLAUDE.md` (single line: "When working on backend or
    matchmaking, read this.").
-5. Add a card to `snoringcat-website/public/index.html`. Add
+5. Add a card to `snoringcat.games/public/index.html`. Add
    `_redirects` entries for the new game's paths.
 6. Create an Edgegap app for the new game.
 7. Restart Nakama; new game appears in the `games` table.
