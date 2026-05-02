@@ -408,7 +408,11 @@ function Step-CostMonitor {
 		"CLOUDFLARE_ACCOUNT_ID=c97b21157100dde27a8715fdfba1d22a",
 		"R2_BUCKET=hopnbop-assets",
 		"R2_WARN_GB=8",
-		"R2_HARD_GB=9.5"
+		"R2_HARD_GB=9.5",
+		# Cloudflare Pages free tier is 500 builds/month
+		# account-wide. Defaults: warn at 80%, hard at 95%.
+		"CF_PAGES_WARN_BUILDS=400",
+		"CF_PAGES_HARD_BUILDS=475"
 	)
 	$tmp = New-TemporaryFile
 	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")

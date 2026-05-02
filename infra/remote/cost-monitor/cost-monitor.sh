@@ -186,6 +186,67 @@ if [[ -n "${CLOUDFLARE_API_TOKEN:-}" \
 fi
 
 # ---------------------------------------------------------------------
+# Cloudflare Pages build count (account-wide).
+# Free tier: 500 builds / month across all projects on the
+# account. Bandwidth and requests are effectively unlimited on
+# the free plan and are not modeled.
+#
+# Pages has no aggregate-by-month endpoint. We list projects,
+# then for each project page through deployments newest-first,
+# counting those with created_on >= start of current month.
+# Stop paging a project once we see a deployment older than the
+# month boundary. Token must have Account.Pages:Read (the
+# existing CLOUDFLARE_PAGES_TOKEN with Pages:Edit qualifies).
+# ---------------------------------------------------------------------
+cf_pages_tracked=false
+cf_pages_builds_used=0
+if [[ -n "${CLOUDFLARE_API_TOKEN:-}" \
+		&& -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+	# Pages list-projects rejects pagination params (HTTP 400
+	# "Invalid list options"), so call without them.
+	if projects_resp=$(curl -fsS \
+			-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+			"https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects" \
+			2>/dev/null); then
+		while IFS= read -r project; do
+			[[ -z "$project" ]] && continue
+			page=1
+			while :; do
+				url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$project/deployments?page=$page&per_page=25"
+				if ! resp=$(curl -fsS \
+						-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+						"$url" 2>/dev/null); then
+					break
+				fi
+				count=$(echo "$resp" | jq -r --arg ms "$MONTH_START_EPOCH" '
+					[.result[]
+						| select(
+							(.created_on
+								| sub("\\.[0-9]+Z"; "Z")
+								| fromdate)
+								>= ($ms | tonumber))]
+					| length' 2>/dev/null || echo 0)
+				cf_pages_builds_used=$((cf_pages_builds_used + count))
+				has_old=$(echo "$resp" | jq -r --arg ms "$MONTH_START_EPOCH" '
+					any(.result[];
+						(.created_on
+							| sub("\\.[0-9]+Z"; "Z")
+							| fromdate)
+							< ($ms | tonumber))' 2>/dev/null \
+					|| echo "true")
+				page_count=$(echo "$resp" | jq -r '.result | length' \
+					2>/dev/null || echo 0)
+				if [[ "$has_old" == "true" || "$page_count" -lt 25 ]]; then
+					break
+				fi
+				page=$((page + 1))
+			done
+		done < <(echo "$projects_resp" | jq -r '.result[].name' 2>/dev/null)
+		cf_pages_tracked=true
+	fi
+fi
+
+# ---------------------------------------------------------------------
 # GitHub Actions billing (new "enhanced billing" API, GA 2025).
 # Endpoint:
 #   /organizations/{org}/settings/billing/usage?year=Y&month=M
@@ -266,6 +327,24 @@ for entry in "r2_warn:${R2_WARN_GB:-8}" "r2_hard:${R2_HARD_GB:-9.5}"; do
 	fi
 done
 
+# Cloudflare Pages build count thresholds. Free tier is 500/mo
+# account-wide. Defaults: warn at 80%, hard at 95%.
+if $cf_pages_tracked; then
+	for entry in "cf_pages_warn:${CF_PAGES_WARN_BUILDS:-400}" \
+			"cf_pages_hard:${CF_PAGES_HARD_BUILDS:-475}"; do
+		name="${entry%:*}"
+		value="${entry#*:}"
+		if awk -v t="$cf_pages_builds_used" -v v="$value" \
+				'BEGIN { exit !(t >= v) }'; then
+			if ! echo "$already_crossed" | grep -qx "$name"; then
+				new_crossings+=("$name:${value} builds")
+				state=$(echo "$state" | jq --arg n "$name" \
+					'.thresholds_crossed += [$n]')
+			fi
+		fi
+	done
+fi
+
 # GitHub overage threshold. The new billing API gives a single
 # `netAmount` per row (already discounted for included-tier
 # usage), so any positive total means we've gone past the free
@@ -305,6 +384,9 @@ if (( ${#new_crossings[@]} > 0 )); then
 				# here just makes sure we notice.
 				emergency_msg+=$'\n**R2 HARD CAP** Bucket is at the configured limit. New deploys will refuse to upload until you free space (or raise R2_HARD_GB).'
 				;;
+			cf_pages_hard)
+				emergency_msg+=$'\n**CF PAGES HARD CAP** Account is near the 500 builds/month free-tier limit. Cloudflare will queue further builds until next billing cycle (or raise CF_PAGES_HARD_BUILDS).'
+				;;
 		esac
 	done
 fi
@@ -339,6 +421,10 @@ post_discord() {
 provider_lines="- Hetzner: \$$hetzner_usd
 - Edgegap: \$$edgegap_usd
 - R2 storage: ${r2_gb} GB / 10 GB free tier"
+if $cf_pages_tracked; then
+	provider_lines+="
+- CF Pages: ${cf_pages_builds_used} / 500 builds free tier"
+fi
 if $gh_tracked; then
 	provider_lines+="
 - GH Actions: ${gh_minutes_used} min · ${gh_storage_gbh} GB-h storage"
@@ -375,7 +461,7 @@ fi
 if (( should_summarize )); then
 	post_discord "**Billing status: \$$total_usd MTD**$prev_month_line
 $provider_lines
-- Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB"
+- Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB · CF Pages warn ${CF_PAGES_WARN_BUILDS:-400} · CF Pages hard ${CF_PAGES_HARD_BUILDS:-475}"
 	# Capture this summary's headline number so the next month
 	# rollover can carry it forward as the closing total. Also
 	# clear the carry-forward fields once they've been displayed.
@@ -389,4 +475,4 @@ fi
 # Persist state.
 echo "$state" > "$STATE_FILE"
 
-echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$$edgegap_usd r2=${r2_gb}GB gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
+echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$$edgegap_usd r2=${r2_gb}GB cf_pages=${cf_pages_builds_used} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"

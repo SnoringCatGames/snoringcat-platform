@@ -437,9 +437,9 @@ Default: no upper bound. Lower bound: 0 (true scale-to-zero).
 ### Cost monitor
 
 Hourly systemd timer on the Nakama host that polls Hetzner
-Cloud, Edgegap, Cloudflare R2, and GitHub Actions APIs for
-month-to-date usage; pings Discord on threshold crossings and
-posts a daily summary.
+Cloud, Edgegap, Cloudflare R2, Cloudflare Pages, and GitHub
+Actions APIs for month-to-date usage; pings Discord on
+threshold crossings and posts a daily summary.
 
 **Source files (this repo):**
 `infra/remote/cost-monitor/{cost-monitor.sh, cost-monitor.service,
@@ -454,9 +454,11 @@ cost-monitor.timer}`. Deployed by Pulumi to
 - One routine "Billing status" Discord summary per day, at
   `DAILY_SUMMARY_HOUR_UTC` (default `9` = 09:00 UTC).
 - Threshold crossings (`BUDGET_WARN_LOW`, `_MID`, `_HIGH`,
-  `EMERGENCY_CAP`, plus R2 storage bands) ping immediately,
-  gated by `/var/lib/snoringcat/cost-monitor-state.json` so
-  each threshold alerts once per month.
+  `EMERGENCY_CAP`, plus R2 storage bands and Cloudflare Pages
+  build-count bands `CF_PAGES_WARN_BUILDS` /
+  `CF_PAGES_HARD_BUILDS`) ping immediately, gated by
+  `/var/lib/snoringcat/cost-monitor-state.json` so each
+  threshold alerts once per month.
 - **Emergency action:** crossing `EMERGENCY_CAP` (default
   `$50`) PATCHes the Edgegap app to `capacity_max=0`, halting
   new game-server allocations. Manual reset required.
