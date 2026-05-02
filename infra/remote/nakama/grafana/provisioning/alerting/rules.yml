@@ -1,0 +1,171 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: snoringcat-platform
+    folder: snoringcat
+    interval: 1m
+    rules:
+      # ==============================================================
+      # CRITICAL — page immediately
+      # ==============================================================
+      - uid: nakama-down
+        title: Nakama process unreachable
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: up{job="nakama"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [1], type: lt }
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Nakama is down"
+          description: "Prometheus could not scrape nakama:9099 for 2m+. Players cannot authenticate or matchmake."
+
+      - uid: postgres-down
+        title: Postgres unreachable
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: up{job="postgres"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [1], type: lt }
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Postgres exporter is down"
+          description: "Either postgres_exporter is unreachable or Postgres itself is down."
+
+      - uid: postgres-conn-saturation
+        title: Postgres connection saturation
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (sum(pg_stat_activity_count) by (instance)
+                  / on(instance) pg_settings_max_connections)
+                * 100
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [90], type: gt }
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Postgres connections >90% saturated"
+          description: "Connection pool exhaustion imminent. Increase max_connections or investigate runaway queries."
+
+      - uid: disk-usage-high
+        title: Disk usage above 90%
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: |
+                100 * (1
+                  - node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+                    / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [90], type: gt }
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Root filesystem >90% full"
+          description: "Free space on / is critically low. Postgres may be at risk."
+
+      # ==============================================================
+      # WARNING — channel notification
+      # ==============================================================
+      - uid: cpu-sustained-high
+        title: CPU sustained >80%
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: |
+                100 - avg by (instance)
+                  (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [80], type: gt }
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "CPU >80% for 15m on {{ $labels.instance }}"
+          description: "Sustained load. Check for runaway queries or scrape volume."
+
+      - uid: postgres-slow-queries
+        title: Postgres slow queries spiking
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: rate(pg_stat_database_xact_commit{datname="nakama"}[5m]) * 0
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              refId: B
+              conditions:
+                - evaluator: { params: [10], type: gt }
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Slow query spike on Postgres"
+          description: "Placeholder rule. Replace with pg_stat_statements query once that extension is enabled."

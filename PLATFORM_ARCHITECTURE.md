@@ -371,7 +371,7 @@ CI.
 
 ### Deploy a Nakama runtime change
 
-1. Edit Go code in `snoringcat-platform/backend/runtime/`.
+1. Edit Go code in `snoringcat-platform/runtime/`.
 2. Open PR. `pr-validate.yml` runs `go test`, `go vet`,
    `staticcheck`.
 3. Merge. Tag a release.
@@ -434,23 +434,72 @@ Default: no upper bound. Lower bound: 0 (true scale-to-zero).
 4. Old secret remains valid for the provider's grace period
    (~7 days for Google).
 
+### Cost monitor
+
+Hourly systemd timer on the Nakama host that polls Hetzner
+Cloud, Edgegap, Cloudflare R2, and GitHub Actions APIs for
+month-to-date usage; pings Discord on threshold crossings and
+posts a daily summary.
+
+**Source files (this repo):**
+`infra/remote/cost-monitor/{cost-monitor.sh, cost-monitor.service,
+cost-monitor.timer}`. Deployed by Pulumi to
+`/opt/snoringcat/cost-monitor/` on the Nakama box.
+
+**Trigger:** `cost-monitor.timer` —
+`OnCalendar=*-*-* *:00:00 UTC`, `RandomizedDelaySec=60`.
+
+**Behaviour:**
+- Silent on most runs.
+- One routine "Billing status" Discord summary per day, at
+  `DAILY_SUMMARY_HOUR_UTC` (default `9` = 09:00 UTC).
+- Threshold crossings (`BUDGET_WARN_LOW`, `_MID`, `_HIGH`,
+  `EMERGENCY_CAP`, plus R2 storage bands) ping immediately,
+  gated by `/var/lib/snoringcat/cost-monitor-state.json` so
+  each threshold alerts once per month.
+- **Emergency action:** crossing `EMERGENCY_CAP` (default
+  `$50`) PATCHes the Edgegap app to `capacity_max=0`, halting
+  new game-server allocations. Manual reset required.
+  (The action is inline in `cost-monitor.sh`; there is no
+  separate `emergency-shutdown.sh`.)
+
+**Config:** `/opt/snoringcat/cost-monitor/.env` on the host —
+provider tokens (`HCLOUD_TOKEN`, `EDGEGAP_TOKEN`,
+`CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN`), threshold overrides,
+and the `DISCORD_WEBHOOK_URL` (separate copy from
+`~/.claude/jobs/discord-config.json`).
+
+**Inspect:**
+```bash
+ssh nakama@nakama.snoringcat.games
+systemctl status cost-monitor.timer
+journalctl -u cost-monitor.service -n 50
+cat /var/lib/snoringcat/cost-monitor-state.json
+```
+
 ---
 
 ## Where things live
 
 | Thing | Path / Location |
 |---|---|
-| Nakama runtime modules | `snoringcat-platform/backend/runtime/*.go` |
+| Nakama runtime modules | `snoringcat-platform/runtime/*.go` |
 | Per-game config | `<game_repo>/game.yaml` |
 | Game-client SDK | `snoringcat-platform/addons/platform-client/` |
 | nakama-godot SDK | `<game_repo>/addons/nakama/` |
 | Platform-session-manager addon | `<game_repo>/addons/platform-session-manager/` |
-| Pulumi infra (Hetzner) | `infra/pulumi/snoringcat-platform/` |
+| Pulumi infra (Hetzner) | `snoringcat-platform/infra/pulumi/snoringcat-platform/` |
+| Nakama+observability remote configs | `snoringcat-platform/infra/remote/nakama/` |
+| Postgres remote configs | `snoringcat-platform/infra/remote/postgres/` |
 | Pulumi state | S3 `hopnbop-pulumi-state` (us-west-2) |
+| Cost monitor source | `snoringcat-platform/infra/remote/cost-monitor/` |
+| Cost monitor deployed | `/opt/snoringcat/cost-monitor/` on Nakama host |
+| Cost monitor state | `/var/lib/snoringcat/cost-monitor-state.json` on Nakama host |
 | Migration plan | `hopnbop_private/MIGRATION_PLAN.md` |
 | Migration state | `~/.hopnbop-migration/state.json` |
 | Migration credentials | `~/.hopnbop-migration/credentials.env` (NEVER commit) |
-| Discord webhook | `~/.claude/jobs/discord-config.json` (local-only) |
+| Discord webhook (Claude jobs) | `~/.claude/jobs/discord-config.json` (local-only) |
+| Discord webhook (cost monitor) | `/opt/snoringcat/cost-monitor/.env` `DISCORD_WEBHOOK_URL` on Nakama host |
 
 | Service | Hostname / Endpoint |
 |---|---|
@@ -484,8 +533,18 @@ Default: no upper bound. Lower bound: 0 (true scale-to-zero).
 3. If Hetzner > expected: probably a forgotten test instance.
    `hcloud server list`.
 4. Emergency shutdown is the cost script's hard cap (default
-   $50 grand total). Trigger manually if needed:
-   `/opt/snoringcat/cost-monitor/emergency-shutdown.sh`.
+   $50 grand total). On crossing, `cost-monitor.sh` PATCHes
+   the Edgegap app to `capacity_max=0` automatically. Manual
+   reset:
+   ```bash
+   curl -fsS -X PATCH \
+     -H "Authorization: Token $EDGEGAP_TOKEN" \
+     -H "Content-Type: application/json" \
+     "https://api.edgegap.com/v1/app/$EDGEGAP_APP_NAME" \
+     -d '{"capacity_max": 1}'
+   ```
+   See the "Cost monitor" section above for the trigger
+   details.
 
 ### "Need to restart Nakama"
 

@@ -1,0 +1,168 @@
+// Snoring Cat platform Nakama runtime modules.
+//
+// Built into a Go plugin via the heroiclabs/nakama-pluginbuilder
+// image and mounted at /nakama/data/modules/snoringcat.so.
+// Nakama loads the plugin at startup and calls InitModule.
+//
+// Hooks registered (when EDGEGAP_TOKEN is set):
+//   - MatchmakerMatched: allocates an Edgegap deployment for the
+//     matched players and notifies them with connection info.
+//
+// RPCs registered:
+//   Server-to-server (HTTP-key gated):
+//   - register_server:     game server checks in after boot.
+//   - match_end:           game server posts match results.
+//   - bulk_import:         Phase E migration RPC.
+//   - runtime_status:      read-only probe of build + config.
+//   - record_client_ip:    pre-matchmaking IP recorder.
+//   Client session:
+//   - version_check:       client/server compatibility check.
+//   - update_and_get_presence: write own presence + read friends'.
+//   - get_player_stats:    rating + match count.
+//   - get_match_history:   recent matches for the caller.
+//   - export_player_data:  GDPR data export.
+package main
+
+import (
+	"context"
+	"database/sql"
+	"strconv"
+
+	"github.com/heroiclabs/nakama-common/runtime"
+)
+
+// InitModule is the entry point Nakama calls when loading the
+// plugin.
+func InitModule(
+	ctx context.Context,
+	logger runtime.Logger,
+	db *sql.DB,
+	nk runtime.NakamaModule,
+	initializer runtime.Initializer,
+) error {
+	env, _ := ctx.Value(runtime.RUNTIME_CTX_ENV).(map[string]string)
+	if env == nil {
+		env = map[string]string{}
+	}
+
+	edgegapToken := env["EDGEGAP_TOKEN"]
+	// EDGEGAP_APP_NAME and EDGEGAP_APP_VERSION are required when
+	// the matchmaker hook is enabled (i.e. when EDGEGAP_TOKEN is
+	// set). When the hook is disabled, both can be empty — the
+	// runtime still loads and serves RPCs, just without fleet
+	// allocation. This module is platform-shared (multiple games
+	// can mount it), so there's no game-specific default.
+	appName := env["EDGEGAP_APP_NAME"]
+	appVersion := env["EDGEGAP_APP_VERSION"]
+
+	// Register the status probe first so the runtime is
+	// diagnosable even if a downstream init step fails or is
+	// skipped because of missing config.
+	matchmakerHookEnabled := edgegapToken != ""
+	statusFn := statusRpcFactory(runtimeStatusConfig{
+		EdgegapAppName:       appName,
+		EdgegapAppVersion:    appVersion,
+		EdgegapTokenSet:      edgegapToken != "",
+		MatchmakerHookActive: matchmakerHookEnabled,
+	})
+	if err := initializer.RegisterRpc("runtime_status", statusFn); err != nil {
+		return err
+	}
+
+	if !matchmakerHookEnabled {
+		logger.Warn(
+			"EDGEGAP_TOKEN not set; matchmaker_matched hook is" +
+				" not registered. Players will pair but never" +
+				" receive match_ready notifications. Set the" +
+				" env var on the Nakama host and restart the" +
+				" container to recover.")
+	} else if appName == "" || appVersion == "" {
+		// EDGEGAP_TOKEN is set but the app coordinates aren't.
+		// Fail loudly rather than silently allocating against
+		// a wrong default — this runtime is platform-shared and
+		// has no game-specific fallback.
+		return runtime.NewError(
+			"EDGEGAP_TOKEN set but EDGEGAP_APP_NAME and/or"+
+				" EDGEGAP_APP_VERSION missing. Both must be"+
+				" set in the Nakama runtime env when the"+
+				" matchmaker hook is enabled.", 3)
+	} else {
+		alloc := &fleetAllocator{
+			edgegap: &edgegapClient{
+				token: edgegapToken,
+			},
+			appName:    appName,
+			appVersion: appVersion,
+		}
+		if err := initializer.RegisterMatchmakerMatched(
+			alloc.OnMatchmakerMatched); err != nil {
+			return err
+		}
+	}
+
+	lifecycle := &matchLifecycle{}
+	if err := initializer.RegisterRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
+		return err
+	}
+	if err := initializer.RegisterRpc("match_end", lifecycle.MatchEndRpc); err != nil {
+		return err
+	}
+	// Phase E migration RPC.
+	if err := initializer.RegisterRpc("bulk_import", bulkImportRpc); err != nil {
+		return err
+	}
+	// Pre-matchmaking client IP recorder. The client calls this
+	// right before joining the matchmaker so fleet_allocator can
+	// pull each matched user's public IP and feed it to
+	// Edgegap's ip_list. See client_ip.go.
+	if err := initializer.RegisterRpc("record_client_ip", recordClientIPRpc); err != nil {
+		return err
+	}
+
+	// Client-session RPCs. The client surfaces these in the
+	// lobby UI; the AWS-era backend served them as REST endpoints.
+	verCfg := versionConfig{
+		GameVersion:     env["NAKAMA_GAME_VERSION"],
+		ProtocolVersion: parseEnvInt(env, "NAKAMA_PROTOCOL_VERSION", 0),
+	}
+	if err := initializer.RegisterRpc(
+		"version_check", versionCheckRpcFactory(verCfg)); err != nil {
+		return err
+	}
+	if err := initializer.RegisterRpc(
+		"update_and_get_presence", updateAndGetPresenceRpc); err != nil {
+		return err
+	}
+	if err := initializer.RegisterRpc(
+		"get_player_stats", getPlayerStatsRpc); err != nil {
+		return err
+	}
+	if err := initializer.RegisterRpc(
+		"get_match_history", getMatchHistoryRpc); err != nil {
+		return err
+	}
+	if err := initializer.RegisterRpc(
+		"export_player_data", exportPlayerDataRpc); err != nil {
+		return err
+	}
+
+	logger.Info(
+		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t)",
+		BuildID, appName, appVersion, matchmakerHookEnabled)
+	return nil
+}
+
+// parseEnvInt reads an int env var with a fallback default.
+// Empty or unparseable values use the default rather than failing
+// init.
+func parseEnvInt(env map[string]string, key string, def int) int {
+	raw := env[key]
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return v
+}

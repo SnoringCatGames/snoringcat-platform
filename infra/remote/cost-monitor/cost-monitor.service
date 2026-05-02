@@ -1,0 +1,11 @@
+[Unit]
+Description=snoringcat-platform daily cost monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/snoringcat/cost-monitor/cost-monitor.sh
+StandardOutput=journal
+StandardError=journal
+User=root

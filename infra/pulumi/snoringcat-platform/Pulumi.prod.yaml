@@ -1,0 +1,6 @@
+encryptionsalt: v1:5IqcvdeDbn4=:v1:eC7aLYhgmttgprNW:jqxX1bPBuE83yFjLV7kKOCr0jMnHng==
+config:
+  hcloud:token:
+    secure: v1:qCkAtkZiX16PNqNm:KPsuJVcMCDef7HQ0A3+JT5UdsVYPVJR1R6JPHzsBIwNwQr0YpCHG7wWMKj4LCpS2JL/cuhq9x5tItj1uz+RGu1OvY5lkU+LOcS2cOH/aL34=
+  cloudflare:apiToken:
+    secure: v1:B4vGFoSGJ3TFJeLg:v/D+Fi1K2moDUIey1TGDfGMLx5OdMFl3V+Aw+00bM72QQtcYeVdiDQE+A0StZwpTENbPTXTJCuiPRYeM2l41Dl8D2UM9

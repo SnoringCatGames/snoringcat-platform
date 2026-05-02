@@ -1,0 +1,53 @@
+# Caddy reverse proxy + automatic Let's Encrypt for Nakama and
+# Grafana. Both share the same Caddy instance on the Nakama box.
+{
+	email admin@snoringcat.games
+	# Bind admin endpoint to all interfaces (default is 127.0.0.1)
+	# so the prometheus container on the same docker network can
+	# scrape /metrics.
+	admin :2019
+	# Enable Caddy's metrics endpoint for Prometheus.
+	servers {
+		metrics
+	}
+	# Load global rate-limit zones (see github.com/mholt/caddy-ratelimit).
+	order rate_limit before basicauth
+}
+
+nakama.snoringcat.games {
+	encode gzip
+
+	# Per-IP rate limit on the unauthenticated authentication
+	# endpoints. 30 attempts per IP per 5 min is generous for
+	# legit (typo-and-retry) flows but kills brute-force quickly.
+	# Returns 429 with a Retry-After header.
+	@auth_endpoints path /v2/account/authenticate*
+	rate_limit @auth_endpoints {
+		zone authenticate {
+			key {remote_host}
+			events 30
+			window 5m
+		}
+	}
+
+	# Nakama HTTP API + WebSocket realtime endpoint (/ws).
+	# flush_interval -1 disables response buffering — required for
+	# low-latency realtime traffic.
+	reverse_proxy nakama:7350 {
+		flush_interval -1
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+grafana.snoringcat.games {
+	encode gzip
+
+	# Grafana handles its own auth (admin user/password). Caddy
+	# does TLS termination + reverse proxy only.
+	reverse_proxy grafana:3000 {
+		flush_interval -1
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+}

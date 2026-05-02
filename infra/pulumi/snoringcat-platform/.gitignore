@@ -1,0 +1,6 @@
+# Pulumi local cache and lockfiles.
+.pulumi/
+
+# Built Go binary (Pulumi compiles main.go on each `up`).
+snoringcat-platform
+snoringcat-platform.exe

@@ -1,0 +1,35 @@
+# Nakama config (non-sensitive). Sensitive values (DB password,
+# console password, server key, session encryption key) come via
+# CLI flags from docker-compose entrypoint.
+name: nakama-prod
+data_dir: "/nakama/data"
+
+logger:
+  level: "INFO"
+  format: "json"
+  stdout: true
+
+socket:
+  port: 7350
+  read_buffer_size_bytes: 4096
+  write_buffer_size_bytes: 4096
+
+session:
+  token_expiry_sec: 7200
+  refresh_token_expiry_sec: 604800
+
+console:
+  username: "admin"
+  port: 7351
+
+# OAuth provider env vars exposed to runtime modules (Phase C will
+# add Go runtime modules that read these via nk.GetEnv()).
+runtime:
+  env:
+    - "GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}"
+    - "GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}"
+    - "FACEBOOK_APP_ID=${FACEBOOK_APP_ID}"
+    - "FACEBOOK_APP_SECRET=${FACEBOOK_APP_SECRET}"
+    - "EDGEGAP_TOKEN=${EDGEGAP_TOKEN}"
+    - "EDGEGAP_APP_NAME=${EDGEGAP_APP_NAME}"
+    - "EDGEGAP_APP_VERSION=${EDGEGAP_APP_VERSION}"

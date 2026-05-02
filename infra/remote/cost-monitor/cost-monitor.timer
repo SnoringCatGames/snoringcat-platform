@@ -1,0 +1,14 @@
+[Unit]
+Description=snoringcat-platform cost monitor (hourly)
+# Threshold crossings ping immediately. Routine daily summary
+# is sent only by the run that lands on $DAILY_SUMMARY_HOUR_UTC
+# (default 09:00 UTC). Other runs are silent.
+
+[Timer]
+OnCalendar=*-*-* *:00:00 UTC
+Persistent=true
+Unit=cost-monitor.service
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

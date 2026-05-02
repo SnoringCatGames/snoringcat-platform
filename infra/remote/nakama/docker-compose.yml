@@ -1,0 +1,176 @@
+services:
+  nakama:
+    image: heroiclabs/nakama:3.25.0
+    container_name: nakama
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        DB_ADDR="nakama:${POSTGRES_PASSWORD}@${POSTGRES_PRIVATE_IP}:5432"
+        /nakama/nakama migrate up --database.address "$$DB_ADDR/nakama"
+        exec /nakama/nakama \
+          --config /nakama/data/config.yml \
+          --database.address "$$DB_ADDR/nakama" \
+          --console.password "$$NAKAMA_CONSOLE_PASSWORD" \
+          --socket.server_key "$$NAKAMA_SERVER_KEY" \
+          --session.encryption_key "$$NAKAMA_SESSION_ENCRYPTION_KEY" \
+          --session.refresh_encryption_key "$$NAKAMA_REFRESH_ENCRYPTION_KEY" \
+          --runtime.http_key "$$NAKAMA_HTTP_KEY" \
+          --console.signing_key "$$NAKAMA_CONSOLE_SIGNING_KEY" \
+          --metrics.prometheus_port 9099
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PRIVATE_IP: ${POSTGRES_PRIVATE_IP}
+      NAKAMA_CONSOLE_PASSWORD: ${NAKAMA_CONSOLE_PASSWORD}
+      NAKAMA_SERVER_KEY: ${NAKAMA_SERVER_KEY}
+      NAKAMA_SESSION_ENCRYPTION_KEY: ${NAKAMA_SESSION_ENCRYPTION_KEY}
+      NAKAMA_REFRESH_ENCRYPTION_KEY: ${NAKAMA_REFRESH_ENCRYPTION_KEY}
+      NAKAMA_HTTP_KEY: ${NAKAMA_HTTP_KEY}
+      NAKAMA_CONSOLE_SIGNING_KEY: ${NAKAMA_CONSOLE_SIGNING_KEY}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+      FACEBOOK_APP_ID: ${FACEBOOK_APP_ID}
+      FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET}
+    volumes:
+      - ./config.yml:/nakama/data/config.yml:ro
+      - ./modules:/nakama/data/modules:ro
+      - nakama_data:/nakama/data/storage
+    expose:
+      - "7350"
+      - "7351"
+      - "7349"
+      - "9099"
+    ports:
+      - "127.0.0.1:7351:7351"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget --quiet --tries=1 --spider http://127.0.0.1:7350/healthcheck || exit 1"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nakama-net
+
+  caddy:
+    # Custom build that bakes mholt/caddy-ratelimit. See
+    # ./caddy/Dockerfile. Built locally; no image registry.
+    build:
+      context: ./caddy
+    image: caddy-with-ratelimit:local
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    expose:
+      - "2019"  # Caddy admin/metrics endpoint, scraped by Prometheus.
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - nakama-net
+    depends_on:
+      - nakama
+      - grafana
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - nakama-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://grafana.snoringcat.games
+      GF_SERVER_DOMAIN: grafana.snoringcat.games
+      # Sub-path / proxy mode is off; Caddy proxies the whole hostname.
+      GF_LOG_LEVEL: info
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    expose:
+      - "3000"
+    networks:
+      - nakama-net
+    depends_on:
+      - prometheus
+      - loki
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./loki-config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    expose:
+      - "3100"
+    networks:
+      - nakama-net
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_positions:/tmp
+    networks:
+      - nakama-net
+    depends_on:
+      - loki
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/root"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    pid: host
+    expose:
+      - "9100"
+    networks:
+      - nakama-net
+
+networks:
+  nakama-net:
+
+volumes:
+  nakama_data:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  promtail_positions:
