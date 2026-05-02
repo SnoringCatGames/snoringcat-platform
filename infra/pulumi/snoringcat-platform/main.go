@@ -13,9 +13,15 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 )
 
+// Defaults for stack config. Values without per-environment
+// variation (network shape, internal IPs, base image) stay as
+// consts. Values that might differ between environments (zone,
+// region, server size) become Pulumi config keys with these
+// defaults.
 const (
-	zoneName = "snoringcat.games"
-	location = "hil"
+	defaultZoneName    = "snoringcat.games"
+	defaultLocation    = "hil"
+	defaultNetworkZone = "us-west"
 	// CAX (ARM) isn't available in Hillsboro, and CX (Intel) is
 	// EU-only too. Hillsboro offers CPX (AMD shared) and CCX (AMD
 	// dedicated). CPX21 (3 vCPU / 4 GB / 80 GB) is the closest match
@@ -23,14 +29,47 @@ const (
 	// ~€7.05/mo per box, total ~€14/mo for the pair (vs CAX11's
 	// ~€7.60/mo total — the US location premium is real but
 	// Hillsboro is required for North American game latency).
-	serverType        = "cpx21"
-	image             = "ubuntu-24.04"
+	defaultServerType = "cpx21"
+	defaultImage      = "ubuntu-24.04"
+
+	// Internal network shape — stays in code because changing
+	// these would require a state migration, not just a config
+	// override.
 	networkIPRange    = "10.0.0.0/16"
 	subnetIPRange     = "10.0.1.0/24"
 	nakamaPrivateIP   = "10.0.1.10"
 	postgresPrivateIP = "10.0.1.20"
-	networkZone       = "us-west"
 )
+
+// stackConfig collects the per-stack overrides from
+// Pulumi.<stack>.yaml. All values fall back to the `default*`
+// constants above when the corresponding key is unset.
+type stackConfig struct {
+	ZoneName    string
+	Location    string
+	NetworkZone string
+	ServerType  string
+	Image       string
+	AdminCidr   string
+}
+
+func loadStackConfig(cfg *config.Config) stackConfig {
+	pickWithDefault := func(key, def string) string {
+		v := cfg.Get(key)
+		if v == "" {
+			return def
+		}
+		return v
+	}
+	return stackConfig{
+		ZoneName:    pickWithDefault("zoneName", defaultZoneName),
+		Location:    pickWithDefault("location", defaultLocation),
+		NetworkZone: pickWithDefault("networkZone", defaultNetworkZone),
+		ServerType:  pickWithDefault("serverType", defaultServerType),
+		Image:       pickWithDefault("image", defaultImage),
+		AdminCidr:   cfg.Get("adminCidr"),
+	}
+}
 
 // idToInt converts a Pulumi IDOutput (string) to IntOutput, which is
 // required by hcloud SDK fields like NetworkSubnet.NetworkId and
@@ -88,7 +127,7 @@ const postgresExtraRuncmd = `  - ufw --force enable
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		cfg := config.New(ctx, "")
-		adminCidr := cfg.Get("adminCidr")
+		sc := loadStackConfig(cfg)
 
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -113,10 +152,10 @@ func main() {
 		}
 
 		zone, err := cloudflare.LookupZone(ctx, &cloudflare.LookupZoneArgs{
-			Name: pulumi.StringRef(zoneName),
+			Name: pulumi.StringRef(sc.ZoneName),
 		})
 		if err != nil {
-			return fmt.Errorf("lookup cloudflare zone %s: %w", zoneName, err)
+			return fmt.Errorf("lookup cloudflare zone %s: %w", sc.ZoneName, err)
 		}
 
 		nakamaKey, err := hcloud.NewSshKey(ctx, "nakama", &hcloud.SshKeyArgs{
@@ -144,7 +183,7 @@ func main() {
 		subnet, err := hcloud.NewNetworkSubnet(ctx, "snoringcat-subnet", &hcloud.NetworkSubnetArgs{
 			NetworkId:   idToInt(network.ID()),
 			Type:        pulumi.String("cloud"),
-			NetworkZone: pulumi.String(networkZone),
+			NetworkZone: pulumi.String(sc.NetworkZone),
 			IpRange:     pulumi.String(subnetIPRange),
 		})
 		if err != nil {
@@ -156,9 +195,9 @@ func main() {
 
 		nakamaSrv, err := hcloud.NewServer(ctx, "nakama-prod-1", &hcloud.ServerArgs{
 			Name:       pulumi.String("nakama-prod-1"),
-			ServerType: pulumi.String(serverType),
-			Image:      pulumi.String(image),
-			Location:   pulumi.String(location),
+			ServerType: pulumi.String(sc.ServerType),
+			Image:      pulumi.String(sc.Image),
+			Location:   pulumi.String(sc.Location),
 			SshKeys:    pulumi.StringArray{nakamaKey.Name},
 			UserData:   pulumi.String(nakamaUserData),
 			Networks: hcloud.ServerNetworkTypeArray{
@@ -174,9 +213,9 @@ func main() {
 
 		postgresSrv, err := hcloud.NewServer(ctx, "postgres-prod-1", &hcloud.ServerArgs{
 			Name:       pulumi.String("postgres-prod-1"),
-			ServerType: pulumi.String(serverType),
-			Image:      pulumi.String(image),
-			Location:   pulumi.String(location),
+			ServerType: pulumi.String(sc.ServerType),
+			Image:      pulumi.String(sc.Image),
+			Location:   pulumi.String(sc.Location),
 			SshKeys:    pulumi.StringArray{postgresKey.Name},
 			UserData:   pulumi.String(postgresUserData),
 			Networks: hcloud.ServerNetworkTypeArray{
@@ -197,8 +236,8 @@ func main() {
 			pulumi.String("0.0.0.0/0"),
 			pulumi.String("::/0"),
 		}
-		if adminCidr != "" {
-			adminSshSources = pulumi.StringArray{pulumi.String(adminCidr)}
+		if sc.AdminCidr != "" {
+			adminSshSources = pulumi.StringArray{pulumi.String(sc.AdminCidr)}
 		}
 		worldIPv46 := pulumi.StringArray{
 			pulumi.String("0.0.0.0/0"),
@@ -303,8 +342,8 @@ func main() {
 		ctx.Export("zone_id", pulumi.String(zone.Id))
 		ctx.Export("nakama_dns_record_id", nakamaRecord.ID())
 		ctx.Export("grafana_dns_record_id", grafanaRecord.ID())
-		ctx.Export("nakama_url", pulumi.String("https://nakama."+zoneName))
-		ctx.Export("grafana_url", pulumi.String("https://grafana."+zoneName))
+		ctx.Export("nakama_url", pulumi.String("https://nakama."+sc.ZoneName))
+		ctx.Export("grafana_url", pulumi.String("https://grafana."+sc.ZoneName))
 
 		return nil
 	})
