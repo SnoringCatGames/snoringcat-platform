@@ -107,9 +107,22 @@ func InitModule(
 	if err := initializer.RegisterRpc("match_end", lifecycle.MatchEndRpc); err != nil {
 		return err
 	}
-	// Phase E migration RPC.
-	if err := initializer.RegisterRpc("bulk_import", bulkImportRpc); err != nil {
-		return err
+	// Phase E migration RPC. Gated behind BULK_IMPORT_ENABLED
+	// because the HTTP key is now in client builds, and this
+	// RPC is a write-anywhere primitive that would let any
+	// attacker forge storage records / leaderboard entries.
+	// Set the env var on the Nakama host only while running the
+	// migration script; unset + restart afterwards.
+	if env["BULK_IMPORT_ENABLED"] == "true" {
+		if err := initializer.RegisterRpc(
+			"bulk_import", bulkImportRpc); err != nil {
+			return err
+		}
+		logger.Warn(
+			"bulk_import RPC is REGISTERED — open write access" +
+				" to anyone with NAKAMA_HTTP_KEY. Unset" +
+				" BULK_IMPORT_ENABLED and restart when the" +
+				" migration is done.")
 	}
 	// Pre-matchmaking client IP recorder. The client calls this
 	// right before joining the matchmaker so fleet_allocator can
