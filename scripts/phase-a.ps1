@@ -374,11 +374,30 @@ function Step-Nakama {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/nakama" | Out-Null
 	}
 	# Render config.yml (literal substitution; no regex).
+	# Every ${...} placeholder in config.yml must be replaced —
+	# Nakama itself does NOT expand ${...} in config.yml, it just
+	# passes the literal string through to runtime.env. If we
+	# leave EDGEGAP_APP_NAME/VERSION unsubstituted, the runtime
+	# logs `app=${EDGEGAP_APP_NAME} version=${EDGEGAP_APP_VERSION}`
+	# and the matchmaker hook silently allocates against the wrong
+	# Edgegap app. (Verified the hard way 2026-05-03.)
 	$cfg = Get-Content "$RemoteSrc\nakama\config.yml" -Raw
-	$cfg = $cfg.Replace('${GOOGLE_OAUTH_CLIENT_ID}',     $env:GOOGLE_OAUTH_CLIENT_ID)
-	$cfg = $cfg.Replace('${GOOGLE_OAUTH_CLIENT_SECRET}', $env:GOOGLE_OAUTH_CLIENT_SECRET)
-	$cfg = $cfg.Replace('${FACEBOOK_APP_ID}',            $env:FACEBOOK_APP_ID)
-	$cfg = $cfg.Replace('${FACEBOOK_APP_SECRET}',        $env:FACEBOOK_APP_SECRET)
+	foreach ($v in @(
+		"GOOGLE_OAUTH_CLIENT_ID",
+		"GOOGLE_OAUTH_CLIENT_SECRET",
+		"FACEBOOK_APP_ID",
+		"FACEBOOK_APP_SECRET",
+		"EDGEGAP_TOKEN",
+		"EDGEGAP_APP_NAME",
+		"EDGEGAP_APP_VERSION"
+	)) {
+		$val = [Environment]::GetEnvironmentVariable($v)
+		$cfg = $cfg.Replace("`${$v}", $val)
+	}
+	if ($cfg -match '\$\{') {
+		$leftover = ([regex]::Matches($cfg, '\$\{[^}]+\}') | ForEach-Object { $_.Value }) -join ', '
+		throw "config.yml has unresolved placeholders: $leftover"
+	}
 	$tmpCfg = New-TemporaryFile
 	$cfg | Out-File -Encoding ASCII -FilePath $tmpCfg.FullName
 	Invoke-Checked "scp config.yml" {
@@ -391,6 +410,12 @@ function Step-Nakama {
 	}
 	Invoke-Checked "scp Caddyfile" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\Caddyfile" "/opt/nakama/" | Out-Null
+	}
+	# caddy/ build context. The compose has `image:
+	# caddy-with-ratelimit:local` with `build: ./caddy`, so the
+	# Dockerfile must be on disk before any `docker compose up`.
+	Invoke-Checked "scp caddy/ build context" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\caddy" "/opt/nakama/" -Recurse | Out-Null
 	}
 	# Render .env for compose.
 	$envLines = @(

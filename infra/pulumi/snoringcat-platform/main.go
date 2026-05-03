@@ -24,19 +24,21 @@ const (
 	defaultNetworkZone = "us-west"
 	// CAX (ARM) isn't available in Hillsboro, and CX (Intel) is
 	// EU-only too. Hillsboro offers CPX (AMD shared) and CCX (AMD
-	// dedicated). CPX21 (3 vCPU / 4 GB / 80 GB) was chosen as the
-	// closest US-region match for the originally-planned CAX11
-	// (4 GB RAM target).
+	// dedicated). CPX11 (2 vCPU / 2 GB / 40 GB) is sized to actual
+	// observed usage: ~1 GB RSS per box at idle (verified
+	// 2026-05-03 on the CPX21 predecessors), leaving ~1 GB
+	// headroom under load.
 	//
-	// Cost: ~€13.99/mo cap per box, ~€28/mo for the pair (~$30
-	// USD total). Both hosts run well under capacity at idle
-	// (~1 GB RSS each verified 2026-05-03), so on paper CPX11
-	// (2 GB RAM) would suffice. BUT Hetzner refuses in-place
-	// resize from CPX21→CPX11 because CPX11 has a smaller disk
-	// (40 GB vs 80 GB) and disk-shrink is not allowed. Real
-	// downsize requires a destroy+recreate with Postgres dump /
-	// restore — captured as future work, not done in-place.
-	defaultServerType = "cpx21"
+	// Cost: ~€6.99/mo cap per box, ~€14/mo for the pair (~$15
+	// USD total).
+	//
+	// Note: Hetzner forbids in-place resize from CPX21→CPX11
+	// because CPX11's disk is smaller (40 GB vs 80 GB) and
+	// disk-shrink isn't allowed. The 2026-05-03 downsize
+	// required a destroy+recreate with Postgres dump/restore.
+	// Stepping back UP (cpx11→cpx21) is allowed in-place at any
+	// time if observed usage demands it.
+	defaultServerType = "cpx11"
 	defaultImage      = "ubuntu-24.04"
 
 	// Internal network shape — stays in code because changing
@@ -118,6 +120,13 @@ runcmd:
   - ufw default deny incoming
   - ufw default allow outgoing
   - ufw allow ssh
+  # Private network is the trust boundary between platform hosts
+  # (Nakama ↔ Postgres on 10.0.1.0/24 + Prometheus scrapes of
+  # node-exporter / postgres-exporter). Without this, the
+  # cross-host scrapes fail and Postgres connections from Nakama
+  # are blocked. Subnet matches networkIPRange / subnetIPRange
+  # constants above.
+  - ufw allow from 10.0.0.0/16 to any
   - systemctl enable --now fail2ban
 `
 
@@ -220,7 +229,12 @@ func main() {
 				},
 			},
 		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
-			pulumi.IgnoreChanges([]string{"userData"}))
+			pulumi.IgnoreChanges([]string{"userData"}),
+			// Hetzner server names are unique within the
+			// account; create-before-delete on replacement fails
+			// because the new server can't take a name still
+			// owned by the old one. Force delete-first.
+			pulumi.DeleteBeforeReplace(true))
 		if err != nil {
 			return err
 		}
@@ -239,7 +253,12 @@ func main() {
 				},
 			},
 		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
-			pulumi.IgnoreChanges([]string{"userData"}))
+			pulumi.IgnoreChanges([]string{"userData"}),
+			// Hetzner server names are unique within the
+			// account; create-before-delete on replacement fails
+			// because the new server can't take a name still
+			// owned by the old one. Force delete-first.
+			pulumi.DeleteBeforeReplace(true))
 		if err != nil {
 			return err
 		}

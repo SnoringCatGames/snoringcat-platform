@@ -259,12 +259,13 @@ function Step-NakamaStack {
 	}
 	Remove-Item $tmp.FullName -Force
 
-	# Pull new images, reconcile.
-	Invoke-Checked "compose pull (nakama)" {
-		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose pull"
-	}
-	Invoke-Checked "compose up (nakama)" {
-		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d"
+	# Build buildable, pull the rest, reconcile — all in one
+	# pass. `compose pull` alone fails because caddy-with-
+	# ratelimit:local has no registry to pull from (it's a
+	# `build: ./caddy` image). `--pull always` keeps the
+	# observability images fresh; `--build` rebuilds caddy.
+	Invoke-Checked "compose up --build --pull always (nakama)" {
+		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d --build --pull always"
 	}
 	Note "Nakama stack reconciled"
 }
