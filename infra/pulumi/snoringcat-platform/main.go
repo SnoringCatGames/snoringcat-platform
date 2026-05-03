@@ -24,11 +24,18 @@ const (
 	defaultNetworkZone = "us-west"
 	// CAX (ARM) isn't available in Hillsboro, and CX (Intel) is
 	// EU-only too. Hillsboro offers CPX (AMD shared) and CCX (AMD
-	// dedicated). CPX21 (3 vCPU / 4 GB / 80 GB) is the closest match
-	// to the originally-planned CAX11 spec (4 GB RAM target). Cost:
-	// ~€7.05/mo per box, total ~€14/mo for the pair (vs CAX11's
-	// ~€7.60/mo total — the US location premium is real but
-	// Hillsboro is required for North American game latency).
+	// dedicated). CPX21 (3 vCPU / 4 GB / 80 GB) was chosen as the
+	// closest US-region match for the originally-planned CAX11
+	// (4 GB RAM target).
+	//
+	// Cost: ~€13.99/mo cap per box, ~€28/mo for the pair (~$30
+	// USD total). Both hosts run well under capacity at idle
+	// (~1 GB RSS each verified 2026-05-03), so on paper CPX11
+	// (2 GB RAM) would suffice. BUT Hetzner refuses in-place
+	// resize from CPX21→CPX11 because CPX11 has a smaller disk
+	// (40 GB vs 80 GB) and disk-shrink is not allowed. Real
+	// downsize requires a destroy+recreate with Postgres dump /
+	// restore — captured as future work, not done in-place.
 	defaultServerType = "cpx21"
 	defaultImage      = "ubuntu-24.04"
 
@@ -193,6 +200,12 @@ func main() {
 		nakamaUserData := baseCloudInit + nakamaExtraRuncmd
 		postgresUserData := baseCloudInit + postgresExtraRuncmd
 
+		// userData is only consumed on first boot. Hetzner's API
+		// returns a SHA1 hash on subsequent reads (not the
+		// original plaintext), which Pulumi sees as drift and
+		// would force replacement on every apply. Ignore it; if
+		// we ever genuinely need to re-bootstrap a host we
+		// rebuild it explicitly.
 		nakamaSrv, err := hcloud.NewServer(ctx, "nakama-prod-1", &hcloud.ServerArgs{
 			Name:       pulumi.String("nakama-prod-1"),
 			ServerType: pulumi.String(sc.ServerType),
@@ -206,7 +219,8 @@ func main() {
 					Ip:        pulumi.String(nakamaPrivateIP),
 				},
 			},
-		}, pulumi.DependsOn([]pulumi.Resource{subnet}))
+		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
+			pulumi.IgnoreChanges([]string{"userData"}))
 		if err != nil {
 			return err
 		}
@@ -224,7 +238,8 @@ func main() {
 					Ip:        pulumi.String(postgresPrivateIP),
 				},
 			},
-		}, pulumi.DependsOn([]pulumi.Resource{subnet}))
+		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
+			pulumi.IgnoreChanges([]string{"userData"}))
 		if err != nil {
 			return err
 		}
