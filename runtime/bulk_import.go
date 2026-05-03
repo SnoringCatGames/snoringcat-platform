@@ -57,7 +57,7 @@ func bulkImportRpc(
 	logger.Info("bulk_import: type=%s ns=%q n=%d",
 		req.Type, req.Namespace, len(req.Records))
 
-	resp := bulkImportResponse{}
+	var resp bulkImportResponse
 	switch req.Type {
 	case "players":
 		resp = importPlayers(ctx, nk, req.Namespace, req.Records)
