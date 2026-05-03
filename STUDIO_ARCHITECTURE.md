@@ -50,7 +50,7 @@
 | `snoringcatgames.com` | alias for `snoringcat.games` | Heroku | Cloudflare Pages |
 | `www.snoringcatgames.com` | alias | Heroku | Cloudflare Pages |
 | `hopnbop.net` | Hop 'n Bop web build + legal | AWS S3 + CloudFront | Cloudflare Pages (Phase F of migration) |
-| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CAX11, Caddy + Nakama (Phase A) |
+| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CPX11, Caddy + Nakama (Phase A) |
 | `nakama-staging.snoringcat.games` | Staging Nakama | (does not exist yet) | Hetzner CX21 (Phase G) |
 | `grafana.snoringcat.games` | Monitoring | (does not exist yet) | Same Hetzner box as Nakama (Phase B) |
 | `levi.dev`, `levilindsey.com` | Levi's personal portfolio | Heroku | (unchanged) |
@@ -101,9 +101,10 @@ Nakama maps almost 1:1 onto what we'd otherwise build from
 scratch (auth, friends, parties, matchmaker, leaderboards,
 tournaments, presence, storage, real-time sockets). Apache 2.0
 OSS, fork-able, battle-tested by Zynga, Paradox, Gram Games.
-We self-host on a Hetzner CAX11 (~$5/mo) rather than paying
-$600/mo for Heroic Cloud's entry tier &mdash; managed Nakama is
-priced for studios with employees.
+We self-host on a Hetzner CPX11 (~$8/mo cap, AMD shared in
+Hillsboro) rather than paying $600/mo for Heroic Cloud's entry
+tier &mdash; managed Nakama is priced for studios with
+employees.
 
 Runtime extensibility constraint: **Go, Lua, or TypeScript
 only**. We chose Go (matches Pulumi, performant, statically
@@ -221,7 +222,7 @@ doesn't affect us since we're not using Hetzner DNS.)
                         ├──wss────────────► Caddy (TLS termination)
                         │                   │
                         │                   ▼
-                        │                   Nakama (Hetzner CAX11, Hillsboro)
+                        │                   Nakama (Hetzner CPX11, Hillsboro)
                         │                   │  - REST + gRPC + realtime
                         │                   │  - Go runtime modules:
                         │                   │    - fleet_allocator.go
@@ -230,7 +231,7 @@ doesn't affect us since we're not using Hetzner DNS.)
                         │                   │    - protocol_version.go
                         │                   │  - /metrics scraped
                         │                   ▼
-                        │                   Postgres 16 (Hetzner CAX11)
+                        │                   Postgres 16 (Hetzner CPX11)
                         │                   - Nakama schema
                         │                   - games config
                         │
@@ -426,13 +427,16 @@ credential rotation."
 - **Dashboard:** https://console.hetzner.com
 - **Account:** `admin@snoringcat.games`
 - **Project:** `snoringcat-platform`
-- **What's hosted:** Nakama box (CAX11), Postgres box (CAX11),
+- **What's hosted:** Nakama box (CPX11), Postgres box (CPX11),
   staging box (CX21, after Phase G), private network,
   firewall.
 - **API token:** `HCLOUD_TOKEN` &mdash; in age-encrypted
   credentials. Permissions: Read &amp; Write at project level.
-- **Cost:** ~$10-15/mo (2x CAX11 + 1x CX21 staging + minor
-  bandwidth).
+- **Cost:** ~$15/mo (2x CPX11 capped + minor bandwidth).
+  Staging box (CX21, after Phase G) would add ~$7-10/mo.
+  Originally targeted CAX11 (ARM, EU-only) for ~$10/mo, but
+  ARM isn't offered in Hillsboro and NA latency mattered more
+  than the price delta.
 - **Where to look first:** Cloud "Servers" tab.
 
 ### Cloudflare (DNS + Pages)

@@ -127,7 +127,7 @@ Nakama, Postgres, and observability.
   Stack name `prod`, state in S3 `hopnbop-pulumi-state`. Several
   values are still hardcoded in `main.go` (zone
   `snoringcat.games`, IPs `10.0.1.10` / `10.0.1.20`, server
-  type `cpx21`); extracting them into `Pulumi.<stack>.yaml` is
+  type `cpx11`); extracting them into `Pulumi.<stack>.yaml` is
   a follow-up.
 - `infra/remote/nakama/` — Nakama + Caddy + Prometheus/Grafana/
   Loki/Promtail. `docker-compose.yml`, `Caddyfile`, scrape

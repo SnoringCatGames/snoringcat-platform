@@ -48,7 +48,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 └────────────────┬─────────────────────────────────────────────┘
                  │
 ┌────────────────▼─────────────────────────────────────────────┐
-│  Nakama (Hetzner CAX11, Hillsboro)                           │
+│  Nakama (Hetzner CPX11, Hillsboro)                           │
 │  - REST/gRPC/realtime endpoints                              │
 │  - Go runtime modules:                                       │
 │    - fleet_allocator.go (Edgegap allocator hook)             │
@@ -60,7 +60,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 └────────────────┬─────────────────────────────────────────────┘
                  │ private network only
 ┌────────────────▼─────────────────────────────────────────────┐
-│  Postgres 16 (Hetzner CAX11, Hillsboro)                      │
+│  Postgres 16 (Hetzner CPX11, Hillsboro)                      │
 │  - Nakama schema (users, friends, leaderboards, etc.)        │
 │  - games config table (per-game settings + protocol_version) │
 │  - server_pool tables (DIY Hetzner allocator, future)        │
