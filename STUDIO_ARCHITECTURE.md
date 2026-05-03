@@ -384,15 +384,18 @@ Advanced autotiling for Godot. Companion to Surfacer.
 #### `levilindsey/levi.dev` (public)
 
 Personal portfolio site at `levi.dev` and `levilindsey.com`.
-Express.js monorepo on Heroku. **Currently also serves
-`snoringcat.games`** via path-based routing &mdash; this will be
-removed when DNS cuts over to Cloudflare Pages.
+**Migrated 2026-04-30** from an Express.js monorepo on Heroku
+to **Cloudflare Pages + Pages Functions** (`build.js`,
+`functions/[[catchall]].js`, with a R2-backed Pages Function
+for the `kittenbaticorn` heavy wasm). Auto-deploys via GitHub
+Actions on push to `main`.
 
 - **Path:** `Repositories/levi.dev/`
-- **Touch points with studio:** the `apps/snoring-cat/` directory
-  (extracted to `snoringcat.games` repo on 2026-04-27); the
-  `domains` array in `package.json` (will lose snoringcat
-  entries post-cutover).
+- **Touch points with studio:** none currently. The
+  `apps/snoring-cat/` directory was extracted to the
+  `snoringcat.games` repo on 2026-04-27, and the path-based
+  routing for `snoringcat.games` was removed when that domain
+  cut over to Cloudflare Pages.
 
 #### `levilindsey/claude-config` (private)
 

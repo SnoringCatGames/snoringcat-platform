@@ -389,7 +389,8 @@ function Step-Nakama {
 		"FACEBOOK_APP_SECRET",
 		"EDGEGAP_TOKEN",
 		"EDGEGAP_APP_NAME",
-		"EDGEGAP_APP_VERSION"
+		"EDGEGAP_APP_VERSION",
+		"NAKAMA_GAME_VERSION"
 	)) {
 		$val = [Environment]::GetEnvironmentVariable($v)
 		$cfg = $cfg.Replace("`${$v}", $val)
