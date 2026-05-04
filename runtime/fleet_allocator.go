@@ -214,37 +214,32 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
-	deployEnvVars := []edgegapEnvKV{
-		{
-			Key:   "EXPECTED_PLAYER_COUNT",
-			Value: strconv.Itoa(totalPlayerCount),
-		},
-		{
-			Key:   "EXPECTED_SESSION_IDS",
-			Value: strings.Join(allSessionIDs, ","),
-		},
-		{
-			Key:   "TRANSPORT_TYPE",
-			Value: transportType,
-		},
-	}
-	// WebRTC: signaling listens on its own container port
-	// (4434/TCP). The hopnbop-server app declares both
-	// 4433/UDP and 4434/TCP; this env var tells the game-server
-	// to bind WebRTC signaling to 4434 instead of co-locating
-	// it on 4433/TCP (which Edgegap doesn't forward).
-	if transportType == "webrtc" {
-		deployEnvVars = append(deployEnvVars, edgegapEnvKV{
-			Key:   "SIGNALING_PORT",
-			Value: "4434",
-		})
-	}
 	deployReq := edgegapDeployRequest{
 		AppName:     a.appName,
 		VersionName: a.appVersion,
 		IPList:      ipList,
-		EnvVars:     deployEnvVars,
+		EnvVars: []edgegapEnvKV{
+			{
+				Key:   "EXPECTED_PLAYER_COUNT",
+				Value: strconv.Itoa(totalPlayerCount),
+			},
+			{
+				Key:   "EXPECTED_SESSION_IDS",
+				Value: strings.Join(allSessionIDs, ","),
+			},
+			{
+				Key:   "TRANSPORT_TYPE",
+				Value: transportType,
+			},
+		},
 	}
+	// Note: WebRTC signaling sits behind nginx in the container
+	// (nginx terminates wss:// on 4434/TCP and proxies to Godot
+	// on 4433/TCP; native ws:// is pass-throughed). So we don't
+	// override SIGNALING_PORT here — Godot's default (= server
+	// port = 4433/TCP) is what nginx forwards to. The cert env
+	// vars (TLS_FULLCHAIN / TLS_PRIVKEY) live on the Edgegap
+	// app version, not per-deploy.
 	if len(ipList) == 0 {
 		// `north_america` is a published Edgegap continent tag.
 		// This keeps the deploy from 400-ing on missing region
