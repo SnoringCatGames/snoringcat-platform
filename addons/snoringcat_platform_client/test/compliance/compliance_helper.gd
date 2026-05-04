@@ -194,12 +194,14 @@ func nakama_anon_session(device_id: String) -> String:
 
 
 ## Convenience: call a server-to-server RPC by name. The RPC's
-## payload is sent as the request body. Nakama wraps the response
-## as {"payload": "<inner-json-string>"}; this helper parses that
-## inner JSON for you and returns it under the "inner" key.
+## payload is sent as the request body. We add `unwrap=true`
+## to the URL so Nakama treats the body as the raw payload
+## (no JSON-string double-encoding required) and returns the
+## runtime's raw response JSON. The parsed response is exposed
+## as `inner`.
 ##
 ## Returns Dictionary with same shape as http_request, plus:
-##   inner (Variant) — parsed inner-payload JSON, null on failure
+##   inner (Variant) — parsed response JSON, null on failure
 func http_key_rpc(
 	rpc_name: String,
 	body: Variant = null,
@@ -211,34 +213,25 @@ func http_key_rpc(
 			"error": "NAKAMA_HTTP_KEY env var not set",
 			"inner": null,
 		}
-	var path := "/v2/rpc/%s?http_key=%s" % [rpc_name, key]
+	var path := (
+		"/v2/rpc/%s?http_key=%s&unwrap=true"
+		% [rpc_name, key])
 	var result: Dictionary = await http_post(path, body)
-	result.inner = null
-	if result.body is Dictionary and result.body.has("payload"):
-		var payload_str: String = str(result.body.get("payload", ""))
-		if not payload_str.is_empty():
-			var json := JSON.new()
-			if json.parse(payload_str) == OK:
-				result.inner = json.data
+	result.inner = result.body
 	return result
 
 
 ## Convenience: call a session-authenticated RPC by name.
+## See http_key_rpc for the unwrap semantics.
 func session_rpc(
 	rpc_name: String,
 	session_token: String,
 	body: Variant = null,
 ) -> Dictionary:
-	var path := "/v2/rpc/%s" % rpc_name
+	var path := "/v2/rpc/%s?unwrap=true" % rpc_name
 	var auth := "bearer:" + session_token
 	var result: Dictionary = await http_post(path, body, auth)
-	result.inner = null
-	if result.body is Dictionary and result.body.has("payload"):
-		var payload_str: String = str(result.body.get("payload", ""))
-		if not payload_str.is_empty():
-			var json := JSON.new()
-			if json.parse(payload_str) == OK:
-				result.inner = json.data
+	result.inner = result.body
 	return result
 
 
