@@ -4,12 +4,11 @@
 > auth, matchmaking, game-server allocation, observability, or
 > per-game config in any Snoring Cat Games title.**
 >
-> This is the **post-migration target architecture** (Nakama +
-> Hetzner + Edgegap). Until the migration completes, the system
-> still runs on AWS GameLift; that legacy architecture is
-> documented in each game's `CLAUDE.md` and in
-> `hopnbop_private/MIGRATION_PLAN.md`. Once Phase F lands, this
-> doc is the source of truth.
+> This is the **live production architecture** (Nakama +
+> Hetzner + Edgegap), as of Phase F completion (2026-05-03).
+> The previous AWS GameLift design is preserved only as
+> archeology in `hopnbop_private/docs/archive/platform-pivot-discussion.md`
+> and `hopnbop_private/MIGRATION_PLAN.md`.
 
 This file is intentionally **not** loaded automatically by every
 session — it's referenced from each game's project-level
@@ -616,5 +615,5 @@ A record points at the right IP. Cert state lives in
 - Migration phases (lives in `hopnbop_private/MIGRATION_PLAN.md`).
 - Pre-flight credential setup (lives in `MIGRATION_PLAN.md`).
 - Cost decision rationale (lives in
-  `hopnbop_private/platform-pivot-discussion.md`, archived
+  `hopnbop_private/docs/archive/platform-pivot-discussion.md`, archived
   post-migration).

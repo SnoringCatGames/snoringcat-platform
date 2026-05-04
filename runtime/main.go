@@ -57,16 +57,34 @@ func InitModule(
 
 	// Register the status probe first so the runtime is
 	// diagnosable even if a downstream init step fails or is
-	// skipped because of missing config.
+	// skipped because of missing config. The status RPC reads
+	// `registered` at call time (it captures &registered, not a
+	// value), so subsequent registrations below show up
+	// automatically.
 	matchmakerHookEnabled := edgegapToken != ""
+	registered := []string{}
 	statusFn := statusRpcFactory(runtimeStatusConfig{
 		EdgegapAppName:       appName,
 		EdgegapAppVersion:    appVersion,
 		EdgegapTokenSet:      edgegapToken != "",
 		MatchmakerHookActive: matchmakerHookEnabled,
+		RegisteredRpcs:       &registered,
 	})
 	if err := initializer.RegisterRpc("runtime_status", statusFn); err != nil {
 		return err
+	}
+	registered = append(registered, "runtime_status")
+	// Helper that registers an RPC and tracks the name so
+	// runtime_status reflects reality.
+	addRpc := func(name string, fn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, string,
+	) (string, error)) error {
+		if err := initializer.RegisterRpc(name, fn); err != nil {
+			return err
+		}
+		registered = append(registered, name)
+		return nil
 	}
 
 	if !matchmakerHookEnabled {
@@ -101,10 +119,10 @@ func InitModule(
 	}
 
 	lifecycle := &matchLifecycle{}
-	if err := initializer.RegisterRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
+	if err := addRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
 		return err
 	}
-	if err := initializer.RegisterRpc("match_end", lifecycle.MatchEndRpc); err != nil {
+	if err := addRpc("match_end", lifecycle.MatchEndRpc); err != nil {
 		return err
 	}
 	// Phase E migration RPC. Gated behind BULK_IMPORT_ENABLED
@@ -114,8 +132,7 @@ func InitModule(
 	// Set the env var on the Nakama host only while running the
 	// migration script; unset + restart afterwards.
 	if env["BULK_IMPORT_ENABLED"] == "true" {
-		if err := initializer.RegisterRpc(
-			"bulk_import", bulkImportRpc); err != nil {
+		if err := addRpc("bulk_import", bulkImportRpc); err != nil {
 			return err
 		}
 		logger.Warn(
@@ -128,7 +145,7 @@ func InitModule(
 	// right before joining the matchmaker so fleet_allocator can
 	// pull each matched user's public IP and feed it to
 	// Edgegap's ip_list. See client_ip.go.
-	if err := initializer.RegisterRpc("record_client_ip", recordClientIPRpc); err != nil {
+	if err := addRpc("record_client_ip", recordClientIPRpc); err != nil {
 		return err
 	}
 
@@ -138,24 +155,19 @@ func InitModule(
 		GameVersion:     env["NAKAMA_GAME_VERSION"],
 		ProtocolVersion: parseEnvInt(env, "NAKAMA_PROTOCOL_VERSION", 0),
 	}
-	if err := initializer.RegisterRpc(
-		"version_check", versionCheckRpcFactory(verCfg)); err != nil {
+	if err := addRpc("version_check", versionCheckRpcFactory(verCfg)); err != nil {
 		return err
 	}
-	if err := initializer.RegisterRpc(
-		"update_and_get_presence", updateAndGetPresenceRpc); err != nil {
+	if err := addRpc("update_and_get_presence", updateAndGetPresenceRpc); err != nil {
 		return err
 	}
-	if err := initializer.RegisterRpc(
-		"get_player_stats", getPlayerStatsRpc); err != nil {
+	if err := addRpc("get_player_stats", getPlayerStatsRpc); err != nil {
 		return err
 	}
-	if err := initializer.RegisterRpc(
-		"get_match_history", getMatchHistoryRpc); err != nil {
+	if err := addRpc("get_match_history", getMatchHistoryRpc); err != nil {
 		return err
 	}
-	if err := initializer.RegisterRpc(
-		"export_player_data", exportPlayerDataRpc); err != nil {
+	if err := addRpc("export_player_data", exportPlayerDataRpc); err != nil {
 		return err
 	}
 

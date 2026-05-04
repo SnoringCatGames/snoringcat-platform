@@ -4,3 +4,15 @@ config:
     secure: v1:qCkAtkZiX16PNqNm:KPsuJVcMCDef7HQ0A3+JT5UdsVYPVJR1R6JPHzsBIwNwQr0YpCHG7wWMKj4LCpS2JL/cuhq9x5tItj1uz+RGu1OvY5lkU+LOcS2cOH/aL34=
   cloudflare:apiToken:
     secure: v1:B4vGFoSGJ3TFJeLg:v/D+Fi1K2moDUIey1TGDfGMLx5OdMFl3V+Aw+00bM72QQtcYeVdiDQE+A0StZwpTENbPTXTJCuiPRYeM2l41Dl8D2UM9
+  # Stack-level overrides (consumed by main.go's stackConfig).
+  # Setting these explicitly makes Pulumi.<stack>.yaml the single
+  # canonical record of "where this stack runs"; the defaults
+  # in main.go remain as fallbacks for stacks that don't override.
+  # Private IPs (10.0.1.10 / 10.0.1.20) and the /16 network range
+  # stay hardcoded — changing them needs a state migration, not
+  # just a config swap.
+  snoringcat-platform:zoneName: snoringcat.games
+  snoringcat-platform:location: hil
+  snoringcat-platform:networkZone: us-west
+  snoringcat-platform:serverType: cpx11
+  snoringcat-platform:image: ubuntu-24.04

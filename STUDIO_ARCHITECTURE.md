@@ -71,7 +71,7 @@ deeper doc that argues for it.
 ### Off AWS / onto Nakama + Hetzner + Edgegap
 
 **Decision date:** 2026-04-26. **Doc:**
-`hopnbop_private/platform-pivot-discussion.md`.
+`hopnbop_private/docs/archive/platform-pivot-discussion.md`.
 
 GameLift's idle baseline cost was 78% of the AWS bill, and the
 operational complexity (warmup machinery, port-remapping,
@@ -723,7 +723,7 @@ for the full matrix. Quick reference:
 | What | Where |
 |---|---|
 | Active migration plan | `hopnbop_private/MIGRATION_PLAN.md` |
-| Architecture decision context | `hopnbop_private/platform-pivot-discussion.md` |
+| Architecture decision context | `hopnbop_private/docs/archive/platform-pivot-discussion.md` |
 | Runtime platform reference | `snoringcat-platform/PLATFORM_ARCHITECTURE.md` |
 | **This studio overview** | `snoringcat-platform/STUDIO_ARCHITECTURE.md` |
 | Levi's user CLAUDE.md | `claude-config/CLAUDE.md` |
@@ -745,7 +745,7 @@ for the full matrix. Quick reference:
 
 - `hopnbop_private/MIGRATION_PLAN.md` &mdash; the executable
   plan for the off-AWS migration.
-- `hopnbop_private/platform-pivot-discussion.md` &mdash; the
+- `hopnbop_private/docs/archive/platform-pivot-discussion.md` &mdash; the
   decision-doc that motivates the migration.
 - `snoringcat-platform/PLATFORM_ARCHITECTURE.md` &mdash; the
   runtime detail of the Nakama+Edgegap platform.

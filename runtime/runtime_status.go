@@ -38,11 +38,18 @@ type runtimeStatusResponse struct {
 // init time so the RPC can echo them back without re-reading
 // env vars (which would always be set inside the Nakama
 // container regardless of what main saw).
+//
+// RegisteredRpcs is a pointer to the slice main.go appends into
+// as it registers each RPC. The factory closure dereferences at
+// call time, so the response always reflects the actual
+// registered set (notably: bulk_import only appears when
+// BULK_IMPORT_ENABLED gated it on).
 type runtimeStatusConfig struct {
 	EdgegapAppName       string
 	EdgegapAppVersion    string
 	EdgegapTokenSet      bool
 	MatchmakerHookActive bool
+	RegisteredRpcs       *[]string
 }
 
 // statusRpcFactory binds the snapshot of configuration into a
@@ -72,6 +79,13 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 		if cfg.MatchmakerHookActive {
 			hooks = append(hooks, "matchmaker_matched")
 		}
+		// Snapshot the registered set at call time, not init
+		// time — main.go appends as RPCs register and bulk_import
+		// is env-gated.
+		rpcs := []string{}
+		if cfg.RegisteredRpcs != nil {
+			rpcs = append(rpcs, (*cfg.RegisteredRpcs)...)
+		}
 		resp := runtimeStatusResponse{
 			BuildID:           BuildID,
 			BuildTime:         BuildTime,
@@ -79,19 +93,8 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 			EdgegapAppName:    cfg.EdgegapAppName,
 			EdgegapAppVersion: cfg.EdgegapAppVersion,
 			EdgegapTokenSet:   cfg.EdgegapTokenSet,
-			RegisteredRpcs: []string{
-				"register_server",
-				"match_end",
-				"bulk_import",
-				"runtime_status",
-				"record_client_ip",
-				"version_check",
-				"update_and_get_presence",
-				"get_player_stats",
-				"get_match_history",
-				"export_player_data",
-			},
-			RegisteredHooks: hooks,
+			RegisteredRpcs:    rpcs,
+			RegisteredHooks:   hooks,
 		}
 		out, err := json.Marshal(resp)
 		if err != nil {
