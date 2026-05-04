@@ -62,6 +62,10 @@ The suite runs in one of two modes, controlled by
 | Matchmaking     | `test_matchmaking.gd`      | Matchmaker hook is registered (via `runtime_status`); full socket flow flagged pending. |
 | Match loopback  | `test_match_loopback.gd`   | Server-to-server runtime RPCs (`register_server`, `match_end`, `record_client_ip`) are registered and reject malformed input. |
 | API surface     | `test_api_surface.gd`      | Unauthenticated calls to the SDK's HTTP routes return 401 (catches accidental gate removal). Bare `/v2/rpc/<name>` without an `http_key` does not execute. |
+| Socket auth     | `test_socket_auth.gd`      | Realtime WSS endpoint accepts a valid session and rejects a garbage-signature token. |
+| Socket matchmaker | `test_socket_matchmaker.gd` | `add_matchmaker_async` returns a ticket id; `remove_matchmaker_async` cleans up. |
+| Socket presence | `test_socket_presence.gd`  | `update_status_async` and `follow_users_async` round-trip without errors (powers the online-friends UI). |
+| Socket chat     | `test_socket_chat.gd`      | Join → send → echo round-trip on a room channel. |
 
 Tests use a stable device id (`compliance-anon-fixed-1`) so
 runs reuse the same Nakama account instead of bloating the
