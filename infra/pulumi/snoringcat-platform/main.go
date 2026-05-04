@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pulumi/pulumi-cloudflare/sdk/v5/go/cloudflare"
+	"github.com/pulumi/pulumi-command/sdk/go/command/remote"
 	"github.com/pulumi/pulumi-hcloud/sdk/go/hcloud"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
@@ -157,6 +158,20 @@ func main() {
 		if postgresPubPath == "" {
 			postgresPubPath = filepath.Join(home, ".hopnbop-migration", "ssh", "postgres.pub")
 		}
+		// Private key for nakama root: required to provision the
+		// non-root `watchdog` user via remote.Command. See the
+		// nakamaWatchdogUser resource below.
+		nakamaPrivPath := cfg.Get("nakamaSshPrivkeyPath")
+		if nakamaPrivPath == "" {
+			nakamaPrivPath = filepath.Join(home, ".hopnbop-migration", "ssh", "nakama")
+		}
+		// Public key for the `watchdog` SSH user (separate from the
+		// hcloud root key; deployed by remote.Command rather than
+		// cloud-init).
+		watchdogPubPath := cfg.Get("watchdogSshPubkeyPath")
+		if watchdogPubPath == "" {
+			watchdogPubPath = filepath.Join(home, ".hopnbop-migration", "ssh", "nakama-watchdog.pub")
+		}
 
 		nakamaPub, err := os.ReadFile(nakamaPubPath)
 		if err != nil {
@@ -165,6 +180,14 @@ func main() {
 		postgresPub, err := os.ReadFile(postgresPubPath)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", postgresPubPath, err)
+		}
+		nakamaPriv, err := os.ReadFile(nakamaPrivPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", nakamaPrivPath, err)
+		}
+		watchdogPub, err := os.ReadFile(watchdogPubPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", watchdogPubPath, err)
 		}
 
 		zone, err := cloudflare.LookupZone(ctx, &cloudflare.LookupZoneArgs{
@@ -259,6 +282,68 @@ func main() {
 			// because the new server can't take a name still
 			// owned by the old one. Force delete-first.
 			pulumi.DeleteBeforeReplace(true))
+		if err != nil {
+			return err
+		}
+
+		// Provision a non-root `watchdog` user on nakama-prod-1 with a
+		// forced-command authorized_keys for the daily job-watchdog.
+		// The forced command limits the holder of the watchdog key to
+		// `systemctl --failed` + `systemctl list-timers` (read-only
+		// systemd state).
+		//
+		// Why a separate Pulumi resource rather than cloud-init:
+		// nakamaSrv has IgnoreChanges([]string{"userData"}) so editing
+		// the cloud-config in this file has no effect on the running
+		// host. remote.Command runs imperatively against the deployed
+		// host and re-fires when its inputs change (key rotation).
+		// Idempotent: the script tolerates re-runs.
+		watchdogAuthLine := strings.Join([]string{
+			`command="systemctl --failed --no-pager --plain ` +
+				`&& echo ===TIMERS=== ` +
+				`&& systemctl list-timers --all --no-pager",` +
+				`no-port-forwarding,no-X11-forwarding,` +
+				`no-agent-forwarding,no-pty`,
+			strings.TrimSpace(string(watchdogPub)),
+		}, " ")
+		watchdogProvisionScript := `set -e
+# Wait for cloud-init to finish on a freshly-rebuilt host.
+while [ ! -f /var/lib/cloud/snoringcat-bootstrap-done ]; do
+    echo "waiting for cloud-init bootstrap..."
+    sleep 10
+done
+id watchdog >/dev/null 2>&1 || \
+    useradd --system --create-home --shell /bin/bash watchdog
+# Unlock the account: useradd --system leaves it password-locked
+# (! in shadow), and UsePAM yes rejects locked accounts even for
+# pubkey auth. Using * means "no usable password" without locking.
+usermod -p '*' watchdog
+install -d -m 0700 -o watchdog -g watchdog /home/watchdog/.ssh
+cat > /home/watchdog/.ssh/authorized_keys <<'KEY_EOF'
+` + watchdogAuthLine + `
+KEY_EOF
+chown watchdog:watchdog /home/watchdog/.ssh/authorized_keys
+chmod 600 /home/watchdog/.ssh/authorized_keys
+echo "watchdog user provisioned"
+`
+		nakamaRootKeySecret := pulumi.ToSecret(
+			pulumi.String(string(nakamaPriv)),
+		).(pulumi.StringOutput)
+		_, err = remote.NewCommand(ctx, "nakama-watchdog-user", &remote.CommandArgs{
+			Connection: &remote.ConnectionArgs{
+				Host:       nakamaSrv.Ipv4Address,
+				User:       pulumi.String("root"),
+				PrivateKey: nakamaRootKeySecret,
+			},
+			Create: pulumi.String(watchdogProvisionScript),
+			Update: pulumi.String(watchdogProvisionScript),
+			// Re-fire the script when the public key changes (e.g.
+			// during key rotation) or when the script itself changes.
+			Triggers: pulumi.Array{
+				pulumi.String(watchdogAuthLine),
+				pulumi.String(watchdogProvisionScript),
+			},
+		}, pulumi.DependsOn([]pulumi.Resource{nakamaSrv}))
 		if err != nil {
 			return err
 		}

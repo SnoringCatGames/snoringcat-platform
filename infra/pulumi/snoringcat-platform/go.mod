@@ -4,6 +4,7 @@ go 1.25.8
 
 require (
 	github.com/pulumi/pulumi-cloudflare/sdk/v5 v5.49.1
+	github.com/pulumi/pulumi-command/sdk v1.2.1
 	github.com/pulumi/pulumi-hcloud/sdk v1.34.0
 	github.com/pulumi/pulumi/sdk/v3 v3.232.0
 )

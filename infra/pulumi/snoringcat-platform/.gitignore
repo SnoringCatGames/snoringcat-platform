@@ -2,5 +2,9 @@
 .pulumi/
 
 # Built Go binary (Pulumi compiles main.go on each `up`).
+# Module name is snoringcat-platform-pulumi, so `go build .` emits
+# snoringcat-platform-pulumi.exe.
 snoringcat-platform
 snoringcat-platform.exe
+snoringcat-platform-pulumi
+snoringcat-platform-pulumi.exe
