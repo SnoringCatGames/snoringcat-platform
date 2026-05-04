@@ -4,10 +4,15 @@ extends GutTest
 ## removal, rename, or auth-gate removal without needing real
 ## user credentials.
 ##
-## Each route under test should return 401 for unauthenticated
-## requests. A 404 means the route is gone (or never existed),
-## a 200/2xx means the auth gate is missing — both are
-## breaking changes for any consumer game.
+## Two levels:
+##   - Nakama HTTP routes the SDK depends on: each must return
+##     401 when called without a Bearer session token. A 404
+##     means the route was renamed or removed (breaking change
+##     for consumers); a 2xx means the auth gate is missing.
+##   - Server-to-server runtime RPCs gated by HTTP key: each
+##     must return 401 (or whatever Nakama returns for missing
+##     http_key) when called without one. A 200 means the
+##     server-to-server gate is missing.
 
 
 const _Helper = preload(
@@ -15,42 +20,34 @@ const _Helper = preload(
 	+ "compliance/compliance_helper.gd"
 )
 
-## (path, method, body) tuples for each authenticated route
-## the platform exposes that's also part of the contract a
-## consumer game depends on. Add new rows as more endpoints
-## ship; remove only when an endpoint is intentionally retired
-## (and bump the major version of the platform contract).
+## (path, method, body) tuples for each Nakama HTTP route the
+## SDK depends on. Add new rows as more endpoints ship; remove
+## only when an endpoint is intentionally retired (and bump the
+## major version of the platform contract).
 const _AUTH_REQUIRED_ROUTES := [
-	# Friends.
-	["GET", "/v1/friends", null],
-	["POST", "/v1/friends/add", {}],
-	["POST", "/v1/friends/accept", {}],
-	["POST", "/v1/friends/reject", {}],
-	["POST", "/v1/friends/cancel", {}],
-	["POST", "/v1/friends/remove", {}],
-	["POST", "/v1/friends/seen", {}],
-	["GET", "/v1/friends/notifications?since=0", null],
-	# Presence.
-	["POST", "/v1/presence/heartbeat", {}],
-	# Party.
-	["POST", "/v1/party/create", {}],
-	["POST", "/v1/party/invite", {}],
-	["POST", "/v1/party/join", {}],
-	["POST", "/v1/party/leave", {}],
-	["POST", "/v1/party/kick", {}],
-	["GET", "/v1/party/status", null],
-	["POST", "/v1/party/start", {}],
-	# Player profile / settings.
-	["GET", "/v1/player/profile", null],
-	["GET", "/v1/player/settings", null],
-	["POST", "/v1/player/settings", {}],
-	["GET", "/v1/player/history", null],
-	["GET", "/v1/player/export", null],
-	# Matchmaking.
-	["POST", "/v1/matchmaking/start", {}],
-	["POST", "/v1/matchmaking/leave", {}],
-	# Sessions.
-	["GET", "/v1/session/active", null],
+	# Account.
+	["GET", "/v2/account", null],
+	# Friends. Nakama uses /v2/friend (singular, query-paramed).
+	["GET", "/v2/friend", null],
+	["POST", "/v2/friend?ids=00000000-0000-0000-0000-000000000000", null],
+	["DELETE", "/v2/friend?ids=00000000-0000-0000-0000-000000000000", null],
+	# Groups (parties are Nakama groups under the hood).
+	["GET", "/v2/group", null],
+	# Storage (used for cloud-synced settings).
+	["GET", "/v2/storage/settings", null],
+	# Notifications inbox.
+	["GET", "/v2/notification", null],
+]
+
+## Server-to-server runtime RPCs that must require the HTTP key.
+## Bare GETs of /v2/rpc/<name> without ?http_key= should not
+## execute the runtime function.
+const _S2S_RUNTIME_RPCS := [
+	"runtime_status",
+	"register_server",
+	"match_end",
+	"record_client_ip",
+	"version_check",
 ]
 
 var _helper
@@ -61,7 +58,7 @@ func before_each() -> void:
 	add_child_autofree(_helper)
 
 
-func test_unauth_routes_return_401() -> void:
+func test_unauth_routes_reject() -> void:
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")
 		return
@@ -70,28 +67,33 @@ func test_unauth_routes_return_401() -> void:
 	for route in _AUTH_REQUIRED_ROUTES:
 		var method: String = route[0]
 		var path: String = route[1]
-		var body = route[2]
-		var api: Node = _helper.make_api_client(self)
-		await get_tree().process_frame
+		var body: Variant = route[2]
+		var result: Dictionary
 		match method:
 			"GET":
-				api.do_get(path)
+				result = await _helper.http_get(path)
 			"POST":
-				api.do_post(path, body if body else {})
+				result = await _helper.http_post(path, body)
 			"PUT":
-				api.do_put(path, body if body else {})
-		var result: Dictionary = await _helper.next_response(api)
+				result = await _helper.http_put(path, body)
+			"DELETE":
+				result = await _helper.http_delete(path)
+			_:
+				failures.append("%s %s: unsupported method"
+					% [method, path])
+				continue
+
 		if not result.error.is_empty():
 			failures.append(
 				"%s %s: transport error %s"
 					% [method, path, result.error])
 			continue
 		if result.status_code == 401:
-			# Pass.
-			continue
+			continue  # Pass.
 		if result.status_code == 404:
 			failures.append(
-				"%s %s: 404 (route missing)" % [method, path])
+				"%s %s: 404 (route missing or renamed)"
+					% [method, path])
 		elif (
 			result.status_code >= 200
 			and result.status_code < 300
@@ -99,14 +101,42 @@ func test_unauth_routes_return_401() -> void:
 			failures.append(
 				"%s %s: %d (auth gate missing!)"
 					% [method, path, result.status_code])
-		else:
-			# Some routes (e.g. /seen) may rate-limit or
-			# return 400 on missing body before checking auth.
-			# Accept anything that isn't 200 or 404 as
-			# "endpoint exists and isn't wide open".
-			pass
+		# Anything else (4xx with a different code, 5xx) is
+		# acceptable for "endpoint exists and isn't wide open".
 
 	assert_true(
 		failures.is_empty(),
 		"Route surface failures:\n  - "
+			+ "\n  - ".join(failures))
+
+
+func test_runtime_rpcs_reject_without_http_key() -> void:
+	# Nakama's REST RPC endpoint requires either an Authorization
+	# header (session token) or ?http_key=<key>. Without either,
+	# the runtime function does not execute and the response is
+	# 401 (or 400 for malformed). A 200 means the gate is broken.
+	if not _helper.is_live_mode():
+		pending("mock mode not yet implemented")
+		return
+
+	var failures: Array[String] = []
+	for rpc_name in _S2S_RUNTIME_RPCS:
+		var path: String = "/v2/rpc/" + str(rpc_name)
+		var result: Dictionary = await _helper.http_post(path, null)
+		if not result.error.is_empty():
+			failures.append(
+				"%s: transport error %s"
+					% [rpc_name, result.error])
+			continue
+		if result.status_code >= 200 and result.status_code < 300:
+			# A 2xx without auth is the regression we care about
+			# — could mean the requireServerToServer gate was
+			# removed in a refactor.
+			failures.append(
+				"%s: %d (server-to-server gate missing!)"
+					% [rpc_name, result.status_code])
+
+	assert_true(
+		failures.is_empty(),
+		"Runtime RPC gate failures:\n  - "
 			+ "\n  - ".join(failures))
