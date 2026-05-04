@@ -112,14 +112,17 @@ Nakama, Postgres, and observability.
 
 - `infra/pulumi/snoringcat-platform/` — Pulumi IaC for Hetzner
   Cloud (private network, servers, firewalls) + Cloudflare DNS.
-  Stack name `prod`, state in S3 `hopnbop-pulumi-state`
-  (one remaining AWS dependency post Phase F). Stack-level
-  values (`zoneName`, `location`, `networkZone`, `serverType`,
-  `image`) live in `Pulumi.<stack>.yaml`; defaults in `main.go`
-  are fallbacks for stacks that don't override. Private IPs
-  (`10.0.1.10`/`10.0.1.20`) and the `/16` network range stay
-  hardcoded — changing them needs a state migration, not just
-  a config swap.
+  Stack name `prod`, state in Cloudflare R2 bucket
+  `hopnbop-pulumi-state-r2` (S3-compat backend). Pulumi reads
+  `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_ENDPOINT` from
+  `~/.hopnbop-migration/credentials.env`; `phase-a.ps1`
+  routes those into `AWS_*` env vars before invoking Pulumi.
+  Stack-level values (`zoneName`, `location`, `networkZone`,
+  `serverType`, `image`) live in `Pulumi.<stack>.yaml`;
+  defaults in `main.go` are fallbacks for stacks that don't
+  override. Private IPs (`10.0.1.10`/`10.0.1.20`) and the
+  `/16` network range stay hardcoded — changing them needs a
+  state migration, not just a config swap.
 - `infra/remote/nakama/` — Nakama + Caddy + Prometheus/Grafana/
   Loki/Promtail. `docker-compose.yml`, `Caddyfile`, scrape
   configs, dashboards. Deployed to `/opt/nakama/` on the

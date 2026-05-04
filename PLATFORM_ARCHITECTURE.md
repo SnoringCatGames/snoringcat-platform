@@ -492,7 +492,7 @@ cat /var/lib/snoringcat/cost-monitor-state.json
 | Pulumi infra (Hetzner) | `snoringcat-platform/infra/pulumi/snoringcat-platform/` |
 | Nakama+observability remote configs | `snoringcat-platform/infra/remote/nakama/` |
 | Postgres remote configs | `snoringcat-platform/infra/remote/postgres/` |
-| Pulumi state | S3 `hopnbop-pulumi-state` (us-west-2) |
+| Pulumi state | Cloudflare R2 `hopnbop-pulumi-state-r2` (S3-compat) |
 | Cost monitor source | `snoringcat-platform/infra/remote/cost-monitor/` |
 | Cost monitor deployed | `/opt/snoringcat/cost-monitor/` on Nakama host |
 | Cost monitor state | `/var/lib/snoringcat/cost-monitor-state.json` on Nakama host |

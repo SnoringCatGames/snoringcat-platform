@@ -206,43 +206,13 @@ function Step-PulumiSetup {
 
 function Step-S3 {
 	if (-not (Should-Run "S3")) { return }
-	Note "Step: S3 backend bucket"
-	$bucket = "hopnbop-pulumi-state"
-	aws s3api head-bucket --bucket $bucket --profile hopnbop --region us-west-2 2>$null
-	if ($LASTEXITCODE -eq 0) {
-		Log "S3 bucket $bucket already exists"
-		return
-	}
-	Log "Creating S3 bucket $bucket"
-	Invoke-Checked "aws s3api create-bucket" {
-		aws s3api create-bucket `
-			--bucket $bucket `
-			--profile hopnbop `
-			--region us-west-2 `
-			--create-bucket-configuration LocationConstraint=us-west-2 | Out-Null
-	}
-	Invoke-Checked "aws s3api put-bucket-versioning" {
-		aws s3api put-bucket-versioning `
-			--bucket $bucket `
-			--profile hopnbop `
-			--region us-west-2 `
-			--versioning-configuration Status=Enabled | Out-Null
-	}
-	Invoke-Checked "aws s3api put-bucket-encryption" {
-		$enc = '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-		aws s3api put-bucket-encryption `
-			--bucket $bucket `
-			--profile hopnbop `
-			--region us-west-2 `
-			--server-side-encryption-configuration $enc | Out-Null
-	}
-	Invoke-Checked "aws s3api put-public-access-block" {
-		aws s3api put-public-access-block `
-			--bucket $bucket `
-			--profile hopnbop `
-			--region us-west-2 `
-			--public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" | Out-Null
-	}
+	Note "Step: S3 backend bucket — SKIPPED (state on R2)"
+	# Pulumi state migrated off AWS S3 to Cloudflare R2 on
+	# 2026-05-04 (Phase F+). Bucket: hopnbop-pulumi-state-r2.
+	# Pulumi reads R2 S3-compat creds via the standard
+	# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
+	# (Step-PulumiLogin sets those from R2_*).
+	Log "S3 bucket creation skipped — Pulumi state lives on R2."
 }
 
 function Step-PulumiLogin {
@@ -250,8 +220,30 @@ function Step-PulumiLogin {
 	Note "Step: Pulumi login + stack init + config"
 	Push-Location $PulumiDir
 	try {
-		Invoke-Checked "pulumi login" {
-			pulumi login "s3://hopnbop-pulumi-state?region=us-west-2" | Out-Null
+		# Default to R2 backend (S3-compatible, no AWS dependency).
+		# Pulumi reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+		# under the hood; route the R2_* creds through those env
+		# vars for the duration of this step.
+		if ([string]::IsNullOrEmpty($env:R2_ACCESS_KEY_ID) `
+				-or [string]::IsNullOrEmpty($env:R2_SECRET_ACCESS_KEY) `
+				-or [string]::IsNullOrEmpty($env:R2_ENDPOINT)) {
+			throw ("R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and " +
+				"R2_ENDPOINT must be set in credentials.env. Create " +
+				"the R2 API token in the Cloudflare dashboard " +
+				"(R2 -> Manage R2 API Tokens -> Create), scoped to " +
+				"the hopnbop-pulumi-state-r2 bucket with " +
+				"object_read_and_write.")
+		}
+		$env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
+		$env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
+		$backend = $env:PULUMI_BACKEND_URL
+		if ([string]::IsNullOrEmpty($backend)) {
+			$backend = ("s3://hopnbop-pulumi-state-r2" `
+				+ "?endpoint=$($env:R2_ENDPOINT)" `
+				+ "&region=auto&s3ForcePathStyle=true")
+		}
+		Invoke-Checked "pulumi login (R2)" {
+			pulumi login $backend | Out-Null
 		}
 		# Create or select stack 'prod'.
 		$stacksJson = pulumi stack ls --json 2>$null

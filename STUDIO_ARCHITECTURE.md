@@ -149,10 +149,10 @@ files on a box). Reason: phased autonomous execution benefits
 from idempotent declarative state &mdash; if a phase fails
 halfway, Pulumi recovers cleanly.
 
-State stored in S3 bucket `hopnbop-pulumi-state` (us-west-2,
-versioned + encrypted). Encryption passphrase
-(`PULUMI_CONFIG_PASSPHRASE`) is in the age-encrypted
-credentials.
+State stored in Cloudflare R2 bucket `hopnbop-pulumi-state-r2`
+(S3-compat backend, accessed via R2 API tokens scoped to that
+bucket). Encryption passphrase (`PULUMI_CONFIG_PASSPHRASE`) is
+in the age-encrypted credentials.
 
 ### GitHub for source and CI
 
@@ -547,17 +547,19 @@ credential rotation."
   feature exists; SendGrid can be cancelled if no other
   consumer.
 
-### AWS (decommissioning)
+### AWS (decommissioned)
 
-- **Account:** 270469481989
-- **Region:** us-west-2
-- **Profile:** hopnbop (configured locally via AWS SSO)
-- **Login:** `aws sso login --profile hopnbop`
-- **Status:** every resource except the S3 backup bucket and
-  Pulumi-state bucket gets deleted in Phase F. After 30 days,
-  Levi decides whether to fully close the account.
-- **Pulumi state bucket** (`hopnbop-pulumi-state`): kept beyond
-  Phase F since Pulumi continues to manage Hetzner state.
+- **Account:** 270469481989 (open but empty).
+- **Status:** zero resources as of 2026-05-04. Phase F
+  (2026-05-03) deleted the GameLift / Lambda / S3 / CloudFront /
+  Route 53 surface for Hop'n'Bop; the orphan
+  `snoringcat-platform-backend` SAM stack and
+  `hopnbop-pulumi-state` S3 bucket were cleaned up the next day
+  alongside the Pulumi-state migration to R2.
+- **Whether to fully close the account:** Levi decides after
+  the 14-day soak window. Closing forfeits the account number;
+  not closing keeps the door open for any future AWS-only
+  service we might want.
 
 ### Apple Developer / Steamworks / Epic Online Services
 
