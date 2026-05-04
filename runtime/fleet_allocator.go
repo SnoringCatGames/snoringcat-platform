@@ -171,25 +171,28 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	matchedPlayers := make([]matchedPlayer, 0, len(entries))
 	allSessionIDs := make([]string, 0, len(entries))
 	totalPlayerCount := 0
-	// Transport selection: any web player in the match → WebRTC
-	// (UDP-like DataChannels). All-native → ENet. The runtime
-	// also passes the choice into the game-server via Edgegap
-	// EnvVars so the server starts the right peer.
-	transportType := "enet"
+	// Collect each player's platform string for transport
+	// selection. selectTransportType applies the rule
+	// (any web → webrtc, otherwise enet); pulled out so the
+	// compliance suite can probe it via the transport_select
+	// RPC.
+	platforms := make([]string, 0, len(entries))
 	for _, e := range entries {
 		userID := e.GetPresence().GetUserId()
 
 		localCount := 1
+		platform := ""
 		if props := e.GetProperties(); props != nil {
 			if raw, ok := props["player_count"].(string); ok {
 				if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 					localCount = parsed
 				}
 			}
-			if p, ok := props["platform"].(string); ok && p == "web" {
-				transportType = "webrtc"
+			if p, ok := props["platform"].(string); ok {
+				platform = p
 			}
 		}
+		platforms = append(platforms, platform)
 		sessionIDs := make([]string, 0, localCount)
 		for i := 0; i < localCount; i++ {
 			sid := fmt.Sprintf("%s_%d", userID, i)
@@ -213,6 +216,8 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			logger.Warn("no recorded client IP for %s; matchmaker fallback will use geography", userID)
 		}
 	}
+
+	transportType := selectTransportType(platforms)
 
 	deployReq := edgegapDeployRequest{
 		AppName:     a.appName,

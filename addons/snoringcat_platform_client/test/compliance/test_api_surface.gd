@@ -48,6 +48,7 @@ const _S2S_RUNTIME_RPCS := [
 	"match_end",
 	"record_client_ip",
 	"version_check",
+	"transport_select",
 ]
 
 var _helper

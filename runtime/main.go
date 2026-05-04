@@ -170,6 +170,9 @@ func InitModule(
 	if err := addRpc("export_player_data", exportPlayerDataRpc); err != nil {
 		return err
 	}
+	if err := addRpc("transport_select", transportSelectRpc); err != nil {
+		return err
+	}
 
 	logger.Info(
 		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t)",

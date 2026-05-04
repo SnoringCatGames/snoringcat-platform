@@ -60,6 +60,7 @@ The suite runs in one of two modes, controlled by
 | Player stats    | `test_player_stats.gd`     | `get_player_stats` (caller + explicit player_id forms; unranked defaults), `get_match_history` (always returns array, never null). |
 | Data export     | `test_data_export.gd`      | `export_player_data` envelope shape (generated_at, account, storage_objects, leaderboard_records, friends); GDPR-required path. |
 | Matchmaking     | `test_matchmaking.gd`      | Matchmaker hook is registered (via `runtime_status`); full socket flow flagged pending. |
+| Transport sel   | `test_transport_selection.gd` | The WebRTC cross-play transport-selection rule (any `web` → `webrtc`, else `enet`) via the `transport_select` runtime RPC. Catches refactor-induced rule drift without burning real Edgegap allocations. |
 | Match loopback  | `test_match_loopback.gd`   | Server-to-server runtime RPCs (`register_server`, `match_end`, `record_client_ip`) are registered and reject malformed input. |
 | API surface     | `test_api_surface.gd`      | Unauthenticated calls to the SDK's HTTP routes return 401 (catches accidental gate removal). Bare `/v2/rpc/<name>` without an `http_key` does not execute. |
 | Socket auth     | `test_socket_auth.gd`      | Realtime WSS endpoint accepts a valid session and rejects a garbage-signature token. |
