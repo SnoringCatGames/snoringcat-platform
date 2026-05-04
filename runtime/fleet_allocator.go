@@ -171,6 +171,11 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	matchedPlayers := make([]matchedPlayer, 0, len(entries))
 	allSessionIDs := make([]string, 0, len(entries))
 	totalPlayerCount := 0
+	// Transport selection: any web player in the match → WebRTC
+	// (UDP-like DataChannels). All-native → ENet. The runtime
+	// also passes the choice into the game-server via Edgegap
+	// EnvVars so the server starts the right peer.
+	transportType := "enet"
 	for _, e := range entries {
 		userID := e.GetPresence().GetUserId()
 
@@ -180,6 +185,9 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 					localCount = parsed
 				}
+			}
+			if p, ok := props["platform"].(string); ok && p == "web" {
+				transportType = "webrtc"
 			}
 		}
 		sessionIDs := make([]string, 0, localCount)
@@ -218,6 +226,10 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			{
 				Key:   "EXPECTED_SESSION_IDS",
 				Value: strings.Join(allSessionIDs, ","),
+			},
+			{
+				Key:   "TRANSPORT_TYPE",
+				Value: transportType,
 			},
 		},
 	}
@@ -264,11 +276,12 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	subject := "match_ready"
 	for _, mp := range matchedPlayers {
 		connInfo := map[string]any{
-			"server_ip":   status.PublicIP,
-			"server_fqdn": status.Fqdn,
-			"ports":       status.Ports,
-			"request_id":  status.RequestID,
-			"session_ids": mp.SessionIDs,
+			"server_ip":      status.PublicIP,
+			"server_fqdn":    status.Fqdn,
+			"ports":          status.Ports,
+			"request_id":     status.RequestID,
+			"session_ids":    mp.SessionIDs,
+			"transport_type": transportType,
 		}
 		connInfoJSON, _ := json.Marshal(connInfo)
 		if err := nk.NotificationSend(ctx, mp.UserID, subject, map[string]any{
