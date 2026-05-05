@@ -61,6 +61,9 @@ state_month=$(echo "$state" | jq -r '.month // ""')
 # are visible at a glance instead of looking like a fresh
 # monthly start.
 prev_summary_total_usd=$(echo "$state" | jq -r '.last_summary_total_usd // ""')
+prev_summary_hetzner_usd=$(echo "$state" | jq -r '.last_summary_hetzner_usd // ""')
+prev_summary_edgegap_usd=$(echo "$state" | jq -r '.last_summary_edgegap_usd // ""')
+prev_summary_gh_paid_usd=$(echo "$state" | jq -r '.last_summary_gh_paid_usd // ""')
 prev_month_total_usd=""
 prev_month_label=""
 if [[ "$state_month" != "$CURRENT_MONTH" ]]; then
@@ -80,12 +83,18 @@ if [[ "$state_month" != "$CURRENT_MONTH" ]]; then
 			thresholds_crossed: [],
 			last_summary_day: "",
 			last_summary_total_usd: "",
+			last_summary_hetzner_usd: "",
+			last_summary_edgegap_usd: "",
+			last_summary_gh_paid_usd: "",
 			prev_month_total_usd: $pmt,
 			prev_month_label: $pml
 		}')
-	# After reset, prev_summary_total_usd is no longer meaningful
+	# After reset, prev_summary_*_usd are no longer meaningful
 	# for day-over-day comparison (different month).
 	prev_summary_total_usd=""
+	prev_summary_hetzner_usd=""
+	prev_summary_edgegap_usd=""
+	prev_summary_gh_paid_usd=""
 fi
 # The first summary after a rollover surfaces the carried-over
 # values; later summaries within the same month don't need them.
@@ -415,6 +424,22 @@ post_discord() {
 		"$DISCORD_WEBHOOK_URL" >/dev/null
 }
 
+# Day-over-day delta for the daily summary. If there's no
+# previous-summary value (first summary ever, or first after a
+# month rollover), day == MTD. Clamp to 0 so a transient
+# pricing-API blip that briefly lowers MTD doesn't surface a
+# negative.
+compute_day_delta() {
+	local current="$1"
+	local previous="$2"
+	if [[ -z "$previous" ]]; then
+		echo "$current"
+	else
+		awk -v c="$current" -v p="$previous" \
+			'BEGIN { d = c - p; if (d < 0) d = 0; printf "%.2f", d }'
+	fi
+}
+
 # Common body lines shared between threshold-crossing and daily
 # summary messages. Each tracked provider gets its own line so
 # adding more later doesn't bunch up the formatting.
@@ -459,15 +484,50 @@ fi
 
 # Daily summary.
 if (( should_summarize )); then
-	post_discord "**Billing status: \$$total_usd MTD**$prev_month_line
-$provider_lines
+	total_day_usd=$(compute_day_delta \
+		"$total_usd" "$prev_summary_total_usd")
+	hetzner_day_usd=$(compute_day_delta \
+		"$hetzner_usd" "$prev_summary_hetzner_usd")
+	edgegap_day_usd=$(compute_day_delta \
+		"$edgegap_usd" "$prev_summary_edgegap_usd")
+	gh_paid_day_usd=$(compute_day_delta \
+		"$gh_paid_usd" "$prev_summary_gh_paid_usd")
+
+	# Daily-summary provider lines show day-over-day deltas with
+	# MTD in parens. Threshold-crossing pings keep MTD-only since
+	# they fire mid-day, not on a daily cadence.
+	daily_provider_lines="- Hetzner: \$$hetzner_day_usd (\$$hetzner_usd MTD)
+- Edgegap: \$$edgegap_day_usd (\$$edgegap_usd MTD)
+- R2 storage: ${r2_gb} GB / 10 GB free tier"
+	if $cf_pages_tracked; then
+		daily_provider_lines+="
+- CF Pages: ${cf_pages_builds_used} / 500 builds free tier"
+	fi
+	if $gh_tracked; then
+		daily_provider_lines+="
+- GH Actions: ${gh_minutes_used} min · ${gh_storage_gbh} GB-h storage"
+		if awk -v p="$gh_paid_usd" 'BEGIN { exit !(p > 0) }'; then
+			daily_provider_lines+=" (paid: \$${gh_paid_day_usd}, MTD \$${gh_paid_usd})"
+		fi
+	fi
+
+	post_discord "**Billing status: \$$total_day_usd (\$$total_usd MTD)**$prev_month_line
+$daily_provider_lines
 - Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB · CF Pages warn ${CF_PAGES_WARN_BUILDS:-400} · CF Pages hard ${CF_PAGES_HARD_BUILDS:-475}"
-	# Capture this summary's headline number so the next month
-	# rollover can carry it forward as the closing total. Also
-	# clear the carry-forward fields once they've been displayed.
+	# Capture this summary's headline numbers so the next daily
+	# summary can compute day-over-day deltas, and so the next
+	# month rollover can carry the total forward as the closing
+	# total. Also clear the carry-forward fields once they've
+	# been displayed.
 	state=$(echo "$state" | jq \
 		--arg t "$total_usd" \
+		--arg h "$hetzner_usd" \
+		--arg e "$edgegap_usd" \
+		--arg gp "$gh_paid_usd" \
 		'.last_summary_total_usd = $t
+		| .last_summary_hetzner_usd = $h
+		| .last_summary_edgegap_usd = $e
+		| .last_summary_gh_paid_usd = $gp
 		| .prev_month_total_usd = ""
 		| .prev_month_label = ""')
 fi
