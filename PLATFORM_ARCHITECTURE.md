@@ -194,42 +194,54 @@ this cert, so we can't use it for WSS — the browser rejects
 the handshake.
 
 The fix is to mint a deterministic per-deploy hostname and
-register it in DNS at container start:
+register it in DNS just before notifying matched clients:
 
-1. **Container entrypoint** (`infra/game-server/entrypoint.sh`
-   in the consuming game's repo) reads `ARBITRARIUM_PUBLIC_IP`
-   from Edgegap, computes
-   `s-<ip-with-dashes>.<SERVER_DNS_BASE>` and POSTs an
-   A record to Cloudflare via the Zone:DNS:Edit token. TTL
-   60s. On EXIT/TERM/INT it deletes the record.
-2. **Runtime hook** (`fleet_allocator.go`) computes the same
-   hostname from `status.PublicIP` (no round-trip to the
-   container needed) and includes it as `server_fqdn` in the
-   match-ready notification.
-3. **DNS watchdog** (`infra/remote/dns-watchdog/`) is an
+1. **Runtime hook** (`fleet_allocator.go` in this repo) is the
+   sole owner. After Edgegap reports the deploy READY, it:
+   a. Computes `s-<ip-with-dashes>.<SERVER_DNS_BASE>` from
+      `status.PublicIP`.
+   b. POSTs a 60s-TTL CF A record for that name pointing at
+      the IP. The record's `comment` field carries
+      `edgegap deploy=<id> created=<iso>` — used by the
+      watchdog to age out stale records.
+   c. Sends `match_ready` notifications with the freshly
+      resolvable hostname as `server_fqdn`.
+   The hook runs on Hetzner where logs are easy to read; a
+   prior attempt to do this in the container's entrypoint was
+   abandoned because Edgegap's stdout isn't accessible from
+   outside, making diagnosis painful.
+2. **DNS watchdog** (`infra/remote/dns-watchdog/`) is an
    hourly systemd timer on the Nakama host that lists
    `s-*.<SERVER_DNS_BASE>` records and deletes any whose
    `comment` field has a `created=` timestamp older than
    `MAX_RECORD_AGE_HOURS` (default 4h). This catches records
-   orphaned by SIGKILL'd containers that didn't run their
-   EXIT trap. Records without a parseable timestamp are
-   left alone (defensive — a missing timestamp shouldn't
-   blow away a manually-placed record).
+   from deploys that ended without an explicit cleanup —
+   the runtime intentionally does not delete on match-end,
+   because Edgegap's deploy teardown is async and a same-IP
+   redeploy would race against the delete. Records without
+   a parseable timestamp are left alone (defensive — a
+   missing timestamp shouldn't blow away a manually-placed
+   record).
 
-Required env on each Edgegap app version (set as
-`is_secret: true`):
-
-| Var | Purpose |
-|---|---|
-| `CLOUDFLARE_DNS_TOKEN` | Zone:DNS:Edit on the SERVER_DNS_BASE zone |
-| `CLOUDFLARE_DNS_ZONE_ID` | CF zone ID for the SERVER_DNS_BASE zone |
-| `SERVER_DNS_BASE` | Apex (e.g. `game.hopnbop.net`); optional, defaults to `game.hopnbop.net` |
-
-Required env on the Nakama runtime container (`/opt/nakama/config.yml`'s `runtime.env`):
+Required env on the Nakama runtime container's
+`/opt/nakama/config.yml` `runtime.env` block:
 
 | Var | Purpose |
 |---|---|
-| `SERVER_DNS_BASE` | Same apex; the runtime computes the hostname from this. Optional, defaults to `game.hopnbop.net`. Should match what the entrypoint uses. |
+| `CLOUDFLARE_DNS_TOKEN` | Zone:DNS:Edit on the SERVER_DNS_BASE zone. Same value cert-rotate uses. |
+| `CLOUDFLARE_DNS_ZONE_ID` | CF zone ID for SERVER_DNS_BASE (the apex zone hopnbop.net for game.hopnbop.net subdomains). |
+| `SERVER_DNS_BASE` | Optional. Apex used to derive the hostname. Defaults to `game.hopnbop.net`. |
+
+When the CF env vars are absent, the hook still computes
+`server_fqdn` and sends it in the match-ready payload, but
+skips the DNS write — native (ENet) matches keep working,
+web matches won't connect because their browser can't
+resolve the hostname.
+
+The container itself (`infra/game-server/entrypoint.sh` in
+the consuming game's repo) does NOT need any CF credentials.
+It just starts nginx for TLS termination and exec's the
+Godot server. DNS is fully a Nakama-side concern.
 
 **Authority model:** server-authoritative. Game server runs
 deterministic frame simulation (rollback netcode); clients
