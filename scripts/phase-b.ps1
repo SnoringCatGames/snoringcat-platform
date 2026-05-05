@@ -11,14 +11,14 @@
 param(
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor", "AlertTest",
-		"Reencrypt", "Complete"
+		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
+		"AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StartAt = "PulumiUp",
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor", "AlertTest",
-		"Reencrypt", "Complete"
+		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
+		"AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StopAt = "Complete",
 	[switch]$SkipAlertTest
