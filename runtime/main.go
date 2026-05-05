@@ -109,9 +109,11 @@ func InitModule(
 			edgegap: &edgegapClient{
 				token: edgegapToken,
 			},
-			appName:       appName,
-			appVersion:    appVersion,
-			serverDNSBase: env["SERVER_DNS_BASE"],
+			appName:             appName,
+			appVersion:          appVersion,
+			serverDNSBase:       env["SERVER_DNS_BASE"],
+			cloudflareDNSToken:  env["CLOUDFLARE_DNS_TOKEN"],
+			cloudflareDNSZoneID: env["CLOUDFLARE_DNS_ZONE_ID"],
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {

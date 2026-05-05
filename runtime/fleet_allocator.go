@@ -132,12 +132,20 @@ type fleetAllocator struct {
 	appVersion string
 	// serverDNSBase is the apex used to derive the per-deploy
 	// hostname `s-<ip-with-dashes>.<serverDNSBase>` we send to
-	// matched clients. The container's entrypoint creates a
-	// matching Cloudflare DNS A record at startup and the
-	// wildcard cert (`*.<serverDNSBase>`) covers any subdomain.
-	// Configurable via SERVER_DNS_BASE; defaults to
-	// `game.hopnbop.net` when unset.
+	// matched clients. We POST a Cloudflare A record for that
+	// name pointing at the deploy's PublicIP from this hook;
+	// the wildcard cert (`*.<serverDNSBase>`) covers any
+	// subdomain. Configurable via SERVER_DNS_BASE; defaults
+	// to `game.hopnbop.net` when unset.
 	serverDNSBase string
+	// Cloudflare credentials for per-deploy A record
+	// pre-warming. When unset, the hook still computes the
+	// hostname and sends it to clients but skips the DNS
+	// write — web clients will fail the WSS handshake but
+	// native (ENet) matches keep working. Both must come
+	// from the runtime env (NAKAMA host's runtime.env).
+	cloudflareDNSToken  string
+	cloudflareDNSZoneID string
 }
 
 // OnMatchmakerMatched is the Nakama matchmaker hook. Returning a
@@ -288,14 +296,26 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	}
 
 	// Compute the deterministic public hostname from the
-	// allocated IP. The container's entrypoint.sh creates
-	// a Cloudflare DNS A record for `s-<ip-with-dashes>.<dnsBaseDomain>`
-	// (default `game.hopnbop.net`) at startup, and the wildcard
-	// TLS cert covers any subdomain of that base. The Edgegap
-	// status.Fqdn (a `*.pr.edgegap.net` host) is *not* usable
-	// for WSS because the cert chain doesn't match it; the
-	// browser rejects the handshake. Override with the IP-derived
-	// hostname when we have a public IP.
+	// allocated IP and pre-warm a Cloudflare A record for it.
+	//
+	// We cannot use Edgegap's status.Fqdn (a `*.pr.edgegap.net`
+	// host) for WSS because the wildcard TLS cert covers
+	// `*.<dnsBaseDomain>` and the cert chain doesn't match the
+	// Edgegap host — browsers reject the handshake.
+	//
+	// The pre-warm runs here, in the runtime hook, rather than
+	// in the container's entrypoint.sh. Two reasons:
+	//   1. We have the PublicIP and CLOUDFLARE_DNS_* creds in
+	//      Nakama env, so the round-trip Hetzner -> CF is one
+	//      step. Doing the same in the container relies on
+	//      Edgegap injecting CF creds into the deploy, which
+	//      didn't work reliably.
+	//   2. Nakama logs are easy to read; Edgegap container
+	//      stdout is not exposed via API.
+	//
+	// On match-end we do not auto-delete; the dns-watchdog
+	// systemd timer cleans up s-* records older than its
+	// MAX_RECORD_AGE_HOURS threshold (default 4h).
 	serverFqdn := status.Fqdn
 	if status.PublicIP != "" {
 		dnsBase := a.serverDNSBase
@@ -304,6 +324,19 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 		ipDashed := strings.ReplaceAll(status.PublicIP, ".", "-")
 		serverFqdn = fmt.Sprintf("s-%s.%s", ipDashed, dnsBase)
+
+		if a.cloudflareDNSToken != "" && a.cloudflareDNSZoneID != "" {
+			if err := a.preWarmDNS(ctx, logger, serverFqdn,
+				status.PublicIP, status.RequestID); err != nil {
+				logger.Warn("DNS pre-warm failed for %s -> %s: %v",
+					serverFqdn, status.PublicIP, err)
+				// Continue anyway — clients will fail their
+				// WSS handshake but ENet-only pairs survive.
+			}
+		} else {
+			logger.Warn("DNS pre-warm skipped: CLOUDFLARE_DNS_TOKEN" +
+				" or CLOUDFLARE_DNS_ZONE_ID not set in runtime env")
+		}
 	}
 
 	// Notify each matched player with connection info. Each
@@ -333,4 +366,69 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
+}
+
+// preWarmDNS POSTs a Cloudflare A record for hostname -> publicIP
+// with a 60s TTL and a `comment` carrying the deploy ID and a
+// `created=<iso>` timestamp the dns-watchdog systemd timer
+// (infra/remote/dns-watchdog/) uses to detect stale records.
+//
+// The matchmaker hook calls this synchronously before sending
+// match_ready notifications so clients get a hostname that
+// already resolves by the time their browser does the DNS
+// lookup. CF DNS propagation typically completes in well under
+// the time it takes a client to receive the notification, open
+// a socket, and do a fresh resolve.
+//
+// We do NOT delete the record on match-end here — Edgegap's
+// own deploy-cleanup is asynchronous, so a same-IP deploy
+// allocated immediately after this match would race against
+// our delete. The dns-watchdog timer cleans up records older
+// than its MAX_RECORD_AGE_HOURS window (default 4h), which
+// is comfortably longer than any plausible match.
+func (a *fleetAllocator) preWarmDNS(
+	ctx context.Context,
+	logger runtime.Logger,
+	hostname, publicIP, requestID string,
+) error {
+	createdISO := time.Now().UTC().Format(time.RFC3339)
+	comment := fmt.Sprintf(
+		"edgegap deploy=%s created=%s", requestID, createdISO)
+	body, err := json.Marshal(map[string]any{
+		"type":    "A",
+		"name":    hostname,
+		"content": publicIP,
+		"ttl":     60,
+		"proxied": false,
+		"comment": comment,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal CF body: %w", err)
+	}
+	url := fmt.Sprintf(
+		"https://api.cloudflare.com/client/v4/zones/%s/dns_records",
+		a.cloudflareDNSZoneID)
+	req, err := http.NewRequestWithContext(ctx, "POST", url,
+		bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.cloudflareDNSToken)
+
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return fmt.Errorf("CF POST: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf(
+			"CF POST returned %d: %s",
+			resp.StatusCode, string(respBody))
+	}
+	logger.Info("DNS pre-warm: %s -> %s (deploy=%s)",
+		hostname, publicIP, requestID)
+	return nil
 }
