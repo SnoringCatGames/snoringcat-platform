@@ -109,8 +109,9 @@ func InitModule(
 			edgegap: &edgegapClient{
 				token: edgegapToken,
 			},
-			appName:    appName,
-			appVersion: appVersion,
+			appName:       appName,
+			appVersion:    appVersion,
+			serverDNSBase: env["SERVER_DNS_BASE"],
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {

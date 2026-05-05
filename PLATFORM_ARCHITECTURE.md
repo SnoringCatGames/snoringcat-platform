@@ -169,7 +169,10 @@ Required for GDPR / CCPA / app-store TOS. Implementation:
       (Edgegap picks closest deployment region)
    c. Polls Edgegap deployment until status=READY (5-15s)
    d. Returns {host, port, jwt} to all matched players via
-      Nakama notification
+      Nakama notification. The host sent to clients is
+      `s-<ip-with-dashes>.<SERVER_DNS_BASE>` (computed from
+      the deploy's PublicIP), NOT Edgegap's `*.pr.edgegap.net`
+      FQDN — see "Per-deploy DNS pre-warming" below for why.
 5. Client receives notification, opens UDP/WS to
    {host, port}, presents JWT for auth
 6. Game server validates JWT, calls register_server RPC to
@@ -179,6 +182,54 @@ Required for GDPR / CCPA / app-store TOS. Implementation:
 9. Nakama updates leaderboards, match_history, etc.
 10. Server exits cleanly. Edgegap reclaims the container.
 ```
+
+### Per-deploy DNS pre-warming
+
+Web clients connect to game servers via WSS, which means the
+TLS handshake's SNI must match the cert. We hold a wildcard
+cert for `*.<SERVER_DNS_BASE>` (default `game.hopnbop.net`)
+issued by Let's Encrypt and rotated by `cert-rotate.yml`.
+Edgegap's auto-assigned `*.pr.edgegap.net` FQDN doesn't match
+this cert, so we can't use it for WSS — the browser rejects
+the handshake.
+
+The fix is to mint a deterministic per-deploy hostname and
+register it in DNS at container start:
+
+1. **Container entrypoint** (`infra/game-server/entrypoint.sh`
+   in the consuming game's repo) reads `ARBITRARIUM_PUBLIC_IP`
+   from Edgegap, computes
+   `s-<ip-with-dashes>.<SERVER_DNS_BASE>` and POSTs an
+   A record to Cloudflare via the Zone:DNS:Edit token. TTL
+   60s. On EXIT/TERM/INT it deletes the record.
+2. **Runtime hook** (`fleet_allocator.go`) computes the same
+   hostname from `status.PublicIP` (no round-trip to the
+   container needed) and includes it as `server_fqdn` in the
+   match-ready notification.
+3. **DNS watchdog** (`infra/remote/dns-watchdog/`) is an
+   hourly systemd timer on the Nakama host that lists
+   `s-*.<SERVER_DNS_BASE>` records and deletes any whose
+   `comment` field has a `created=` timestamp older than
+   `MAX_RECORD_AGE_HOURS` (default 4h). This catches records
+   orphaned by SIGKILL'd containers that didn't run their
+   EXIT trap. Records without a parseable timestamp are
+   left alone (defensive — a missing timestamp shouldn't
+   blow away a manually-placed record).
+
+Required env on each Edgegap app version (set as
+`is_secret: true`):
+
+| Var | Purpose |
+|---|---|
+| `CLOUDFLARE_DNS_TOKEN` | Zone:DNS:Edit on the SERVER_DNS_BASE zone |
+| `CLOUDFLARE_DNS_ZONE_ID` | CF zone ID for the SERVER_DNS_BASE zone |
+| `SERVER_DNS_BASE` | Apex (e.g. `game.hopnbop.net`); optional, defaults to `game.hopnbop.net` |
+
+Required env on the Nakama runtime container (`/opt/nakama/config.yml`'s `runtime.env`):
+
+| Var | Purpose |
+|---|---|
+| `SERVER_DNS_BASE` | Same apex; the runtime computes the hostname from this. Optional, defaults to `game.hopnbop.net`. Should match what the entrypoint uses. |
 
 **Authority model:** server-authoritative. Game server runs
 deterministic frame simulation (rollback netcode); clients

@@ -130,6 +130,14 @@ type fleetAllocator struct {
 	edgegap    *edgegapClient
 	appName    string
 	appVersion string
+	// serverDNSBase is the apex used to derive the per-deploy
+	// hostname `s-<ip-with-dashes>.<serverDNSBase>` we send to
+	// matched clients. The container's entrypoint creates a
+	// matching Cloudflare DNS A record at startup and the
+	// wildcard cert (`*.<serverDNSBase>`) covers any subdomain.
+	// Configurable via SERVER_DNS_BASE; defaults to
+	// `game.hopnbop.net` when unset.
+	serverDNSBase string
 }
 
 // OnMatchmakerMatched is the Nakama matchmaker hook. Returning a
@@ -279,6 +287,25 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
 	}
 
+	// Compute the deterministic public hostname from the
+	// allocated IP. The container's entrypoint.sh creates
+	// a Cloudflare DNS A record for `s-<ip-with-dashes>.<dnsBaseDomain>`
+	// (default `game.hopnbop.net`) at startup, and the wildcard
+	// TLS cert covers any subdomain of that base. The Edgegap
+	// status.Fqdn (a `*.pr.edgegap.net` host) is *not* usable
+	// for WSS because the cert chain doesn't match it; the
+	// browser rejects the handshake. Override with the IP-derived
+	// hostname when we have a public IP.
+	serverFqdn := status.Fqdn
+	if status.PublicIP != "" {
+		dnsBase := a.serverDNSBase
+		if dnsBase == "" {
+			dnsBase = "game.hopnbop.net"
+		}
+		ipDashed := strings.ReplaceAll(status.PublicIP, ".", "-")
+		serverFqdn = fmt.Sprintf("s-%s.%s", ipDashed, dnsBase)
+	}
+
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server
 	// holds the full allowlist via EXPECTED_SESSION_IDS env
@@ -289,7 +316,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	for _, mp := range matchedPlayers {
 		connInfo := map[string]any{
 			"server_ip":      status.PublicIP,
-			"server_fqdn":    status.Fqdn,
+			"server_fqdn":    serverFqdn,
 			"ports":          status.Ports,
 			"request_id":     status.RequestID,
 			"session_ids":    mp.SessionIDs,
