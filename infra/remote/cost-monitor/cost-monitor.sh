@@ -27,6 +27,15 @@ EMERGENCY_CAP="${EMERGENCY_CAP:-50}"
 BUDGET_WARN_LOW="${BUDGET_WARN_LOW:-20}"
 BUDGET_WARN_MID="${BUDGET_WARN_MID:-40}"
 BUDGET_WARN_HIGH="${BUDGET_WARN_HIGH:-80}"
+EDGEGAP_ACTIVE_WARN="${EDGEGAP_ACTIVE_WARN:-5}"
+EDGEGAP_ACTIVE_HARD="${EDGEGAP_ACTIVE_HARD:-15}"
+# Hourly USD rate for one Edgegap deployment of the configured
+# tier. hopnbop-server is currently 1 vCPU / 1 GB RAM
+# (`req_cpu=1024`, `req_memory=1024` in the app version), which
+# corresponds to Edgegap's "Small CPU" tier; check the Edgegap
+# billing page for the exact figure and tune. Set to `0` to
+# disable dollar estimation entirely.
+EDGEGAP_RATE_USD_PER_HOUR="${EDGEGAP_RATE_USD_PER_HOUR:-0.04}"
 DAILY_SUMMARY_HOUR_UTC="${DAILY_SUMMARY_HOUR_UTC:-9}"
 DISCORD_USER_ID="${DISCORD_USER_ID:-}"
 STATE_FILE="${STATE_FILE:-$STATE_FILE_DEFAULT}"
@@ -86,6 +95,8 @@ if [[ "$state_month" != "$CURRENT_MONTH" ]]; then
 			last_summary_hetzner_usd: "",
 			last_summary_edgegap_usd: "",
 			last_summary_gh_paid_usd: "",
+			edgegap_tracked: {},
+			edgegap_completed_minutes: 0,
 			prev_month_total_usd: $pmt,
 			prev_month_label: $pml
 		}')
@@ -145,18 +156,159 @@ hetzner_eur=$(echo "$servers_json" | jq -r --arg now "$NOW_EPOCH" \
 hetzner_usd=$(awk -v e="$hetzner_eur" 'BEGIN { printf "%.2f", e * 1.08 }')
 
 # ---------------------------------------------------------------------
-# Edgegap MTD spend.
+# Edgegap MTD usage + cost estimate.
+#
+# Edgegap exposes no public billing endpoint (every documented
+# `/v1/billing/*` and `/v1/wallet/*` path 404s as of 2026-05-06,
+# returning a marketing landing page). The `/v1/deployments`
+# listing only returns currently-active containers — terminated
+# deployments fall off, even with `?status=Terminated`. So we
+# accumulate usage ourselves across hourly runs:
+#
+#   state.edgegap_tracked = { request_id: { start: epoch,
+#                                            last_seen: epoch } }
+#   state.edgegap_completed_minutes = number
+#
+# Each run:
+#   1. Fetch current active deployments.
+#   2. For tracked deployments missing from current active:
+#      add (last_seen - start) / 60 to completed_minutes, drop
+#      them from tracked. (Up to ~1h tail per terminated
+#      deployment is lost since the cost-monitor timer is
+#      hourly.)
+#   3. For currently-active deployments:
+#      - new ones get added with start = parsed start_time,
+#        last_seen = now.
+#      - existing ones get last_seen bumped to now.
+#   4. MTD minutes = completed + sum((last_seen - start) for
+#      tracked), each entry's start clamped at month_start so
+#      cross-month deployments don't backfill prior months.
+#
+# Dollar estimate uses EDGEGAP_RATE_USD_PER_HOUR (set from the
+# Edgegap dashboard's billing page; defaults to a rough small-
+# CPU-tier figure).
 # ---------------------------------------------------------------------
-edgegap_usd="0.00"
+edgegap_active_count=0
+edgegap_completed_minutes=$(echo "$state" | jq -r \
+	'.edgegap_completed_minutes // 0')
+edgegap_tracked=$(echo "$state" | jq -c '.edgegap_tracked // {}')
+
 if edgegap_resp=$(curl -fsS \
 		-H "Authorization: Token $EDGEGAP_TOKEN" \
-		"https://api.edgegap.com/v1/billing/current_month" 2>/dev/null); then
-	amount=$(echo "$edgegap_resp" | jq -r '.amount // .total // 0' 2>/dev/null || echo 0)
-	edgegap_usd=$(awk -v a="$amount" 'BEGIN { printf "%.2f", a }')
+		"https://api.edgegap.com/v1/deployments?limit=100" \
+		2>/dev/null); then
+
+	# Build "active_starts.txt" lines of <id>\t<start_epoch>.
+	# `date -d` parses Edgegap's RFC3339 (with sub-second and
+	# TZ offset) where jq's fromdateiso8601 fails.
+	active_lines=""
+	while IFS=$'\t' read -r rid start_iso; do
+		[[ -z "$rid" ]] && continue
+		start_epoch=$(date -d "$start_iso" +%s 2>/dev/null || echo 0)
+		[[ "$start_epoch" -gt 0 ]] || continue
+		active_lines+="${rid}	${start_epoch}"$'\n'
+	done < <(echo "$edgegap_resp" \
+		| jq -r '.data[] | "\(.request_id)\t\(.start_time)"' \
+			2>/dev/null)
+
+	# Active-set as JSON for jq diffs.
+	active_set_json=$(printf "%s" "$active_lines" \
+		| jq -R -s 'split("\n") | map(select(length > 0))
+			| map(split("\t"))
+			| map({(.[0]): (.[1] | tonumber)})
+			| add // {}')
+	edgegap_active_count=$(echo "$active_set_json" \
+		| jq 'length')
+
+	# Settle terminated tracked entries. For each tracked
+	# request_id missing from the active set, fold its
+	# (last_seen - start) into completed_minutes (clamped to
+	# month_start so a cross-month deployment doesn't
+	# backfill prior months) and drop it.
+	settle=$(jq -n \
+		--argjson tracked "$edgegap_tracked" \
+		--argjson active "$active_set_json" \
+		--arg ms "$MONTH_START_EPOCH" \
+		--arg completed "$edgegap_completed_minutes" '
+		def contrib(start; last_seen; ms_):
+			((last_seen - ([start, ms_] | max)) / 60)
+			| (if . < 0 then 0 else . end);
+		reduce ($tracked | to_entries[]) as $e (
+			{ tracked: $tracked,
+				completed: ($completed | tonumber) };
+			if ($active | has($e.key)) then .
+			else
+				.completed = (.completed
+					+ contrib($e.value.start;
+						$e.value.last_seen;
+						($ms | tonumber)))
+				| .tracked = (.tracked | del(.[$e.key]))
+			end
+		)
+		| .completed = (.completed * 10 | floor / 10)')
+	edgegap_tracked=$(echo "$settle" | jq -c '.tracked')
+	edgegap_completed_minutes=$(echo "$settle" \
+		| jq -r '.completed')
+
+	# Add new actives, bump last_seen on known actives.
+	edgegap_tracked=$(echo "$edgegap_tracked" | jq -c \
+		--argjson active "$active_set_json" \
+		--arg now "$NOW_EPOCH" '
+		reduce ($active | to_entries[]) as $a (.;
+			if has($a.key) then
+				.[$a.key].last_seen = ($now | tonumber)
+			else
+				.[$a.key] = {
+					start: $a.value,
+					last_seen: ($now | tonumber)
+				}
+			end)')
 fi
 
-total_usd=$(awk -v a="$hetzner_usd" -v b="$edgegap_usd" \
-	'BEGIN { printf "%.2f", a + b }')
+# Currently-running minutes: sum (now - start) for tracked,
+# each entry clamped at month_start.
+edgegap_active_minutes=$(echo "$edgegap_tracked" \
+	| jq --arg now "$NOW_EPOCH" --arg ms "$MONTH_START_EPOCH" '
+		[.[] | (($now | tonumber)
+			- ([.start, ($ms | tonumber)] | max)) / 60]
+		| add // 0
+		| (. * 10 | floor / 10)')
+
+edgegap_mtd_minutes=$(awk \
+	-v c="$edgegap_completed_minutes" \
+	-v a="$edgegap_active_minutes" \
+	'BEGIN { printf "%.1f", c + a }')
+edgegap_active_hours=$(awk -v m="$edgegap_active_minutes" \
+	'BEGIN { printf "%.1f", m / 60 }')
+edgegap_mtd_hours=$(awk -v m="$edgegap_mtd_minutes" \
+	'BEGIN { printf "%.1f", m / 60 }')
+
+edgegap_usd="0.00"
+if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+		'BEGIN { exit !(r > 0) }'; then
+	edgegap_usd=$(awk \
+		-v h="$edgegap_mtd_hours" \
+		-v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+		'BEGIN { printf "%.2f", h * r }')
+fi
+
+# Persist Edgegap tracking state. Threshold checks below run
+# against a `total_usd` that includes Edgegap only when a rate
+# is configured; otherwise dollar thresholds remain Hetzner-only
+# and the EDGEGAP_ACTIVE_* thresholds catch runaway allocation.
+state=$(echo "$state" | jq \
+	--argjson tracked "$edgegap_tracked" \
+	--arg completed "$edgegap_completed_minutes" \
+	'.edgegap_tracked = $tracked
+	| .edgegap_completed_minutes = ($completed | tonumber)')
+
+if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+		'BEGIN { exit !(r > 0) }'; then
+	total_usd=$(awk -v a="$hetzner_usd" -v b="$edgegap_usd" \
+		'BEGIN { printf "%.2f", a + b }')
+else
+	total_usd="$hetzner_usd"
+fi
 
 # ---------------------------------------------------------------------
 # Cloudflare R2 storage usage.
@@ -369,6 +521,27 @@ if $gh_tracked; then
 	fi
 fi
 
+# Edgegap active-deployment thresholds. Replaces the old dollar-
+# based emergency trigger now that we can't read Edgegap dollars.
+# A normal Hop'n'Bop match is one container at a time; sustained
+# concurrent counts above the warn threshold suggest leaked
+# match_end teardowns or a runaway allocation loop. The hard
+# threshold PATCHes capacity_max=0 the same way the old
+# `emergency` did.
+for entry in "edgegap_active_warn:${EDGEGAP_ACTIVE_WARN:-5}" \
+		"edgegap_active_hard:${EDGEGAP_ACTIVE_HARD:-15}"; do
+	name="${entry%:*}"
+	value="${entry#*:}"
+	if awk -v t="$edgegap_active_count" -v v="$value" \
+			'BEGIN { exit !(t >= v) }'; then
+		if ! echo "$already_crossed" | grep -qx "$name"; then
+			new_crossings+=("$name:${value} active")
+			state=$(echo "$state" | jq --arg n "$name" \
+				'.thresholds_crossed += [$n]')
+		fi
+	fi
+done
+
 # ---------------------------------------------------------------------
 # Emergency action.
 # ---------------------------------------------------------------------
@@ -376,7 +549,7 @@ emergency_msg=""
 if (( ${#new_crossings[@]} > 0 )); then
 	for c in "${new_crossings[@]}"; do
 		case "${c%:*}" in
-			emergency)
+			emergency|edgegap_active_hard)
 				emergency_msg+=$'\n**EMERGENCY** Scaling Edgegap fleet to 0.'
 				if [[ -n "${EDGEGAP_APP_NAME:-}" ]]; then
 					curl -fsS -X PATCH \
@@ -424,27 +597,55 @@ post_discord() {
 		"$DISCORD_WEBHOOK_URL" >/dev/null
 }
 
-# Day-over-day delta for the daily summary. If there's no
-# previous-summary value (first summary ever, or first after a
-# month rollover), day == MTD. Clamp to 0 so a transient
-# pricing-API blip that briefly lowers MTD doesn't surface a
-# negative.
+# Day-over-day delta for the daily summary. Returns "" when no
+# previous-summary value is available (first summary ever, first
+# after a month rollover, or first run after the schema added a
+# new last_summary_*_usd field) so the formatter can drop the
+# delta column instead of misreporting current == day. Clamps to
+# 0 if a transient pricing-API blip briefly lowers MTD.
 compute_day_delta() {
 	local current="$1"
 	local previous="$2"
 	if [[ -z "$previous" ]]; then
-		echo "$current"
+		echo ""
 	else
 		awk -v c="$current" -v p="$previous" \
 			'BEGIN { d = c - p; if (d < 0) d = 0; printf "%.2f", d }'
 	fi
 }
 
+# Format "$daily ($mtd MTD)" or fall back to "$mtd MTD" when no
+# delta is available. Used in both the headline and provider
+# lines.
+fmt_pair() {
+	local daily="$1"
+	local mtd="$2"
+	if [[ -z "$daily" ]]; then
+		echo "\$$mtd MTD"
+	else
+		echo "\$$daily (\$$mtd MTD)"
+	fi
+}
+
+# Render an Edgegap line with active count, MTD hours, and
+# (if a rate is configured) MTD dollar estimate. "MTD" here is
+# our locally-tracked sum of completed + still-running minutes;
+# see the Edgegap section above for accuracy notes.
+fmt_edgegap_line() {
+	local line="- Edgegap: ${edgegap_active_count} active"
+	line+=", ${edgegap_mtd_hours}h MTD"
+	if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+			'BEGIN { exit !(r > 0) }'; then
+		line+=" (~\$${edgegap_usd} @ \$${EDGEGAP_RATE_USD_PER_HOUR}/h)"
+	fi
+	echo "$line"
+}
+
 # Common body lines shared between threshold-crossing and daily
 # summary messages. Each tracked provider gets its own line so
 # adding more later doesn't bunch up the formatting.
 provider_lines="- Hetzner: \$$hetzner_usd
-- Edgegap: \$$edgegap_usd
+$(fmt_edgegap_line)
 - R2 storage: ${r2_gb} GB / 10 GB free tier"
 if $cf_pages_tracked; then
 	provider_lines+="
@@ -478,7 +679,7 @@ if (( ${#new_crossings[@]} > 0 )); then
 	done
 	crossed_str="${crossed_str% | }"
 	post_discord "${mention}**Threshold crossed: $crossed_str**
-- Hetzner+Edgegap MTD: \$$total_usd ($MONTH_LABEL)
+- Hetzner MTD: \$$total_usd ($MONTH_LABEL)
 $provider_lines${emergency_msg}"
 fi
 
@@ -493,11 +694,28 @@ if (( should_summarize )); then
 	gh_paid_day_usd=$(compute_day_delta \
 		"$gh_paid_usd" "$prev_summary_gh_paid_usd")
 
+	# Render an Edgegap line that adds day-over-day delta when
+	# a rate is configured AND a previous summary's edgegap_usd
+	# is on file; otherwise just the MTD form rendered for
+	# threshold pings.
+	fmt_edgegap_daily_line() {
+		local has_rate=0
+		awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+			'BEGIN { exit !(r > 0) }' && has_rate=1
+		if (( has_rate )) && [[ -n "$edgegap_day_usd" ]]; then
+			echo "- Edgegap: ${edgegap_active_count} active, ${edgegap_mtd_hours}h MTD ($(fmt_pair "$edgegap_day_usd" "$edgegap_usd"))"
+		else
+			fmt_edgegap_line
+		fi
+	}
+
 	# Daily-summary provider lines show day-over-day deltas with
-	# MTD in parens. Threshold-crossing pings keep MTD-only since
-	# they fire mid-day, not on a daily cadence.
-	daily_provider_lines="- Hetzner: \$$hetzner_day_usd (\$$hetzner_usd MTD)
-- Edgegap: \$$edgegap_day_usd (\$$edgegap_usd MTD)
+	# MTD in parens, falling back to MTD-only when no previous
+	# value is available (e.g. first run after a month rollover
+	# or after a state-schema change). Threshold-crossing pings
+	# always use MTD-only.
+	daily_provider_lines="- Hetzner: $(fmt_pair "$hetzner_day_usd" "$hetzner_usd")
+$(fmt_edgegap_daily_line)
 - R2 storage: ${r2_gb} GB / 10 GB free tier"
 	if $cf_pages_tracked; then
 		daily_provider_lines+="
@@ -507,13 +725,13 @@ if (( should_summarize )); then
 		daily_provider_lines+="
 - GH Actions: ${gh_minutes_used} min · ${gh_storage_gbh} GB-h storage"
 		if awk -v p="$gh_paid_usd" 'BEGIN { exit !(p > 0) }'; then
-			daily_provider_lines+=" (paid: \$${gh_paid_day_usd}, MTD \$${gh_paid_usd})"
+			daily_provider_lines+=" (paid: $(fmt_pair "$gh_paid_day_usd" "$gh_paid_usd"))"
 		fi
 	fi
 
-	post_discord "**Billing status: \$$total_day_usd (\$$total_usd MTD)**$prev_month_line
+	post_discord "**Billing status: $(fmt_pair "$total_day_usd" "$total_usd")**$prev_month_line
 $daily_provider_lines
-- Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB · CF Pages warn ${CF_PAGES_WARN_BUILDS:-400} · CF Pages hard ${CF_PAGES_HARD_BUILDS:-475}"
+- Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB · CF Pages warn ${CF_PAGES_WARN_BUILDS:-400} · CF Pages hard ${CF_PAGES_HARD_BUILDS:-475} · Edgegap active warn ${EDGEGAP_ACTIVE_WARN:-5} · hard ${EDGEGAP_ACTIVE_HARD:-15}"
 	# Capture this summary's headline numbers so the next daily
 	# summary can compute day-over-day deltas, and so the next
 	# month rollover can carry the total forward as the closing
@@ -535,4 +753,4 @@ fi
 # Persist state.
 echo "$state" > "$STATE_FILE"
 
-echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$$edgegap_usd r2=${r2_gb}GB cf_pages=${cf_pages_builds_used} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
+echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$${edgegap_usd} edgegap_active=${edgegap_active_count} edgegap_mtd_hours=${edgegap_mtd_hours} r2=${r2_gb}GB cf_pages=${cf_pages_builds_used} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
