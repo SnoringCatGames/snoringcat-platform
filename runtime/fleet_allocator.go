@@ -116,6 +116,34 @@ func (c *edgegapClient) Status(ctx context.Context, requestID string) (*edgegapS
 	return out, nil
 }
 
+// Stop terminates an Edgegap deployment. Without this, deployments
+// linger until Edgegap's app-version-level `max_duration` cap (24h
+// by default) fires, racking up container-hours we don't need.
+// Returns nil on 404 — Edgegap will return that for an already-
+// terminated deployment, which we treat as "already done."
+func (c *edgegapClient) Stop(ctx context.Context, requestID string) error {
+	url := fmt.Sprintf("https://api.edgegap.com/v1/stop/%s", requestID)
+	httpReq, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "token "+c.token)
+	resp, err := c.httpClient().Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("edgegap stop failed (%d): %s",
+			resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // matchedPlayer pairs a Nakama user with the session IDs the
 // runtime issued for that user's local players. For 1:1 matches
 // (no couch co-op) SessionIDs has length 1.

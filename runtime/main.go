@@ -87,6 +87,16 @@ func InitModule(
 		return nil
 	}
 
+	// Shared Edgegap client used by both the matchmaker hook
+	// (to allocate deployments) and matchLifecycle.MatchEndRpc
+	// (to terminate them on match end). Stays nil if no token
+	// is configured; matchLifecycle no-ops the stop call in
+	// that case.
+	var edgegap *edgegapClient
+	if matchmakerHookEnabled {
+		edgegap = &edgegapClient{token: edgegapToken}
+	}
+
 	if !matchmakerHookEnabled {
 		logger.Warn(
 			"EDGEGAP_TOKEN not set; matchmaker_matched hook is" +
@@ -106,9 +116,7 @@ func InitModule(
 				" matchmaker hook is enabled.", 3)
 	} else {
 		alloc := &fleetAllocator{
-			edgegap: &edgegapClient{
-				token: edgegapToken,
-			},
+			edgegap:             edgegap,
 			appName:             appName,
 			appVersion:          appVersion,
 			serverDNSBase:       env["SERVER_DNS_BASE"],
@@ -121,7 +129,7 @@ func InitModule(
 		}
 	}
 
-	lifecycle := &matchLifecycle{}
+	lifecycle := &matchLifecycle{edgegap: edgegap}
 	if err := addRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
 		return err
 	}

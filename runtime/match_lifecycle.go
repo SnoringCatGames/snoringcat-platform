@@ -22,7 +22,15 @@ import (
 // run without a session). That makes server-to-server gating
 // alone insufficient — these RPCs add their own integrity
 // checks below to prevent forged calls from polluting state.
-type matchLifecycle struct{}
+//
+// `edgegap` is optional: it's nil when the matchmaker hook is
+// disabled (no EDGEGAP_TOKEN). When set, MatchEndRpc uses it to
+// terminate the Edgegap deployment so we stop paying for the
+// container the moment the match ends, rather than waiting for
+// Edgegap's 24h app-version-level max_duration to fire.
+type matchLifecycle struct {
+	edgegap *edgegapClient
+}
 
 // Reasonable upper bounds on per-player stats. A genuine match
 // produces low-double-digit numbers; anything beyond this is
@@ -298,6 +306,26 @@ func (m *matchLifecycle) MatchEndRpc(
 	}}); err != nil {
 		// Non-fatal: maybe registration was never written.
 		logger.Warn("storage delete: %v", err)
+	}
+
+	// Terminate the Edgegap deployment so the container stops
+	// billing immediately. Without this, the container lingers
+	// until Edgegap's per-app-version `max_duration` cap (24h)
+	// hits — which on a quiet day racks up tens of container-
+	// hours of idle cost. Non-fatal: 404 means Edgegap already
+	// terminated it (e.g. crash exit), other errors get logged
+	// and the cost-monitor's EDGEGAP_ACTIVE_HARD threshold is
+	// the safety net for accumulating leaks.
+	if m.edgegap != nil {
+		if err := m.edgegap.Stop(ctx, args.RequestID); err != nil {
+			logger.Warn(
+				"edgegap stop failed for %s: %v",
+				args.RequestID, err)
+		} else {
+			logger.Info(
+				"edgegap deployment %s terminated",
+				args.RequestID)
+		}
 	}
 
 	resp, _ := json.Marshal(map[string]any{"ok": true})
