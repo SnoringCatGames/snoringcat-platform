@@ -518,10 +518,18 @@ function Step-PgBackup {
 	$s = Read-State
 	$ip = $s.infrastructure.hetzner_nakama_ip
 
-	# pg-backup.sh shells out to `aws` (S3-compat). awscli isn't
-	# in the base image. Idempotent install.
-	Invoke-Checked "apt install awscli" {
-		Ssh-Run $ip $NakamaKey "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends awscli >/dev/null"
+	# pg-backup.sh shells out to `aws` (S3-compat). The legacy
+	# `awscli` apt package was retired in Ubuntu 24.04 (it
+	# pulled an unmaintained Python 2 toolchain), so we install
+	# the official AWS CLI v2 static binary instead. Idempotent.
+	Invoke-Checked "install AWS CLI v2" {
+		Ssh-Run $ip $NakamaKey @'
+set -e
+if which aws >/dev/null 2>&1; then exit 0; fi
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends unzip >/dev/null
+cd /tmp && curl -fsS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws
+'@
 	}
 	Invoke-Checked "mkdir pg-backup" {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/pg-backup"
