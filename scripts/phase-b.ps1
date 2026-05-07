@@ -83,7 +83,12 @@ function Invoke-Checked {
 function Source-Credentials {
 	if (-not (Test-Path $CredsFile)) { throw "credentials.env missing at $CredsFile" }
 	Get-Content $CredsFile | ForEach-Object {
-		if ($_ -match '^([A-Z_]+)=(.*)$') {
+		# `[A-Z_][A-Z0-9_]*` (instead of `[A-Z_]+`) so var names
+		# with digits load correctly, e.g. R2_ENDPOINT,
+		# R2_ACCESS_KEY_ID. The original regex silently skipped
+		# them and pg-backup's smoke run failed with an empty
+		# --endpoint-url.
+		if ($_ -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
 			Set-Item "Env:$($Matches[1])" $Matches[2]
 		}
 	}
