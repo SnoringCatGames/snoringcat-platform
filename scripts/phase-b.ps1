@@ -12,13 +12,13 @@ param(
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
 		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
-		"AlertTest", "Reencrypt", "Complete"
+		"PgBackup", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StartAt = "PulumiUp",
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
 		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
-		"AlertTest", "Reencrypt", "Complete"
+		"PgBackup", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StopAt = "Complete",
 	[switch]$SkipAlertTest
@@ -222,17 +222,21 @@ function Step-ObsConfigs {
 
 function Step-NakamaStack {
 	if (-not (Should-Run "NakamaStack")) { return }
-	Note "Step: redeploy Nakama compose with observability services"
+	Note "Step: redeploy Nakama compose (single-host, postgres co-tenant)"
 	$s = Read-State
 	$ip = $s.infrastructure.hetzner_nakama_ip
 	$privPg = "10.0.1.20"
 
-	# Updated compose + Caddyfile.
+	# Updated compose + Caddyfile + pg_hba.conf for the postgres
+	# co-tenant.
 	Invoke-Checked "scp updated compose" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\docker-compose.yml" "/opt/nakama/"
 	}
 	Invoke-Checked "scp updated Caddyfile" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\Caddyfile" "/opt/nakama/"
+	}
+	Invoke-Checked "scp pg_hba.conf" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\pg_hba.conf" "/opt/nakama/"
 	}
 
 	# .env: extend with GRAFANA_ADMIN_PASSWORD + DISCORD_WEBHOOK_URL.
@@ -263,9 +267,13 @@ function Step-NakamaStack {
 	# pass. `compose pull` alone fails because caddy-with-
 	# ratelimit:local has no registry to pull from (it's a
 	# `build: ./caddy` image). `--pull always` keeps the
-	# observability images fresh; `--build` rebuilds caddy.
+	# images fresh; `--build` rebuilds caddy.
+	# `--remove-orphans` tears down containers from the old
+	# compose definition (prometheus/grafana/loki/promtail/
+	# node-exporter) that the post-consolidation compose no
+	# longer declares.
 	Invoke-Checked "compose up --build --pull always (nakama)" {
-		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d --build --pull always"
+		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d --build --pull always --remove-orphans"
 	}
 	Note "Nakama stack reconciled"
 }
@@ -504,6 +512,69 @@ systemctl list-timers dns-watchdog.timer
 	Note "DNS watchdog installed and ran successfully"
 }
 
+function Step-PgBackup {
+	if (-not (Should-Run "PgBackup")) { return }
+	Note "Step: pg-backup systemd timer (nightly Postgres dump → R2)"
+	$s = Read-State
+	$ip = $s.infrastructure.hetzner_nakama_ip
+
+	# pg-backup.sh shells out to `aws` (S3-compat). awscli isn't
+	# in the base image. Idempotent install.
+	Invoke-Checked "apt install awscli" {
+		Ssh-Run $ip $NakamaKey "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends awscli >/dev/null"
+	}
+	Invoke-Checked "mkdir pg-backup" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/pg-backup"
+	}
+	Invoke-Checked "scp pg-backup.sh" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\pg-backup\pg-backup.sh" "/opt/snoringcat/pg-backup/"
+	}
+	Invoke-Checked "scp service" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\pg-backup\pg-backup.service" "/opt/snoringcat/pg-backup/"
+	}
+	Invoke-Checked "scp timer" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\pg-backup\pg-backup.timer" "/opt/snoringcat/pg-backup/"
+	}
+
+	# Pulls POSTGRES_PASSWORD from credentials.env. R2 access keys
+	# are bucket-scoped to hopnbop-pulumi-state-r2 (the only
+	# bucket the existing R2_ACCESS_KEY_ID can write to without
+	# generating a new key in the Cloudflare dashboard); we
+	# co-tenant pg backups under a `pg-backups/` prefix.
+	$envLines = @(
+		"POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD",
+		"R2_ACCESS_KEY_ID=$env:R2_ACCESS_KEY_ID",
+		"R2_SECRET_ACCESS_KEY=$env:R2_SECRET_ACCESS_KEY",
+		"R2_ENDPOINT=$env:R2_ENDPOINT",
+		"R2_BUCKET=hopnbop-pulumi-state-r2",
+		"DISCORD_WEBHOOK_URL=$env:DISCORD_WEBHOOK_URL",
+		"PG_BACKUP_RETENTION_DAYS=7"
+	)
+	$tmp = New-TemporaryFile
+	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")
+	Invoke-Checked "scp .env (pg-backup)" {
+		Scp-Up $ip $NakamaKey $tmp.FullName "/opt/snoringcat/pg-backup/.env"
+	}
+	Remove-Item $tmp.FullName -Force
+
+	Invoke-Checked "install + enable timer" {
+		Ssh-Run $ip $NakamaKey @"
+chmod +x /opt/snoringcat/pg-backup/pg-backup.sh &&
+chmod 600 /opt/snoringcat/pg-backup/.env &&
+cp /opt/snoringcat/pg-backup/pg-backup.service /etc/systemd/system/pg-backup.service &&
+cp /opt/snoringcat/pg-backup/pg-backup.timer /etc/systemd/system/pg-backup.timer &&
+systemctl daemon-reload &&
+systemctl enable --now pg-backup.timer &&
+systemctl list-timers pg-backup.timer
+"@
+	}
+
+	Invoke-Checked "test run pg-backup" {
+		Ssh-Run $ip $NakamaKey "systemctl start pg-backup.service && journalctl -u pg-backup.service -n 20 --no-pager"
+	}
+	Note "pg-backup installed and ran successfully"
+}
+
 function Step-AlertTest {
 	if (-not (Should-Run "AlertTest")) { return }
 	if ($SkipAlertTest) { Log "SkipAlertTest set, skipping"; return }
@@ -580,6 +651,7 @@ try {
 	Step-UptimeRobot
 	Step-CostMonitor
 	Step-DnsWatchdog
+	Step-PgBackup
 	Step-AlertTest
 	Step-Reencrypt
 	Step-Complete

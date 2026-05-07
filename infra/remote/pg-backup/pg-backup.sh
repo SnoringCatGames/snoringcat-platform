@@ -13,12 +13,21 @@
 #   R2_ACCESS_KEY_ID           — R2 S3-compat access key.
 #   R2_SECRET_ACCESS_KEY       — R2 S3-compat secret.
 #   R2_ENDPOINT                — e.g. https://<account>.r2.cloudflarestorage.com
-#   R2_BUCKET                  — bucket name (e.g. hopnbop-pg-backups).
+#   R2_BUCKET                  — bucket name. Co-tenanted in
+#                                `hopnbop-pulumi-state-r2` under
+#                                a `pg-backups/` prefix because
+#                                Cloudflare's public R2 API
+#                                doesn't expose S3-compat key
+#                                creation; the existing
+#                                R2_ACCESS_KEY_ID is already
+#                                scoped to that bucket. Different
+#                                prefix keeps state and backups
+#                                cleanly separated.
 #   DISCORD_WEBHOOK_URL        — optional; pinged on failure only.
 #   PG_BACKUP_RETENTION_DAYS   — defaults to 7.
 #
 # Layout in R2:
-#   <bucket>/postgres/postgres-YYYY-MM-DD.sql.gz
+#   <bucket>/pg-backups/postgres-YYYY-MM-DD.sql.gz
 #
 # Daily summary in cost-monitor's Discord pings should match
 # the prod-health-check skill's expectation of finding today's
@@ -37,7 +46,7 @@ set -a; source "$ENV_FILE"; set +a
 PG_BACKUP_RETENTION_DAYS="${PG_BACKUP_RETENTION_DAYS:-7}"
 DATE_TODAY="$(date -u +%Y-%m-%d)"
 DATE_CUTOFF="$(date -u -d "${PG_BACKUP_RETENTION_DAYS} days ago" +%Y-%m-%d)"
-OBJECT_KEY="postgres/postgres-${DATE_TODAY}.sql.gz"
+OBJECT_KEY="pg-backups/postgres-${DATE_TODAY}.sql.gz"
 TMP_FILE="$(mktemp --suffix=.sql.gz)"
 trap 'rm -f "$TMP_FILE"' EXIT
 
@@ -78,7 +87,7 @@ AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 # in the key works because YYYY-MM-DD sorts lexicographically.
 AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
 AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-	aws s3 ls "s3://${R2_BUCKET}/postgres/" \
+	aws s3 ls "s3://${R2_BUCKET}/pg-backups/" \
 	--endpoint-url "$R2_ENDPOINT" \
 	| awk '{print $4}' \
 	| while read -r key; do
@@ -89,7 +98,7 @@ AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 		if [[ "$key_date" < "$DATE_CUTOFF" ]]; then
 			AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
 			AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-				aws s3 rm "s3://${R2_BUCKET}/postgres/${key}" \
+				aws s3 rm "s3://${R2_BUCKET}/pg-backups/${key}" \
 				--endpoint-url "$R2_ENDPOINT" >/dev/null
 			echo "expired: $key"
 		fi
