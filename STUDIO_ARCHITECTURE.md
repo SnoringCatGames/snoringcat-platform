@@ -50,9 +50,8 @@
 | `snoringcatgames.com` | alias for `snoringcat.games` | Heroku | Cloudflare Pages |
 | `www.snoringcatgames.com` | alias | Heroku | Cloudflare Pages |
 | `hopnbop.net` | Hop 'n Bop web build + legal | AWS S3 + CloudFront | Cloudflare Pages (Phase F of migration) |
-| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CPX11, Caddy + Nakama (Phase A) |
+| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CPX11, Caddy + Nakama + Postgres co-tenant |
 | `nakama-staging.snoringcat.games` | Staging Nakama | (does not exist yet) | Hetzner CX21 (Phase G) |
-| `grafana.snoringcat.games` | Monitoring | (does not exist yet) | Same Hetzner box as Nakama (Phase B) |
 | `levi.dev`, `levilindsey.com` | Levi's personal portfolio | Heroku | (unchanged) |
 | `devlog.levi.dev` | Devlog | Blogger / Google | (unchanged) |
 
@@ -229,9 +228,10 @@ doesn't affect us since we're not using Hetzner DNS.)
                         │                   │    - match_lifecycle.go
                         │                   │    - per_game_config.go
                         │                   │    - protocol_version.go
-                        │                   │  - /metrics scraped
                         │                   ▼
-                        │                   Postgres 16 (Hetzner CPX11)
+                        │                   Postgres 16 (same Hetzner CPX11,
+                        │                                docker-compose
+                        │                                co-tenant)
                         │                   - Nakama schema
                         │                   - games config
                         │
@@ -430,16 +430,18 @@ credential rotation."
 - **Dashboard:** https://console.hetzner.com
 - **Account:** `admin@snoringcat.games`
 - **Project:** `snoringcat-platform`
-- **What's hosted:** Nakama box (CPX11), Postgres box (CPX11),
-  staging box (CX21, after Phase G), private network,
-  firewall.
+- **What's hosted:** Single Nakama box (CPX11) running Nakama
+  + Postgres + Caddy in one docker-compose stack; staging box
+  (CX21, after Phase G), private network, firewall.
 - **API token:** `HCLOUD_TOKEN` &mdash; in age-encrypted
   credentials. Permissions: Read &amp; Write at project level.
-- **Cost:** ~$15/mo (2x CPX11 capped + minor bandwidth).
-  Staging box (CX21, after Phase G) would add ~$7-10/mo.
-  Originally targeted CAX11 (ARM, EU-only) for ~$10/mo, but
-  ARM isn't offered in Hillsboro and NA latency mattered more
-  than the price delta.
+- **Cost:** ~$8/mo (CPX11 capped + minor bandwidth + cents
+  for R2 backups). Staging box (CX21, after Phase G) would
+  add ~$7-10/mo. The 2026-05-06 consolidation collapsed the
+  original 2x CPX11 (Nakama + separate Postgres + full obs
+  stack) into a single CPX11 with the obs stack stripped to
+  fit on 2 GB RAM. ARM (CAX) is EU-only; NA latency is what
+  forces us into the CPX tier in Hillsboro.
 - **Where to look first:** Cloud "Servers" tab.
 
 ### Cloudflare (DNS + Pages)
@@ -675,10 +677,14 @@ for the full matrix. Quick reference:
 
 ### Respond to a Discord alert
 
-1. Read the alert. Severity (Critical/Warning) is in the
-   message.
-2. Open Grafana (`https://grafana.snoringcat.games`) and the
-   relevant dashboard.
+1. Read the alert. Severity (Critical/Warning/Info) is in the
+   message. Sources: cost-monitor (cost / Edgegap-active
+   thresholds), prod-health-check Claude job (containers,
+   logs, vitals, backup), UptimeRobot (external liveness).
+2. Pull recent logs ad-hoc: `ssh root@nakama.snoringcat.games
+   "docker logs nakama --since 1h | tail -100"` (Loki/Grafana
+   were dropped in the 2026-05-06 consolidation; logs live in
+   the host's docker daemon now).
 3. Cross-reference UptimeRobot (external view) and Cloudflare
    analytics (CDN view).
 4. Common causes: Nakama OOM &rarr; restart container; Postgres

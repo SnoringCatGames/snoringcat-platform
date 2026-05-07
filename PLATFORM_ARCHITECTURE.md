@@ -43,7 +43,6 @@ contents into game-level CLAUDE.md; cross-reference instead.
 ┌──────────────────────────────────────────────────────────────┐
 │  Caddy (TLS termination + reverse proxy)                     │
 │  nakama.snoringcat.games:443  → Nakama HTTP/WS               │
-│  grafana.snoringcat.games:443 → Grafana                      │
 └────────────────┬─────────────────────────────────────────────┘
                  │
 ┌────────────────▼─────────────────────────────────────────────┐
@@ -51,18 +50,19 @@ contents into game-level CLAUDE.md; cross-reference instead.
 │  - REST/gRPC/realtime endpoints                              │
 │  - Go runtime modules:                                       │
 │    - fleet_allocator.go (Edgegap allocator hook)             │
-│    - match_lifecycle.go (server registration, match end)     │
+│    - match_lifecycle.go (server registration, match end,     │
+│      Edgegap stop)                                           │
 │    - per_game_config.go (loads game.yaml at startup)         │
 │    - protocol_version.go (per-game version checker)          │
 │  - Built-in: auth, friends, parties, matchmaker, leaderboards│
-│  - /metrics endpoint scraped by Prometheus                   │
 └────────────────┬─────────────────────────────────────────────┘
-                 │ private network only
+                 │ docker bridge (172.18.0.0/16)
 ┌────────────────▼─────────────────────────────────────────────┐
-│  Postgres 16 (Hetzner CPX11, Hillsboro)                      │
+│  Postgres 16 (same Hetzner CPX11, docker-compose co-tenant)  │
 │  - Nakama schema (users, friends, leaderboards, etc.)        │
 │  - games config table (per-game settings + protocol_version) │
-│  - server_pool tables (DIY Hetzner allocator, future)        │
+│  - Nightly pg_dumpall → Cloudflare R2 (pg-backups/ prefix    │
+│    in hopnbop-pulumi-state-r2 bucket); 7-day retention.      │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
@@ -84,25 +84,34 @@ contents into game-level CLAUDE.md; cross-reference instead.
 │    WebSocket (legacy)                                        │
 └──────────────────────────────────────────────────────────────┘
 
-Operations:
+Operations (single-host, stripped — 2026-05-06 consolidation):
 ┌──────────────────────────────────────────────────────────────┐
-│  Prometheus + Grafana + Loki (on Nakama box)                 │
-│  Scrapes: Nakama, Postgres, node_exporter (both boxes),      │
-│  Caddy. Logs: Nakama, game servers (via stdout → Loki).      │
-│  Alerts → Discord webhook.                                   │
-│  External: UptimeRobot synthetic checks.                     │
-│  Cost monitor: systemd timer polling Hetzner + Edgegap APIs. │
+│  systemd timers on the Nakama box:                           │
+│  - cost-monitor.timer (hourly): Hetzner / Edgegap-active /   │
+│    R2 / CF Pages / GH Actions usage → Discord daily summary  │
+│    + threshold pings.                                        │
+│  - pg-backup.timer (nightly 03:11 UTC): pg_dumpall → R2.     │
+│  - dns-watchdog.timer (hourly): scrubs stale per-deploy DNS  │
+│    A records.                                                │
+│  External / off-box:                                         │
+│  - UptimeRobot 5-min synthetic check on Nakama healthcheck.  │
+│  - Daily Claude prod-health-check job (06:51 PT) → Discord:  │
+│    container/disk/memory/error-log/backup/Edgegap-leak       │
+│    summary.                                                  │
+│  Real-time observability stack (Prometheus/Grafana/Loki/     │
+│  Promtail) was dropped in the consolidation; logs live in    │
+│  the host's docker daemon, accessible via                    │
+│  `docker logs <container>` or `journalctl`.                  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 **Hostnames:**
 - `nakama.snoringcat.games` — Nakama HTTP + realtime WS.
-- `grafana.snoringcat.games` — Grafana UI (basic auth).
 - `nakama-staging.snoringcat.games` — staging Nakama (CI).
 - Game-server hostnames are Edgegap-assigned (per-deployment IPs).
 
 **Ports:**
-- 443 (Caddy → Nakama 7350 / Grafana).
+- 443 (Caddy → Nakama 7350).
 - 7351 (Nakama console, SSH-tunnel only).
 - Game server: 4433/UDP (ENet + WebRTC), 4434/TCP (WS
   signaling). Edgegap forwards declared ports to host directly

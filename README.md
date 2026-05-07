@@ -66,8 +66,13 @@ docs/
 The platform sits between game clients and game-server
 containers, on three vendors:
 
-- **Hetzner** — Nakama + Postgres + Caddy/TLS + observability
-  on two CPX11 boxes in Hillsboro. Static spend ~$15/mo.
+- **Hetzner** — Nakama + Postgres (co-tenanted) + Caddy/TLS
+  on a single CPX11 box in Hillsboro. The 2026-05-06
+  consolidation collapsed the original two-box layout (with
+  full Prometheus/Grafana/Loki/Promtail stack) into one box
+  with the obs stack stripped; visibility is now ad-hoc via
+  the daily Claude prod-health-check job + UptimeRobot +
+  cost-monitor Discord. Static spend ~$8/mo.
 - **Edgegap** — game-server containers (the consuming game's
   Linux export, packaged via the game's `Dockerfile.edgegap`),
   allocated on demand by the runtime's matchmaker hook.
