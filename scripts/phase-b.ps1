@@ -382,6 +382,13 @@ function Step-CostMonitor {
 	Invoke-Checked "apt install jq" {
 		Ssh-Run $ip $NakamaKey "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq >/dev/null"
 	}
+	# /var/log/snoringcat hosts the JSONL queue that cost-monitor,
+	# pg-backup, and dns-watchdog all append status entries to.
+	# Created here for whichever Step-* runs first; mkdir -p is
+	# idempotent, so subsequent steps are no-ops.
+	Invoke-Checked "mkdir /var/log/snoringcat" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /var/log/snoringcat && touch /var/log/snoringcat/service-status.jsonl"
+	}
 	Invoke-Checked "mkdir cost-monitor" {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/cost-monitor"
 	}
@@ -418,6 +425,12 @@ function Step-CostMonitor {
 		"R2_BUCKET=hopnbop-assets",
 		"R2_WARN_GB=8",
 		"R2_HARD_GB=9.5",
+		# Service-status JSONL: cost-monitor's post_status() helper
+		# appends one JSON line per status event. The daily LLM
+		# consolidator on the operator's machine SSH-drains the
+		# file. Enables routing the daily summary through the
+		# consolidator instead of direct Discord (noise reduction).
+		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl",
 		# Cloudflare Pages free tier is 500 builds/month
 		# account-wide. Defaults: warn at 80%, hard at 95%.
 		"CF_PAGES_WARN_BUILDS=400",
@@ -468,6 +481,11 @@ function Step-DnsWatchdog {
 	}
 	$dnsBase = if ($env:SERVER_DNS_BASE) { $env:SERVER_DNS_BASE } else { "game.hopnbop.net" }
 
+	# Idempotent — same path created in Step-CostMonitor.
+	Invoke-Checked "mkdir /var/log/snoringcat" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /var/log/snoringcat && touch /var/log/snoringcat/service-status.jsonl"
+	}
+
 	Invoke-Checked "mkdir dns-watchdog" {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/dns-watchdog"
 	}
@@ -485,7 +503,11 @@ function Step-DnsWatchdog {
 		"CLOUDFLARE_DNS_TOKEN=$env:CLOUDFLARE_DNS_TOKEN",
 		"CLOUDFLARE_DNS_ZONE_ID=$env:CLOUDFLARE_DNS_ZONE_ID",
 		"SERVER_DNS_BASE=$dnsBase",
-		"MAX_RECORD_AGE_HOURS=4"
+		"MAX_RECORD_AGE_HOURS=4",
+		# Service-status JSONL: dns-watchdog's post_status() helper
+		# appends one JSON line per run. Drained by the daily
+		# consolidator.
+		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl"
 	)
 	$tmp = New-TemporaryFile
 	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")
@@ -531,6 +553,10 @@ cd /tmp && curl -fsS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" 
 unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws
 '@
 	}
+	# Idempotent — same path created in Step-CostMonitor.
+	Invoke-Checked "mkdir /var/log/snoringcat" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /var/log/snoringcat && touch /var/log/snoringcat/service-status.jsonl"
+	}
 	Invoke-Checked "mkdir pg-backup" {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/pg-backup"
 	}
@@ -556,7 +582,11 @@ unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws
 		"R2_ENDPOINT=$env:R2_ENDPOINT",
 		"R2_BUCKET=hopnbop-pulumi-state-r2",
 		"DISCORD_WEBHOOK_URL=$env:DISCORD_WEBHOOK_URL",
-		"PG_BACKUP_RETENTION_DAYS=7"
+		"PG_BACKUP_RETENTION_DAYS=7",
+		# Service-status JSONL: pg-backup's post_status() helper
+		# appends one JSON line per run (success or failure).
+		# Failure also keeps direct Discord alert.
+		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl"
 	)
 	$tmp = New-TemporaryFile
 	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")

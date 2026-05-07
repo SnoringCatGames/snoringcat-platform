@@ -39,6 +39,26 @@ set -a; source "$ENV_FILE"; set +a
 : "${SERVER_DNS_BASE:?SERVER_DNS_BASE not set (e.g. game.hopnbop.net)}"
 MAX_AGE_HOURS="${MAX_RECORD_AGE_HOURS:-4}"
 
+# Append a structured entry to SERVICE_STATUS_LOG (JSONL). Silent
+# no-op when the env var isn't set; populated via phase-b.ps1's
+# Step-DnsWatchdog. The daily LLM consolidator SSH-drains the file.
+post_status() {
+	local level="$1" summary="$2"
+	local details="${3:-{\}}"
+	[[ -n "${SERVICE_STATUS_LOG:-}" ]] || return 0
+	local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	mkdir -p "$(dirname "$SERVICE_STATUS_LOG")"
+	jq -nc \
+		--arg ts "$ts" \
+		--arg source "dns-watchdog" \
+		--arg level "$level" \
+		--arg summary "$summary" \
+		--argjson details "$details" \
+		'{ts: $ts, source: $source, level: $level,
+			summary: $summary, details: $details}' \
+		>> "$SERVICE_STATUS_LOG"
+}
+
 cutoff_epoch=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%s)
 
 # List candidate records (s-* under the configured zone).
@@ -109,3 +129,11 @@ done < <(printf '%s' "$list_response" | jq -r \
 		| @tsv')
 
 echo "dns-watchdog summary: deleted=$deleted kept=$kept unparseable=$unparseable"
+post_status "info" "swept $deleted stale, $kept kept, $unparseable unparseable" \
+	"$(jq -nc \
+		--argjson deleted "$deleted" \
+		--argjson kept "$kept" \
+		--argjson unparseable "$unparseable" \
+		--argjson total "$record_count" \
+		'{deleted: $deleted, kept: $kept,
+			unparseable: $unparseable, total: $total}')"

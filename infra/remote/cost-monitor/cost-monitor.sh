@@ -597,6 +597,36 @@ post_discord() {
 		"$DISCORD_WEBHOOK_URL" >/dev/null
 }
 
+# Append a structured status entry to SERVICE_STATUS_LOG (a JSONL
+# file SSH-drained by the daily/weekly LLM consolidators on the
+# operator's machine). Silent no-op when SERVICE_STATUS_LOG isn't
+# set (preserves backwards compat with hosts that haven't been
+# re-provisioned via phase-b yet).
+#
+# Usage: post_status <source> <level> <summary> [<details_json>]
+#   source         e.g. 'cost-monitor', 'pg-backup'
+#   level          'info' | 'warn' | 'red' | 'green'
+#   summary        one-line headline
+#   details_json   optional JSON object string; defaults to {}
+post_status() {
+	local source="$1"
+	local level="$2"
+	local summary="$3"
+	local details="${4:-{\}}"
+	[[ -n "${SERVICE_STATUS_LOG:-}" ]] || return 0
+	local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	mkdir -p "$(dirname "$SERVICE_STATUS_LOG")"
+	jq -nc \
+		--arg ts "$ts" \
+		--arg source "$source" \
+		--arg level "$level" \
+		--arg summary "$summary" \
+		--argjson details "$details" \
+		'{ts: $ts, source: $source, level: $level,
+			summary: $summary, details: $details}' \
+		>> "$SERVICE_STATUS_LOG"
+}
+
 # Day-over-day delta for the daily summary. Returns "" when no
 # previous-summary value is available (first summary ever, first
 # after a month rollover, or first run after the schema added a
@@ -670,7 +700,12 @@ if [[ -n "$carry_prev_month_total_usd" \
 	prev_month_line=$'\n'"$carry_prev_month_label closed at \$$carry_prev_month_total_usd"
 fi
 
-# Threshold crossings → immediate ping.
+# Threshold crossings → immediate ping. Threshold crossings are
+# the one cost-monitor signal that bypasses the daily-consolidator
+# pipeline because they imply user action is needed *now* (esp.
+# the EMERGENCY threshold which already PATCHed Edgegap to
+# capacity_max=0). We also write a 'warn'-level status entry so
+# the doc has the audit trail.
 if (( ${#new_crossings[@]} > 0 )); then
 	crossed_str=""
 	for c in "${new_crossings[@]}"; do
@@ -681,6 +716,15 @@ if (( ${#new_crossings[@]} > 0 )); then
 	post_discord "${mention}**Threshold crossed: $crossed_str**
 - Hetzner MTD: \$$total_usd ($MONTH_LABEL)
 $provider_lines${emergency_msg}"
+	post_status "cost-monitor" "warn" \
+		"threshold crossed: $crossed_str" \
+		"$(jq -nc \
+			--arg total "$total_usd" \
+			--arg hetzner "$hetzner_usd" \
+			--arg edgegap "$edgegap_usd" \
+			--arg crossings "$crossed_str" \
+			'{total_usd: $total, hetzner_usd: $hetzner,
+				edgegap_usd: $edgegap, crossings: $crossings}')"
 fi
 
 # Daily summary.
@@ -729,9 +773,35 @@ $(fmt_edgegap_daily_line)
 		fi
 	fi
 
-	post_discord "**Billing status: $(fmt_pair "$total_day_usd" "$total_usd")**$prev_month_line
-$daily_provider_lines
-- Thresholds — low \$$BUDGET_WARN_LOW · mid \$$BUDGET_WARN_MID · high \$$BUDGET_WARN_HIGH · emergency \$$EMERGENCY_CAP · R2 warn ${R2_WARN_GB:-8}GB · R2 hard ${R2_HARD_GB:-9.5}GB · CF Pages warn ${CF_PAGES_WARN_BUILDS:-400} · CF Pages hard ${CF_PAGES_HARD_BUILDS:-475} · Edgegap active warn ${EDGEGAP_ACTIVE_WARN:-5} · hard ${EDGEGAP_ACTIVE_HARD:-15}"
+	# Daily summary is informational and goes to the local
+	# service-status JSONL queue. The daily LLM consolidator
+	# SSH-fetches and folds it into the single morning Discord
+	# post. (Pre-2026-05-07 this was a direct post_discord call
+	# at 09:00 UTC; redirecting to JSONL is the user-requested
+	# noise-reduction change.)
+	post_status "cost-monitor" "info" \
+		"daily mtd \$$total_usd ($MONTH_LABEL)" \
+		"$(jq -nc \
+			--arg total_day "$total_day_usd" \
+			--arg total_mtd "$total_usd" \
+			--arg hetzner_day "$hetzner_day_usd" \
+			--arg hetzner_mtd "$hetzner_usd" \
+			--arg edgegap_day "$edgegap_day_usd" \
+			--arg edgegap_mtd "$edgegap_usd" \
+			--arg edgegap_active "$edgegap_active_count" \
+			--arg edgegap_hours "$edgegap_mtd_hours" \
+			--arg r2_gb "$r2_gb" \
+			--arg cf_pages_builds "$cf_pages_builds_used" \
+			--arg gh_minutes "$gh_minutes_used" \
+			--arg gh_paid "$gh_paid_usd" \
+			--arg month "$MONTH_LABEL" \
+			'{total_day_usd: $total_day, total_mtd_usd: $total_mtd,
+				hetzner_day_usd: $hetzner_day, hetzner_mtd_usd: $hetzner_mtd,
+				edgegap_day_usd: $edgegap_day, edgegap_mtd_usd: $edgegap_mtd,
+				edgegap_active: $edgegap_active, edgegap_mtd_hours: $edgegap_hours,
+				r2_gb: $r2_gb, cf_pages_builds: $cf_pages_builds,
+				gh_minutes: $gh_minutes, gh_paid_usd: $gh_paid,
+				month_label: $month}')"
 	# Capture this summary's headline numbers so the next daily
 	# summary can compute day-over-day deltas, and so the next
 	# month rollover can carry the total forward as the closing

@@ -57,11 +57,33 @@ PGPASSWORD="$POSTGRES_PASSWORD" docker exec -e PGPASSWORD postgres \
 	pg_dumpall --no-password -h 127.0.0.1 -U nakama \
 	| gzip -9 > "$TMP_FILE"
 
+# Append an entry to SERVICE_STATUS_LOG (JSONL) for the daily LLM
+# consolidator to pick up via SSH-drain. Silent no-op when the env
+# var isn't set; the host gets it via phase-b.ps1's Step-PgBackup.
+post_status() {
+	local level="$1" summary="$2"
+	local details="${3:-{\}}"
+	[[ -n "${SERVICE_STATUS_LOG:-}" ]] || return 0
+	local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	mkdir -p "$(dirname "$SERVICE_STATUS_LOG")"
+	jq -nc \
+		--arg ts "$ts" \
+		--arg source "pg-backup" \
+		--arg level "$level" \
+		--arg summary "$summary" \
+		--argjson details "$details" \
+		'{ts: $ts, source: $source, level: $level,
+			summary: $summary, details: $details}' \
+		>> "$SERVICE_STATUS_LOG"
+}
+
 DUMP_SIZE_BYTES=$(stat -c%s "$TMP_FILE")
 if [[ "$DUMP_SIZE_BYTES" -lt 1024 ]]; then
 	# Sanity check: an empty/failed dump is much smaller than
 	# this. Refuse to upload and alert; otherwise we'd
-	# overwrite a good earlier-day backup with garbage.
+	# overwrite a good earlier-day backup with garbage. Failure
+	# is an immediate-action item — keep direct Discord and ALSO
+	# log a 'red' status entry for audit-trail completeness.
 	msg="pg-backup: dump suspiciously small (${DUMP_SIZE_BYTES} bytes); refusing to upload"
 	echo "$msg" >&2
 	if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
@@ -69,6 +91,9 @@ if [[ "$DUMP_SIZE_BYTES" -lt 1024 ]]; then
 			-d "$(jq -n --arg c "$msg" '{content:$c}')" \
 			"$DISCORD_WEBHOOK_URL" >/dev/null || true
 	fi
+	post_status "red" "dump too small" \
+		"$(jq -nc --argjson size "$DUMP_SIZE_BYTES" \
+			'{size: $size}')"
 	exit 1
 fi
 
@@ -103,5 +128,12 @@ AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 			echo "expired: $key"
 		fi
 	done
+
+post_status "info" "ok size=${DUMP_SIZE_BYTES}" \
+	"$(jq -nc \
+		--argjson size "$DUMP_SIZE_BYTES" \
+		--arg key "$OBJECT_KEY" \
+		--arg bucket "$R2_BUCKET" \
+		'{size: $size, key: $key, bucket: $bucket}')"
 
 echo "[pg-backup] $(date -u -Is) ok size=${DUMP_SIZE_BYTES} key=${OBJECT_KEY}"
