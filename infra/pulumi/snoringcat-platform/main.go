@@ -23,32 +23,39 @@ const (
 	defaultZoneName    = "snoringcat.games"
 	defaultLocation    = "hil"
 	defaultNetworkZone = "us-west"
-	// CAX (ARM) isn't available in Hillsboro, and CX (Intel) is
-	// EU-only too. Hillsboro offers CPX (AMD shared) and CCX (AMD
-	// dedicated). CPX11 (2 vCPU / 2 GB / 40 GB) is sized to actual
-	// observed usage: ~1 GB RSS per box at idle (verified
-	// 2026-05-03 on the CPX21 predecessors), leaving ~1 GB
-	// headroom under load.
+	// CPX11 (2 vCPU / 2 GB / 40 GB) is the cheapest non-EU
+	// Hetzner tier in Hillsboro. CAX (ARM) isn't available in
+	// Hillsboro, and CX (Intel) is EU-only too. Hillsboro
+	// offers CPX (AMD shared) and CCX (AMD dedicated).
 	//
-	// Cost: ~€6.99/mo cap per box, ~€14/mo for the pair (~$15
-	// USD total).
+	// Cost: ~€6.99/mo cap. The 2026-05-06 consolidation
+	// collapsed the original 2x CPX11 (Nakama + Postgres
+	// separate hosts, full Prometheus/Grafana/Loki/Promtail
+	// observability) into a single CPX11 with Postgres co-
+	// tenanted alongside Nakama and the obs stack stripped to
+	// fit on 2 GB RAM. 1x CPX21 = 1x CPX11+CPX11 in this
+	// region, so the only path to actual savings was single-
+	// CPX11 + stripped stack. Visibility is now ad-hoc via
+	// the daily prod-health-check Claude job + UptimeRobot +
+	// the cost-monitor Discord summary + `journalctl`.
 	//
-	// Note: Hetzner forbids in-place resize from CPX21→CPX11
-	// because CPX11's disk is smaller (40 GB vs 80 GB) and
-	// disk-shrink isn't allowed. The 2026-05-03 downsize
-	// required a destroy+recreate with Postgres dump/restore.
-	// Stepping back UP (cpx11→cpx21) is allowed in-place at any
-	// time if observed usage demands it.
+	// Stepping back UP (cpx11→cpx21) is allowed in-place at
+	// any time if observed usage demands it. Stepping
+	// DOWN (cpx21→cpx11) is forbidden by Hetzner (smaller
+	// disk; disk-shrink isn't allowed) and would require a
+	// destroy+recreate with Postgres dump/restore.
 	defaultServerType = "cpx11"
 	defaultImage      = "ubuntu-24.04"
 
 	// Internal network shape — stays in code because changing
 	// these would require a state migration, not just a config
-	// override.
-	networkIPRange    = "10.0.0.0/16"
-	subnetIPRange     = "10.0.1.0/24"
-	nakamaPrivateIP   = "10.0.1.10"
-	postgresPrivateIP = "10.0.1.20"
+	// override. The private network is now used only for
+	// future-host expansion; in the single-host stack the
+	// nakama box doesn't currently talk to any other private
+	// peer.
+	networkIPRange  = "10.0.0.0/16"
+	subnetIPRange   = "10.0.1.0/24"
+	nakamaPrivateIP = "10.0.1.10"
 )
 
 // stackConfig collects the per-stack overrides from
@@ -137,10 +144,6 @@ const nakamaExtraRuncmd = `  - ufw allow 80/tcp
   - touch /var/lib/cloud/snoringcat-bootstrap-done
 `
 
-const postgresExtraRuncmd = `  - ufw --force enable
-  - touch /var/lib/cloud/snoringcat-bootstrap-done
-`
-
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
 		cfg := config.New(ctx, "")
@@ -153,10 +156,6 @@ func main() {
 		nakamaPubPath := cfg.Get("nakamaSshPubkeyPath")
 		if nakamaPubPath == "" {
 			nakamaPubPath = filepath.Join(home, ".hopnbop-migration", "ssh", "nakama.pub")
-		}
-		postgresPubPath := cfg.Get("postgresSshPubkeyPath")
-		if postgresPubPath == "" {
-			postgresPubPath = filepath.Join(home, ".hopnbop-migration", "ssh", "postgres.pub")
 		}
 		// Private key for nakama root: required to provision the
 		// non-root `watchdog` user via remote.Command. See the
@@ -176,10 +175,6 @@ func main() {
 		nakamaPub, err := os.ReadFile(nakamaPubPath)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", nakamaPubPath, err)
-		}
-		postgresPub, err := os.ReadFile(postgresPubPath)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", postgresPubPath, err)
 		}
 		nakamaPriv, err := os.ReadFile(nakamaPrivPath)
 		if err != nil {
@@ -204,13 +199,6 @@ func main() {
 		if err != nil {
 			return err
 		}
-		postgresKey, err := hcloud.NewSshKey(ctx, "postgres", &hcloud.SshKeyArgs{
-			Name:      pulumi.String("postgres"),
-			PublicKey: pulumi.String(strings.TrimSpace(string(postgresPub))),
-		})
-		if err != nil {
-			return err
-		}
 
 		network, err := hcloud.NewNetwork(ctx, "snoringcat-internal", &hcloud.NetworkArgs{
 			Name:    pulumi.String("snoringcat-internal"),
@@ -230,7 +218,6 @@ func main() {
 		}
 
 		nakamaUserData := baseCloudInit + nakamaExtraRuncmd
-		postgresUserData := baseCloudInit + postgresExtraRuncmd
 
 		// userData is only consumed on first boot. Hetzner's API
 		// returns a SHA1 hash on subsequent reads (not the
@@ -249,30 +236,6 @@ func main() {
 				&hcloud.ServerNetworkTypeArgs{
 					NetworkId: idToInt(network.ID()),
 					Ip:        pulumi.String(nakamaPrivateIP),
-				},
-			},
-		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
-			pulumi.IgnoreChanges([]string{"userData"}),
-			// Hetzner server names are unique within the
-			// account; create-before-delete on replacement fails
-			// because the new server can't take a name still
-			// owned by the old one. Force delete-first.
-			pulumi.DeleteBeforeReplace(true))
-		if err != nil {
-			return err
-		}
-
-		postgresSrv, err := hcloud.NewServer(ctx, "postgres-prod-1", &hcloud.ServerArgs{
-			Name:       pulumi.String("postgres-prod-1"),
-			ServerType: pulumi.String(sc.ServerType),
-			Image:      pulumi.String(sc.Image),
-			Location:   pulumi.String(sc.Location),
-			SshKeys:    pulumi.StringArray{postgresKey.Name},
-			UserData:   pulumi.String(postgresUserData),
-			Networks: hcloud.ServerNetworkTypeArray{
-				&hcloud.ServerNetworkTypeArgs{
-					NetworkId: idToInt(network.ID()),
-					Ip:        pulumi.String(postgresPrivateIP),
 				},
 			},
 		}, pulumi.DependsOn([]pulumi.Resource{subnet}),
@@ -395,32 +358,6 @@ echo "watchdog user provisioned"
 			return err
 		}
 
-		_, err = hcloud.NewFirewall(ctx, "postgres-fw", &hcloud.FirewallArgs{
-			Name: pulumi.String("postgres-fw"),
-			Rules: hcloud.FirewallRuleArray{
-				&hcloud.FirewallRuleArgs{
-					Direction: pulumi.String("in"),
-					Protocol:  pulumi.String("tcp"),
-					Port:      pulumi.String("22"),
-					SourceIps: adminSshSources,
-				},
-				&hcloud.FirewallRuleArgs{
-					Direction: pulumi.String("in"),
-					Protocol:  pulumi.String("tcp"),
-					Port:      pulumi.String("5432"),
-					SourceIps: pulumi.StringArray{pulumi.String(nakamaPrivateIP + "/32")},
-				},
-			},
-			ApplyTos: hcloud.FirewallApplyToArray{
-				&hcloud.FirewallApplyToArgs{
-					Server: idToInt(postgresSrv.ID()),
-				},
-			},
-		})
-		if err != nil {
-			return err
-		}
-
 		// Cloudflare DNS A record. Proxy off (gray cloud) — Nakama uses
 		// long-lived WebSocket / gRPC, doesn't need CDN caching.
 		nakamaRecord, err := cloudflare.NewRecord(ctx, "nakama-a", &cloudflare.RecordArgs{
@@ -436,33 +373,13 @@ echo "watchdog user provisioned"
 			return err
 		}
 
-		// Grafana subdomain. Same Nakama box (Caddy reverse-proxies
-		// grafana.snoringcat.games:443 → grafana:3000 internally).
-		grafanaRecord, err := cloudflare.NewRecord(ctx, "grafana-a", &cloudflare.RecordArgs{
-			ZoneId:  pulumi.String(zone.Id),
-			Name:    pulumi.String("grafana"),
-			Type:    pulumi.String("A"),
-			Content: nakamaSrv.Ipv4Address,
-			Proxied: pulumi.Bool(false),
-			Ttl:     pulumi.Int(1),
-			Comment: pulumi.String("Phase B: Grafana ops dashboard"),
-		})
-		if err != nil {
-			return err
-		}
-
 		ctx.Export("nakama_server_id", nakamaSrv.ID())
 		ctx.Export("nakama_public_ip", nakamaSrv.Ipv4Address)
 		ctx.Export("nakama_private_ip", pulumi.String(nakamaPrivateIP))
-		ctx.Export("postgres_server_id", postgresSrv.ID())
-		ctx.Export("postgres_public_ip", postgresSrv.Ipv4Address)
-		ctx.Export("postgres_private_ip", pulumi.String(postgresPrivateIP))
 		ctx.Export("private_network_id", network.ID())
 		ctx.Export("zone_id", pulumi.String(zone.Id))
 		ctx.Export("nakama_dns_record_id", nakamaRecord.ID())
-		ctx.Export("grafana_dns_record_id", grafanaRecord.ID())
 		ctx.Export("nakama_url", pulumi.String("https://nakama."+sc.ZoneName))
-		ctx.Export("grafana_url", pulumi.String("https://grafana."+sc.ZoneName))
 
 		return nil
 	})
