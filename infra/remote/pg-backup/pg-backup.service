@@ -1,0 +1,10 @@
+[Unit]
+Description=snoringcat-platform Postgres backup to R2
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/snoringcat/pg-backup/pg-backup.sh
+StandardOutput=journal
+StandardError=journal
