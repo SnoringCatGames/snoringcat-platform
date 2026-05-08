@@ -373,6 +373,26 @@ echo "watchdog user provisioned"
 			return err
 		}
 
+		// Stable hostname in front of the WebSocket signaling
+		// proxy (infra/remote/signaling-proxy/). Replaces the
+		// per-deploy s-<dashed-ip>.game.hopnbop.net pattern,
+		// which suffered DNS-propagation races with home / ISP
+		// resolvers caching NXDOMAIN before the runtime hook's
+		// pre-warm completed. Same A target as nakama-a (single-
+		// host deployment); Caddy multiplexes by Host header.
+		signalingRecord, err := cloudflare.NewRecord(ctx, "signaling-a", &cloudflare.RecordArgs{
+			ZoneId:  pulumi.String(zone.Id),
+			Name:    pulumi.String("signaling"),
+			Type:    pulumi.String("A"),
+			Content: nakamaSrv.Ipv4Address,
+			Proxied: pulumi.Bool(false),
+			Ttl:     pulumi.Int(1),
+			Comment: pulumi.String("WebRTC/WS signaling proxy"),
+		})
+		if err != nil {
+			return err
+		}
+
 		ctx.Export("nakama_server_id", nakamaSrv.ID())
 		ctx.Export("nakama_public_ip", nakamaSrv.Ipv4Address)
 		ctx.Export("nakama_private_ip", pulumi.String(nakamaPrivateIP))
@@ -380,6 +400,8 @@ echo "watchdog user provisioned"
 		ctx.Export("zone_id", pulumi.String(zone.Id))
 		ctx.Export("nakama_dns_record_id", nakamaRecord.ID())
 		ctx.Export("nakama_url", pulumi.String("https://nakama."+sc.ZoneName))
+		ctx.Export("signaling_dns_record_id", signalingRecord.ID())
+		ctx.Export("signaling_url", pulumi.String("https://signaling."+sc.ZoneName))
 
 		return nil
 	})

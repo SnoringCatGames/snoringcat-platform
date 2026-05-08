@@ -1,9 +1,9 @@
 encryptionsalt: v1:5IqcvdeDbn4=:v1:eC7aLYhgmttgprNW:jqxX1bPBuE83yFjLV7kKOCr0jMnHng==
 config:
   hcloud:token:
-    secure: v1:qCkAtkZiX16PNqNm:KPsuJVcMCDef7HQ0A3+JT5UdsVYPVJR1R6JPHzsBIwNwQr0YpCHG7wWMKj4LCpS2JL/cuhq9x5tItj1uz+RGu1OvY5lkU+LOcS2cOH/aL34=
+    secure: v1:13LYkQlXjQaLAvmu:71+sMQSdrp2TJlAL9uv3+X0qz6bMlMe9dH6oybsz3EIn/ZV0WHeyWtV3pY8NexZCQHW7X7qZI2cQiRfMq3yzwulskLOVCRR4WS6xqVaG6E0=
   cloudflare:apiToken:
-    secure: v1:B4vGFoSGJ3TFJeLg:v/D+Fi1K2moDUIey1TGDfGMLx5OdMFl3V+Aw+00bM72QQtcYeVdiDQE+A0StZwpTENbPTXTJCuiPRYeM2l41Dl8D2UM9
+    secure: v1:cpwDBTzRT2HC4TLu:9Bh/qNj07uV5696/RUoDXAKKVQ9Uu1VlidkeX79FzQIxPJvHA3oUSfc+riv8N9/261YwcZj63/9FoAk2YzWNaMw6oC45
   # Stack-level overrides (consumed by main.go's stackConfig).
   # Setting these explicitly makes Pulumi.<stack>.yaml the single
   # canonical record of "where this stack runs"; the defaults

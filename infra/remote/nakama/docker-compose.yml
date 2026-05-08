@@ -111,6 +111,24 @@ services:
       - nakama-net
     depends_on:
       - nakama
+      - signaling-proxy
+
+  signaling-proxy:
+    # WebSocket signaling bridge between clients and the
+    # Edgegap-allocated game-server. Stable hostname behind
+    # Caddy (signaling.snoringcat.games) so we don't need
+    # per-deploy DNS / cert. See infra/remote/signaling-proxy/
+    # for source.
+    build:
+      context: ./signaling-proxy
+    image: snoringcat-signaling-proxy:local
+    container_name: signaling-proxy
+    restart: unless-stopped
+    environment:
+      SIGNALING_HMAC_SECRET: ${SIGNALING_HMAC_SECRET}
+      SIGNALING_PROXY_LISTEN: "0.0.0.0:4435"
+    networks:
+      - nakama-net
 
 networks:
   nakama-net:

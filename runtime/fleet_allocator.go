@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +18,45 @@ import (
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
+
+// signalingTokenLifetime caps how long a match_ready signaling
+// URL is valid. Generous enough to cover slow notification
+// delivery + a couple of client-side retries; short enough that
+// a leaked URL is useless within a few minutes.
+const signalingTokenLifetime = 5 * time.Minute
+
+// signSignalingURL builds a "wss://<domain>/connect/<token>"
+// URL where the token is base64url("ip:port:exp:hex-hmac")
+// signed with the shared HMAC-SHA256 secret. Must stay in sync
+// with infra/remote/signaling-proxy/main.go's decodeAndVerify.
+func signSignalingURL(
+	domain string,
+	secret []byte,
+	ip string,
+	port int,
+	now time.Time,
+) string {
+	exp := now.Add(signalingTokenLifetime).Unix()
+	payload := fmt.Sprintf("%s:%d:%d", ip, port, exp)
+	h := hmac.New(sha256.New, secret)
+	h.Write([]byte(payload))
+	tokenStr := payload + ":" + hex.EncodeToString(h.Sum(nil))
+	token := base64.RawURLEncoding.EncodeToString([]byte(tokenStr))
+	return fmt.Sprintf("wss://%s/connect/%s", domain, token)
+}
+
+// pickTCPPort scans an Edgegap deploy's port map and returns
+// the host-side external port for the first TCP entry, or 0 if
+// none. The game-server declares 4433/UDP (game) and 4434/TCP
+// (signaling) — we want the TCP one for WebSocket signaling.
+func pickTCPPort(ports map[string]edgegapPort) int {
+	for _, p := range ports {
+		if strings.EqualFold(p.Protocol, "TCP") && p.External > 0 {
+			return p.External
+		}
+	}
+	return 0
+}
 
 // edgegapClient wraps the Edgegap REST API.
 type edgegapClient struct {
@@ -165,15 +208,35 @@ type fleetAllocator struct {
 	// the wildcard cert (`*.<serverDNSBase>`) covers any
 	// subdomain. Configurable via SERVER_DNS_BASE; defaults
 	// to `game.hopnbop.net` when unset.
+	//
+	// Deprecated. The signalingDomain + HMAC-token flow below
+	// replaces the per-deploy DNS approach. Kept temporarily
+	// so older client builds without signaling_url support
+	// continue to work during rollout.
 	serverDNSBase string
 	// Cloudflare credentials for per-deploy A record
-	// pre-warming. When unset, the hook still computes the
-	// hostname and sends it to clients but skips the DNS
-	// write — web clients will fail the WSS handshake but
-	// native (ENet) matches keep working. Both must come
-	// from the runtime env (NAKAMA host's runtime.env).
+	// pre-warming. Same deprecation note as serverDNSBase.
 	cloudflareDNSToken  string
 	cloudflareDNSZoneID string
+	// signalingDomain is the stable FQDN that fronts the
+	// per-deploy WebSocket signaling, e.g.
+	// "signaling.snoringcat.games". The runtime hook signs an
+	// HMAC token over (deploy IP, port, expiry) using
+	// signalingHmacSecret and ships
+	// "wss://<signalingDomain>/connect/<token>" to clients in
+	// the match_ready payload. Caddy + signaling-proxy on the
+	// platform host validate the token and bridge to the
+	// upstream game-server. See infra/remote/signaling-proxy/
+	// for the proxy. Set via SIGNALING_DOMAIN runtime env.
+	signalingDomain string
+	// signalingHmacSecret is the shared HMAC-SHA256 secret used
+	// to sign signaling_url tokens. Must match the value the
+	// signaling-proxy reads from its own SIGNALING_HMAC_SECRET
+	// env. If either is unset or empty, the hook skips
+	// signaling_url emission and clients fall back to the
+	// legacy per-deploy DNS path. Set via SIGNALING_HMAC_SECRET
+	// runtime env.
+	signalingHmacSecret []byte
 }
 
 // OnMatchmakerMatched is the Nakama matchmaker hook. Returning a
@@ -367,6 +430,27 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
+	// Build the signaling URL once per allocation. Picks the
+	// TCP port (Edgegap's "signaling" entry in status.Ports →
+	// container 4434/TCP). When SIGNALING_DOMAIN /
+	// SIGNALING_HMAC_SECRET aren't configured, signalingURL
+	// stays empty and the client falls back to the legacy
+	// per-deploy server_fqdn:port path.
+	signalingURL := ""
+	if a.signalingDomain != "" && len(a.signalingHmacSecret) > 0 &&
+		status.PublicIP != "" {
+		tcpPort := pickTCPPort(status.Ports)
+		if tcpPort > 0 {
+			signalingURL = signSignalingURL(
+				a.signalingDomain, a.signalingHmacSecret,
+				status.PublicIP, tcpPort, time.Now())
+		} else {
+			logger.Warn("no TCP port in status.Ports; "+
+				"signaling_url omitted (status=%+v)",
+				status.Ports)
+		}
+	}
+
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server
 	// holds the full allowlist via EXPECTED_SESSION_IDS env
@@ -382,6 +466,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			"request_id":     status.RequestID,
 			"session_ids":    mp.SessionIDs,
 			"transport_type": transportType,
+			"signaling_url":  signalingURL,
 		}
 		connInfoJSON, _ := json.Marshal(connInfo)
 		if err := nk.NotificationSend(ctx, mp.UserID, subject, map[string]any{

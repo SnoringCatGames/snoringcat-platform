@@ -35,3 +35,9 @@ runtime:
     - "EDGEGAP_APP_VERSION=${EDGEGAP_APP_VERSION}"
     - "NAKAMA_GAME_VERSION=${NAKAMA_GAME_VERSION}"
     - "NAKAMA_PROTOCOL_VERSION=${NAKAMA_PROTOCOL_VERSION}"
+    # Signaling proxy: stable WS endpoint that the matchmaker
+    # hook signs URLs for, replacing the legacy per-deploy DNS
+    # pattern. SIGNALING_HMAC_SECRET must match the value the
+    # signaling-proxy systemd service reads from its own env.
+    - "SIGNALING_DOMAIN=${SIGNALING_DOMAIN}"
+    - "SIGNALING_HMAC_SECRET=${SIGNALING_HMAC_SECRET}"

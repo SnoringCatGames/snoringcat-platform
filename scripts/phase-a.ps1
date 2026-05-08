@@ -98,7 +98,7 @@ function Source-Credentials {
 		throw "credentials.env missing at $CredsFile"
 	}
 	Get-Content $CredsFile | ForEach-Object {
-		if ($_ -match '^([A-Z_]+)=(.*)$') {
+		if ($_ -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
 			Set-Item "Env:$($Matches[1])" $Matches[2]
 		}
 	}
@@ -145,12 +145,17 @@ function Scp-Up {
 		[string]$ip,
 		[string]$keyPath,
 		[string]$src,
-		[string]$dst
+		[string]$dst,
+		[switch]$Recurse
 	)
-	scp -i $keyPath `
-		-o StrictHostKeyChecking=accept-new `
-		-o UserKnownHostsFile="$MigDir\known_hosts" `
-		$src "root@${ip}:${dst}"
+	$args = @(
+		"-i", $keyPath,
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=$MigDir\known_hosts"
+	)
+	if ($Recurse) { $args += "-r" }
+	$args += @($src, "root@${ip}:${dst}")
+	& scp @args
 }
 
 function Wait-CloudInit {
@@ -292,12 +297,22 @@ function Step-Up {
 		$json = pulumi stack output --json --show-secrets
 		if ($LASTEXITCODE -ne 0) { throw "pulumi stack output failed" }
 		$outs = $json | ConvertFrom-Json
+		$outProps = $outs.PSObject.Properties.Name
 		$s = Read-State
 		$s.infrastructure.hetzner_nakama_server_id    = "$($outs.nakama_server_id)"
 		$s.infrastructure.hetzner_nakama_ip           = $outs.nakama_public_ip
-		$s.infrastructure.hetzner_postgres_server_id  = "$($outs.postgres_server_id)"
-		$s.infrastructure.hetzner_postgres_ip         = $outs.postgres_public_ip
 		$s.infrastructure.hetzner_private_network_id  = "$($outs.private_network_id)"
+		# postgres_* outputs were dropped in the 2026-05-06
+		# single-host consolidation. Tolerate their absence so
+		# the script keeps working on the consolidated stack and
+		# remains forward-compatible if anyone re-introduces a
+		# split tier later.
+		if ($outProps -contains "postgres_server_id") {
+			$s.infrastructure.hetzner_postgres_server_id = "$($outs.postgres_server_id)"
+		}
+		if ($outProps -contains "postgres_public_ip") {
+			$s.infrastructure.hetzner_postgres_ip = $outs.postgres_public_ip
+		}
 		Save-State $s
 		Note "Stack outputs persisted to state.json"
 	} finally { Pop-Location }
@@ -354,9 +369,16 @@ function Step-Nakama {
 	foreach ($v in @(
 		"NAKAMA_CONSOLE_PASSWORD",
 		"NAKAMA_SERVER_KEY",
-		"NAKAMA_SESSION_ENCRYPTION_KEY"
+		"NAKAMA_SESSION_ENCRYPTION_KEY",
+		"SIGNALING_HMAC_SECRET"
 	)) {
 		Ensure-Secret $v
+	}
+	if (-not $env:SIGNALING_DOMAIN) {
+		# Static value, baked alongside the Pulumi DNS record
+		# `signaling-a` in main.go. Override via env if anyone
+		# ever forks the platform under a different zone.
+		Set-Item Env:SIGNALING_DOMAIN "signaling.snoringcat.games"
 	}
 	$s = Read-State
 	$ip = $s.infrastructure.hetzner_nakama_ip
@@ -383,7 +405,9 @@ function Step-Nakama {
 		"EDGEGAP_APP_NAME",
 		"EDGEGAP_APP_VERSION",
 		"NAKAMA_GAME_VERSION",
-		"NAKAMA_PROTOCOL_VERSION"
+		"NAKAMA_PROTOCOL_VERSION",
+		"SIGNALING_DOMAIN",
+		"SIGNALING_HMAC_SECRET"
 	)) {
 		$val = [Environment]::GetEnvironmentVariable($v)
 		$cfg = $cfg.Replace("`${$v}", $val)
@@ -411,17 +435,46 @@ function Step-Nakama {
 	Invoke-Checked "scp caddy/ build context" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\caddy" "/opt/nakama/" -Recurse | Out-Null
 	}
-	# Render .env for compose.
+	# signaling-proxy/ build context. The compose stack has
+	# `image: snoringcat-signaling-proxy:local` with
+	# `build: ./signaling-proxy`, so the Dockerfile + sources
+	# must be on disk before any `docker compose up`. Lives
+	# under /opt/nakama/ next to the compose file so the
+	# build path resolves cleanly.
+	Invoke-Checked "scp signaling-proxy/ build context" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\signaling-proxy" "/opt/nakama/" -Recurse | Out-Null
+	}
+	# Render .env for compose. Docker-compose substitutes
+	# ${VAR} in docker-compose.yml from this file. The
+	# entrypoint references NAKAMA_HTTP_KEY,
+	# NAKAMA_REFRESH_ENCRYPTION_KEY, and
+	# NAKAMA_CONSOLE_SIGNING_KEY via $$VAR (shell escape past
+	# compose's first round of substitution), so they have to
+	# be present here.
+	foreach ($v in @(
+		"NAKAMA_HTTP_KEY",
+		"NAKAMA_REFRESH_ENCRYPTION_KEY",
+		"NAKAMA_CONSOLE_SIGNING_KEY"
+	)) {
+		Ensure-Secret $v
+	}
 	$envLines = @(
 		"POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD",
 		"POSTGRES_PRIVATE_IP=$privPg",
 		"NAKAMA_CONSOLE_PASSWORD=$env:NAKAMA_CONSOLE_PASSWORD",
 		"NAKAMA_SERVER_KEY=$env:NAKAMA_SERVER_KEY",
 		"NAKAMA_SESSION_ENCRYPTION_KEY=$env:NAKAMA_SESSION_ENCRYPTION_KEY",
+		"NAKAMA_REFRESH_ENCRYPTION_KEY=$env:NAKAMA_REFRESH_ENCRYPTION_KEY",
+		"NAKAMA_HTTP_KEY=$env:NAKAMA_HTTP_KEY",
+		"NAKAMA_CONSOLE_SIGNING_KEY=$env:NAKAMA_CONSOLE_SIGNING_KEY",
 		"GOOGLE_OAUTH_CLIENT_ID=$env:GOOGLE_OAUTH_CLIENT_ID",
 		"GOOGLE_OAUTH_CLIENT_SECRET=$env:GOOGLE_OAUTH_CLIENT_SECRET",
 		"FACEBOOK_APP_ID=$env:FACEBOOK_APP_ID",
-		"FACEBOOK_APP_SECRET=$env:FACEBOOK_APP_SECRET"
+		"FACEBOOK_APP_SECRET=$env:FACEBOOK_APP_SECRET",
+		# Shared by the signaling-proxy compose service and
+		# the Nakama runtime hook (which signs URLs the proxy
+		# verifies). MUST match exactly between both.
+		"SIGNALING_HMAC_SECRET=$env:SIGNALING_HMAC_SECRET"
 	)
 	$tmpEnv = New-TemporaryFile
 	($envLines -join "`n") | Out-File -Encoding ASCII -FilePath $tmpEnv.FullName
@@ -430,16 +483,31 @@ function Step-Nakama {
 	}
 	Remove-Item $tmpEnv.FullName -Force
 
-	# Bring Caddy up first so it starts the cert flow, then Nakama.
+	# Build the signaling-proxy image (and rebuild Caddy +
+	# anything else that changed) before bringing services up.
+	# `compose up --build` is idempotent: no-op when image
+	# digests match the build context.
+	Invoke-Checked "compose build signaling-proxy" {
+		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose build signaling-proxy" | Out-Null
+	}
+
+	# Bring Caddy up first so it starts the cert flow, then
+	# the signaling-proxy + Nakama. Caddy's depends_on lists
+	# both nakama and signaling-proxy so docker-compose will
+	# start them when caddy starts; explicit `up -d` for each
+	# keeps the failure mode obvious.
 	Invoke-Checked "compose up caddy" {
 		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d caddy" | Out-Null
 	}
 	Log "Sleeping 30s for Caddy ACME challenge"
 	Start-Sleep -Seconds 30
+	Invoke-Checked "compose up signaling-proxy" {
+		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d signaling-proxy" | Out-Null
+	}
 	Invoke-Checked "compose up nakama" {
 		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d nakama" | Out-Null
 	}
-	Note "Nakama + Caddy compose up complete"
+	Note "Nakama + Caddy + signaling-proxy compose up complete"
 }
 
 function Step-Verify {

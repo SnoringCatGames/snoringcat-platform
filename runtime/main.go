@@ -122,6 +122,15 @@ func InitModule(
 			serverDNSBase:       env["SERVER_DNS_BASE"],
 			cloudflareDNSToken:  env["CLOUDFLARE_DNS_TOKEN"],
 			cloudflareDNSZoneID: env["CLOUDFLARE_DNS_ZONE_ID"],
+			signalingDomain:     env["SIGNALING_DOMAIN"],
+			signalingHmacSecret: []byte(env["SIGNALING_HMAC_SECRET"]),
+		}
+		if alloc.signalingDomain == "" || len(alloc.signalingHmacSecret) == 0 {
+			logger.Warn("SIGNALING_DOMAIN / SIGNALING_HMAC_SECRET" +
+				" not set; match_ready will omit signaling_url" +
+				" and clients will fall back to per-deploy DNS." +
+				" Set both on the Nakama runtime env to enable" +
+				" the stable-FQDN signaling path.")
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {

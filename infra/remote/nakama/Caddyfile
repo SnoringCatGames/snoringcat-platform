@@ -33,3 +33,21 @@ nakama.snoringcat.games {
 		header_up X-Real-IP {remote_host}
 	}
 }
+
+# WebSocket signaling proxy. Stable hostname in front of the
+# dynamic Edgegap deploy. Caddy terminates TLS once;
+# signaling-proxy validates the HMAC token in the URL and
+# bridges to the upstream game-server. See
+# infra/remote/signaling-proxy/main.go for the protocol. The
+# upstream is a sibling docker-compose service on the same
+# nakama-net network; reachable via the service's DNS name.
+signaling.snoringcat.games {
+	encode gzip
+
+	reverse_proxy signaling-proxy:4435 {
+		flush_interval -1
+		# WebSocket upgrade is automatic in Caddy 2.
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+}
