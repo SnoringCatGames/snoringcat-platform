@@ -201,23 +201,6 @@ type fleetAllocator struct {
 	edgegap    *edgegapClient
 	appName    string
 	appVersion string
-	// serverDNSBase is the apex used to derive the per-deploy
-	// hostname `s-<ip-with-dashes>.<serverDNSBase>` we send to
-	// matched clients. We POST a Cloudflare A record for that
-	// name pointing at the deploy's PublicIP from this hook;
-	// the wildcard cert (`*.<serverDNSBase>`) covers any
-	// subdomain. Configurable via SERVER_DNS_BASE; defaults
-	// to `game.hopnbop.net` when unset.
-	//
-	// Deprecated. The signalingDomain + HMAC-token flow below
-	// replaces the per-deploy DNS approach. Kept temporarily
-	// so older client builds without signaling_url support
-	// continue to work during rollout.
-	serverDNSBase string
-	// Cloudflare credentials for per-deploy A record
-	// pre-warming. Same deprecation note as serverDNSBase.
-	cloudflareDNSToken  string
-	cloudflareDNSZoneID string
 	// signalingDomain is the stable FQDN that fronts the
 	// per-deploy WebSocket signaling, e.g.
 	// "signaling.snoringcat.games". The runtime hook signs an
@@ -232,10 +215,8 @@ type fleetAllocator struct {
 	// signalingHmacSecret is the shared HMAC-SHA256 secret used
 	// to sign signaling_url tokens. Must match the value the
 	// signaling-proxy reads from its own SIGNALING_HMAC_SECRET
-	// env. If either is unset or empty, the hook skips
-	// signaling_url emission and clients fall back to the
-	// legacy per-deploy DNS path. Set via SIGNALING_HMAC_SECRET
-	// runtime env.
+	// env. Both must be set; the runtime fails fast at boot
+	// otherwise.
 	signalingHmacSecret []byte
 }
 
@@ -343,15 +324,17 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				Key:   "TRANSPORT_TYPE",
 				Value: transportType,
 			},
+			{
+				// Tell the in-container Godot to bind its
+				// signaling WebSocket to 4434/TCP (matches
+				// the declared container port). With the
+				// nginx layer gone, Godot is the only
+				// listener on that port.
+				Key:   "SIGNALING_PORT",
+				Value: "4434",
+			},
 		},
 	}
-	// Note: WebRTC signaling sits behind nginx in the container
-	// (nginx terminates wss:// on 4434/TCP and proxies to Godot
-	// on 4433/TCP; native ws:// is pass-throughed). So we don't
-	// override SIGNALING_PORT here — Godot's default (= server
-	// port = 4433/TCP) is what nginx forwards to. The cert env
-	// vars (TLS_FULLCHAIN / TLS_PRIVKEY) live on the Edgegap
-	// app version, not per-deploy.
 	if len(ipList) == 0 {
 		// `north_america` is a published Edgegap continent tag.
 		// This keeps the deploy from 400-ing on missing region
@@ -386,70 +369,25 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
 	}
 
-	// Compute the deterministic public hostname from the
-	// allocated IP and pre-warm a Cloudflare A record for it.
-	//
-	// We cannot use Edgegap's status.Fqdn (a `*.pr.edgegap.net`
-	// host) for WSS because the wildcard TLS cert covers
-	// `*.<dnsBaseDomain>` and the cert chain doesn't match the
-	// Edgegap host — browsers reject the handshake.
-	//
-	// The pre-warm runs here, in the runtime hook, rather than
-	// in the container's entrypoint.sh. Two reasons:
-	//   1. We have the PublicIP and CLOUDFLARE_DNS_* creds in
-	//      Nakama env, so the round-trip Hetzner -> CF is one
-	//      step. Doing the same in the container relies on
-	//      Edgegap injecting CF creds into the deploy, which
-	//      didn't work reliably.
-	//   2. Nakama logs are easy to read; Edgegap container
-	//      stdout is not exposed via API.
-	//
-	// On match-end we do not auto-delete; the dns-watchdog
-	// systemd timer cleans up s-* records older than its
-	// MAX_RECORD_AGE_HOURS threshold (default 4h).
-	serverFqdn := status.Fqdn
-	if status.PublicIP != "" {
-		dnsBase := a.serverDNSBase
-		if dnsBase == "" {
-			dnsBase = "game.hopnbop.net"
-		}
-		ipDashed := strings.ReplaceAll(status.PublicIP, ".", "-")
-		serverFqdn = fmt.Sprintf("s-%s.%s", ipDashed, dnsBase)
-
-		if a.cloudflareDNSToken != "" && a.cloudflareDNSZoneID != "" {
-			if err := a.preWarmDNS(ctx, logger, serverFqdn,
-				status.PublicIP, status.RequestID); err != nil {
-				logger.Warn("DNS pre-warm failed for %s -> %s: %v",
-					serverFqdn, status.PublicIP, err)
-				// Continue anyway — clients will fail their
-				// WSS handshake but ENet-only pairs survive.
-			}
-		} else {
-			logger.Warn("DNS pre-warm skipped: CLOUDFLARE_DNS_TOKEN" +
-				" or CLOUDFLARE_DNS_ZONE_ID not set in runtime env")
-		}
+	// Build the signed signaling URL clients connect to.
+	// Picks the TCP host port (Edgegap's "signaling" entry
+	// in status.Ports → container 4434/TCP). Caddy +
+	// signaling-proxy on the platform host validate the
+	// HMAC token and bridge to that (ip, tcp_port).
+	if status.PublicIP == "" {
+		return "", fmt.Errorf(
+			"edgegap status missing PublicIP (request=%s)",
+			deploy.RequestID)
 	}
-
-	// Build the signaling URL once per allocation. Picks the
-	// TCP port (Edgegap's "signaling" entry in status.Ports →
-	// container 4434/TCP). When SIGNALING_DOMAIN /
-	// SIGNALING_HMAC_SECRET aren't configured, signalingURL
-	// stays empty and the client falls back to the legacy
-	// per-deploy server_fqdn:port path.
-	signalingURL := ""
-	if a.signalingDomain != "" && len(a.signalingHmacSecret) > 0 &&
-		status.PublicIP != "" {
-		tcpPort := pickTCPPort(status.Ports)
-		if tcpPort > 0 {
-			signalingURL = signSignalingURL(
-				a.signalingDomain, a.signalingHmacSecret,
-				status.PublicIP, tcpPort, time.Now())
-		} else {
-			logger.Warn("no TCP port in status.Ports; "+
-				"signaling_url omitted (status=%+v)",
-				status.Ports)
-		}
+	tcpPort := pickTCPPort(status.Ports)
+	if tcpPort == 0 {
+		return "", fmt.Errorf(
+			"edgegap status has no TCP port (request=%s, ports=%+v)",
+			deploy.RequestID, status.Ports)
 	}
+	signalingURL := signSignalingURL(
+		a.signalingDomain, a.signalingHmacSecret,
+		status.PublicIP, tcpPort, time.Now())
 
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server
@@ -461,7 +399,6 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	for _, mp := range matchedPlayers {
 		connInfo := map[string]any{
 			"server_ip":      status.PublicIP,
-			"server_fqdn":    serverFqdn,
 			"ports":          status.Ports,
 			"request_id":     status.RequestID,
 			"session_ids":    mp.SessionIDs,
@@ -479,69 +416,4 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
-}
-
-// preWarmDNS POSTs a Cloudflare A record for hostname -> publicIP
-// with a 60s TTL and a `comment` carrying the deploy ID and a
-// `created=<iso>` timestamp the dns-watchdog systemd timer
-// (infra/remote/dns-watchdog/) uses to detect stale records.
-//
-// The matchmaker hook calls this synchronously before sending
-// match_ready notifications so clients get a hostname that
-// already resolves by the time their browser does the DNS
-// lookup. CF DNS propagation typically completes in well under
-// the time it takes a client to receive the notification, open
-// a socket, and do a fresh resolve.
-//
-// We do NOT delete the record on match-end here — Edgegap's
-// own deploy-cleanup is asynchronous, so a same-IP deploy
-// allocated immediately after this match would race against
-// our delete. The dns-watchdog timer cleans up records older
-// than its MAX_RECORD_AGE_HOURS window (default 4h), which
-// is comfortably longer than any plausible match.
-func (a *fleetAllocator) preWarmDNS(
-	ctx context.Context,
-	logger runtime.Logger,
-	hostname, publicIP, requestID string,
-) error {
-	createdISO := time.Now().UTC().Format(time.RFC3339)
-	comment := fmt.Sprintf(
-		"edgegap deploy=%s created=%s", requestID, createdISO)
-	body, err := json.Marshal(map[string]any{
-		"type":    "A",
-		"name":    hostname,
-		"content": publicIP,
-		"ttl":     60,
-		"proxied": false,
-		"comment": comment,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal CF body: %w", err)
-	}
-	url := fmt.Sprintf(
-		"https://api.cloudflare.com/client/v4/zones/%s/dns_records",
-		a.cloudflareDNSZoneID)
-	req, err := http.NewRequestWithContext(ctx, "POST", url,
-		bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.cloudflareDNSToken)
-
-	cl := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return fmt.Errorf("CF POST: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf(
-			"CF POST returned %d: %s",
-			resp.StatusCode, string(respBody))
-	}
-	logger.Info("DNS pre-warm: %s -> %s (deploy=%s)",
-		hostname, publicIP, requestID)
-	return nil
 }

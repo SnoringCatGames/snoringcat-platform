@@ -114,23 +114,25 @@ func InitModule(
 				" EDGEGAP_APP_VERSION missing. Both must be"+
 				" set in the Nakama runtime env when the"+
 				" matchmaker hook is enabled.", 3)
+	} else if env["SIGNALING_DOMAIN"] == "" ||
+		env["SIGNALING_HMAC_SECRET"] == "" {
+		// Fail fast rather than allocate deploys whose
+		// match_ready notifications would carry an empty
+		// signaling_url. Both vars must be wired on the
+		// Nakama runtime env (config.yml's runtime.env
+		// block) before the matchmaker hook is useful.
+		return runtime.NewError(
+			"EDGEGAP_TOKEN set but SIGNALING_DOMAIN and/or"+
+				" SIGNALING_HMAC_SECRET missing. Both must be"+
+				" set in the Nakama runtime env when the"+
+				" matchmaker hook is enabled.", 3)
 	} else {
 		alloc := &fleetAllocator{
 			edgegap:             edgegap,
 			appName:             appName,
 			appVersion:          appVersion,
-			serverDNSBase:       env["SERVER_DNS_BASE"],
-			cloudflareDNSToken:  env["CLOUDFLARE_DNS_TOKEN"],
-			cloudflareDNSZoneID: env["CLOUDFLARE_DNS_ZONE_ID"],
 			signalingDomain:     env["SIGNALING_DOMAIN"],
 			signalingHmacSecret: []byte(env["SIGNALING_HMAC_SECRET"]),
-		}
-		if alloc.signalingDomain == "" || len(alloc.signalingHmacSecret) == 0 {
-			logger.Warn("SIGNALING_DOMAIN / SIGNALING_HMAC_SECRET" +
-				" not set; match_ready will omit signaling_url" +
-				" and clients will fall back to per-deploy DNS." +
-				" Set both on the Nakama runtime env to enable" +
-				" the stable-FQDN signaling path.")
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {

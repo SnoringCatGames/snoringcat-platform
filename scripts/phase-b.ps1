@@ -11,13 +11,13 @@
 param(
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
+		"Verify", "UptimeRobot", "CostMonitor",
 		"PgBackup", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StartAt = "PulumiUp",
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
+		"Verify", "UptimeRobot", "CostMonitor",
 		"PgBackup", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StopAt = "Complete",
@@ -134,7 +134,7 @@ function Scp-Up {
 # --------------------------------------------------------------------
 $StepOrder = @(
 	"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-	"Verify", "UptimeRobot", "CostMonitor", "DnsWatchdog",
+	"Verify", "UptimeRobot", "CostMonitor",
 	"AlertTest", "Reencrypt", "Complete"
 )
 $StartIdx = $StepOrder.IndexOf($StartAt)
@@ -467,78 +467,6 @@ systemctl list-timers cost-monitor.timer
 	Note "Cost monitor installed and ran successfully"
 }
 
-function Step-DnsWatchdog {
-	if (-not (Should-Run "DnsWatchdog")) { return }
-	Note "Step: dns-watchdog systemd timer"
-	$s = Read-State
-	$ip = $s.infrastructure.hetzner_nakama_ip
-
-	# Required env from operator. CLOUDFLARE_DNS_TOKEN is the
-	# same Zone:DNS:Edit token used by cert-rotate; reuse it.
-	# CLOUDFLARE_DNS_ZONE_ID identifies the apex zone that
-	# holds the per-deploy A records (e.g. game.hopnbop.net's
-	# parent zone).
-	if (-not $env:CLOUDFLARE_DNS_TOKEN) {
-		throw "CLOUDFLARE_DNS_TOKEN missing in env (Zone:DNS:Edit on the SERVER_DNS_BASE zone)"
-	}
-	if (-not $env:CLOUDFLARE_DNS_ZONE_ID) {
-		throw "CLOUDFLARE_DNS_ZONE_ID missing in env (zone ID for SERVER_DNS_BASE)"
-	}
-	$dnsBase = if ($env:SERVER_DNS_BASE) { $env:SERVER_DNS_BASE } else { "game.hopnbop.net" }
-
-	# Idempotent — same path created in Step-CostMonitor.
-	Invoke-Checked "mkdir /var/log/snoringcat" {
-		Ssh-Run $ip $NakamaKey "mkdir -p /var/log/snoringcat && touch /var/log/snoringcat/service-status.jsonl"
-	}
-
-	Invoke-Checked "mkdir dns-watchdog" {
-		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/dns-watchdog"
-	}
-	Invoke-Checked "scp dns-watchdog.sh" {
-		Scp-Up $ip $NakamaKey "$RemoteSrc\dns-watchdog\dns-watchdog.sh" "/opt/snoringcat/dns-watchdog/"
-	}
-	Invoke-Checked "scp service" {
-		Scp-Up $ip $NakamaKey "$RemoteSrc\dns-watchdog\dns-watchdog.service" "/opt/snoringcat/dns-watchdog/"
-	}
-	Invoke-Checked "scp timer" {
-		Scp-Up $ip $NakamaKey "$RemoteSrc\dns-watchdog\dns-watchdog.timer" "/opt/snoringcat/dns-watchdog/"
-	}
-
-	$envLines = @(
-		"CLOUDFLARE_DNS_TOKEN=$env:CLOUDFLARE_DNS_TOKEN",
-		"CLOUDFLARE_DNS_ZONE_ID=$env:CLOUDFLARE_DNS_ZONE_ID",
-		"SERVER_DNS_BASE=$dnsBase",
-		"MAX_RECORD_AGE_HOURS=4",
-		# Service-status JSONL: dns-watchdog's post_status() helper
-		# appends one JSON line per run. Drained by the daily
-		# consolidator.
-		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl"
-	)
-	$tmp = New-TemporaryFile
-	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")
-	Invoke-Checked "scp .env (dns-watchdog)" {
-		Scp-Up $ip $NakamaKey $tmp.FullName "/opt/snoringcat/dns-watchdog/.env"
-	}
-	Remove-Item $tmp.FullName -Force
-
-	Invoke-Checked "install + enable timer" {
-		Ssh-Run $ip $NakamaKey @"
-chmod +x /opt/snoringcat/dns-watchdog/dns-watchdog.sh &&
-chmod 600 /opt/snoringcat/dns-watchdog/.env &&
-cp /opt/snoringcat/dns-watchdog/dns-watchdog.service /etc/systemd/system/dns-watchdog.service &&
-cp /opt/snoringcat/dns-watchdog/dns-watchdog.timer /etc/systemd/system/dns-watchdog.timer &&
-systemctl daemon-reload &&
-systemctl enable --now dns-watchdog.timer &&
-systemctl list-timers dns-watchdog.timer
-"@
-	}
-
-	Invoke-Checked "test run dns-watchdog" {
-		Ssh-Run $ip $NakamaKey "systemctl start dns-watchdog.service && journalctl -u dns-watchdog.service -n 20 --no-pager"
-	}
-	Note "DNS watchdog installed and ran successfully"
-}
-
 function Step-PgBackup {
 	if (-not (Should-Run "PgBackup")) { return }
 	Note "Step: pg-backup systemd timer (nightly Postgres dump → R2)"
@@ -693,7 +621,6 @@ try {
 	Step-Verify
 	Step-UptimeRobot
 	Step-CostMonitor
-	Step-DnsWatchdog
 	Step-PgBackup
 	Step-AlertTest
 	Step-Reencrypt
