@@ -45,6 +45,72 @@ func signSignalingURL(
 	return fmt.Sprintf("wss://%s/connect/%s", domain, token)
 }
 
+// serverRegistrationPollTimeout caps how long the matchmaker
+// hook waits for the in-container Godot to call register_server
+// after Edgegap reports the container READY. The actual delay
+// is dominated by Godot's startup time inside the container —
+// typically 1-2s, occasionally more under load. We give it 30s
+// before giving up; longer than that means the container is
+// genuinely stuck.
+const serverRegistrationPollTimeout = 30 * time.Second
+
+// serverRegistrationPollInterval is how often we re-check the
+// server_registrations storage row. The first poll happens
+// immediately, so a fast server boot is matched in <1 interval.
+const serverRegistrationPollInterval = 250 * time.Millisecond
+
+// waitForServerRegistered blocks until the in-container Godot
+// posts to the register_server RPC (which writes to the
+// server_registrations storage collection keyed by request_id),
+// or until serverRegistrationPollTimeout elapses. The storage
+// row's existence is a positive readiness signal: the server
+// only writes it after server_enable_connections returns, which
+// in turn only returns after the WS port has been bound.
+//
+// Without this gate, match_ready notifications race the server's
+// startup and clients see connection-refused on the first few
+// retries. The client-side retry-backoff papers over the gap
+// but doing it server-side is cleaner — clients connect on the
+// first try.
+func waitForServerRegistered(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	requestID string,
+) error {
+	start := time.Now()
+	deadline := start.Add(serverRegistrationPollTimeout)
+	ticker := time.NewTicker(serverRegistrationPollInterval)
+	defer ticker.Stop()
+	for {
+		rows, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+			Collection: "server_registrations",
+			Key:        requestID,
+		}})
+		if err == nil && len(rows) > 0 {
+			logger.Info(
+				"server registered after %s: request_id=%s",
+				time.Since(start).Round(time.Millisecond),
+				requestID)
+			return nil
+		}
+		if err != nil {
+			// Treat as transient — Postgres reads can blip.
+			logger.Warn("storage read for %s: %v", requestID, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf(
+				"server didn't register within %s (request=%s)",
+				serverRegistrationPollTimeout, requestID)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // pickTCPPort scans an Edgegap deploy's port map and returns
 // the host-side external port for the first TCP entry, or 0 if
 // none. The game-server declares 4433/UDP (game) and 4434/TCP
@@ -365,7 +431,24 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 		time.Sleep(2 * time.Second)
 	}
+	// Helper: terminate the deploy we just allocated when an
+	// allocation-side error makes it impossible to ship a
+	// usable match_ready. Without this, the deploy stays alive
+	// until Edgegap's 24h max_duration cap.
+	stopOnErr := func(reason string) {
+		if stopErr := a.edgegap.Stop(ctx, deploy.RequestID); stopErr != nil {
+			logger.Warn(
+				"failed to stop orphaned deploy %s after %s: %v",
+				deploy.RequestID, reason, stopErr)
+		} else {
+			logger.Info(
+				"stopped orphaned deploy %s (%s)",
+				deploy.RequestID, reason)
+		}
+	}
+
 	if status == nil {
+		stopOnErr("polling timeout")
 		return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
 	}
 
@@ -375,12 +458,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// signaling-proxy on the platform host validate the
 	// HMAC token and bridge to that (ip, tcp_port).
 	if status.PublicIP == "" {
+		stopOnErr("missing PublicIP")
 		return "", fmt.Errorf(
 			"edgegap status missing PublicIP (request=%s)",
 			deploy.RequestID)
 	}
 	tcpPort := pickTCPPort(status.Ports)
 	if tcpPort == 0 {
+		stopOnErr("missing TCP port")
 		return "", fmt.Errorf(
 			"edgegap status has no TCP port (request=%s, ports=%+v)",
 			deploy.RequestID, status.Ports)
@@ -388,6 +473,19 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	signalingURL := signSignalingURL(
 		a.signalingDomain, a.signalingHmacSecret,
 		status.PublicIP, tcpPort, time.Now())
+
+	// Wait for the in-container Godot to call register_server.
+	// Edgegap reports CurrentStatus=READY when the container
+	// process starts; the Godot signaling WS doesn't bind for
+	// another second or so, and clients that arrive in that
+	// window get connection-refused on every retry. The server
+	// posts to register_server immediately after binding, so
+	// the storage row's existence is the readiness signal.
+	if err := waitForServerRegistered(
+		ctx, logger, nk, deploy.RequestID); err != nil {
+		stopOnErr("server didn't register: " + err.Error())
+		return "", err
+	}
 
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server
