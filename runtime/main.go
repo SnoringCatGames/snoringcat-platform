@@ -147,6 +147,9 @@ func InitModule(
 	if err := addRpc("match_end", lifecycle.MatchEndRpc); err != nil {
 		return err
 	}
+	if err := addRpc("match_cancel", lifecycle.MatchCancelRpc); err != nil {
+		return err
+	}
 	// Phase E migration RPC. Gated behind BULK_IMPORT_ENABLED
 	// because the HTTP key is now in client builds, and this
 	// RPC is a write-anywhere primitive that would let any

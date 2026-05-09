@@ -332,5 +332,94 @@ func (m *matchLifecycle) MatchEndRpc(
 	return string(resp), nil
 }
 
+type matchCancelArgs struct {
+	RequestID string `json:"request_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// MatchCancelRpc is called by the game server when it's bailing
+// out of an Edgegap deployment without producing match results
+// (idle timeout with no clients connected, grace timeout with
+// only one peer, mid-match all-clients-dropped). It deletes the
+// registration and terminates the Edgegap deployment so the
+// container stops billing immediately, mirroring MatchEndRpc's
+// cleanup half. The difference: no leaderboard / match_history
+// writes (there's nothing to record).
+//
+// Hardening (same anti-forgery model as MatchEndRpc): the
+// request_id MUST correspond to an active server registration.
+// A forger would have to first call register_server (also
+// hardened) for a request_id Edgegap actually allocated.
+//
+// Idempotent the same way MatchEndRpc is — the storage delete
+// is what dedups: a second call finds no registration and is
+// rejected.
+func (m *matchLifecycle) MatchCancelRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	db *sql.DB,
+	nk runtime.NakamaModule,
+	payload string,
+) (string, error) {
+	if err := requireServerToServer(ctx); err != nil {
+		return "", err
+	}
+	args := matchCancelArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError("invalid payload: "+err.Error(), 3)
+	}
+	if args.RequestID == "" {
+		return "", runtime.NewError("request_id required", 3)
+	}
+
+	// Verify the request_id is a registered server.
+	regs, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+		Collection: "server_registrations",
+		Key:        args.RequestID,
+	}})
+	if err != nil {
+		logger.Error("server_registrations read: %v", err)
+		return "", err
+	}
+	if len(regs) == 0 {
+		// Idempotent silent success: a second cancel (or a
+		// cancel after match_end already cleaned up) finds
+		// nothing to do. Returning ok keeps callers simple
+		// (they can blast cancel without checking state).
+		logger.Info(
+			"match_cancel no-op: request_id=%s already cleaned up",
+			args.RequestID)
+		resp, _ := json.Marshal(
+			map[string]any{"ok": true, "noop": true})
+		return string(resp), nil
+	}
+
+	logger.Info(
+		"match cancelled: request_id=%s reason=%s",
+		args.RequestID, args.Reason)
+
+	if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
+		Collection: "server_registrations",
+		Key:        args.RequestID,
+	}}); err != nil {
+		logger.Warn("storage delete: %v", err)
+	}
+
+	if m.edgegap != nil {
+		if err := m.edgegap.Stop(ctx, args.RequestID); err != nil {
+			logger.Warn(
+				"edgegap stop failed for %s: %v",
+				args.RequestID, err)
+		} else {
+			logger.Info(
+				"edgegap deployment %s terminated (cancelled)",
+				args.RequestID)
+		}
+	}
+
+	resp, _ := json.Marshal(map[string]any{"ok": true})
+	return string(resp), nil
+}
+
 // Static check at package load.
 var _ = errors.New

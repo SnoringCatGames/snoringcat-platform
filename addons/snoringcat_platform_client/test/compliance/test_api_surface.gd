@@ -46,6 +46,7 @@ const _S2S_RUNTIME_RPCS := [
 	"runtime_status",
 	"register_server",
 	"match_end",
+	"match_cancel",
 	"record_client_ip",
 	"version_check",
 	"transport_select",
