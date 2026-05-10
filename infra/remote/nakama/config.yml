@@ -19,14 +19,14 @@ session:
   refresh_token_expiry_sec: 604800
 
 # Tighter than Nakama's defaults (interval_sec=15, max_intervals=2).
-# At hopnbop's player counts the matcher runs ~free, and a 15 s
-# tick is dominated by ticket-aging delay (a ticket joining at T+1
-# isn't eligible until the next tick at T+15, then matched at the
-# tick after). 3 s × 10 intervals gives ~3 s for a perfect
-# max_count batch and a 30 s ceiling before relaxing to min_count.
+# At hopnbop's player counts the matcher runs ~free, and a long
+# interval is dominated by ticket-aging delay. 1 s ticks with a
+# 30 s patience window for hitting max_count gives sub-second
+# match formation when max_count is achievable, and the same
+# 30 s ceiling before relaxing to min_count when it isn't.
 matchmaker:
-  interval_sec: 3
-  max_intervals: 10
+  interval_sec: 1
+  max_intervals: 30
 
 console:
   username: "admin"
