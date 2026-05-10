@@ -434,17 +434,12 @@ func (m *matchLifecycle) MatchCancelRpc(
 		return "", runtime.NewError("request_id required", 3)
 	}
 
-	// Server-to-server callers always pass; client callers must
-	// be cancelling a match that fleet_allocator flagged synthetic.
-	userID, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
-	synthetic := isSyntheticMatch(ctx, logger, nk, args.RequestID)
-	if userID != "" && !synthetic {
-		return "", runtime.NewError(
-			"forbidden: client cancel only allowed for synthetic matches",
-			7)
-	}
-
-	// Verify the request_id is a registered server.
+	// Verify the request_id is a registered server. Done before
+	// the auth check so an already-cancelled match returns a
+	// silent idempotent no-op regardless of caller — matters for
+	// the synthetic-probe flow where two probes race to call
+	// match_cancel; the second one finds the registration (and
+	// the synthetic marker) already deleted by the first.
 	regs, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
 		Collection: "server_registrations",
 		Key:        args.RequestID,
@@ -454,16 +449,22 @@ func (m *matchLifecycle) MatchCancelRpc(
 		return "", err
 	}
 	if len(regs) == 0 {
-		// Idempotent silent success: a second cancel (or a
-		// cancel after match_end already cleaned up) finds
-		// nothing to do. Returning ok keeps callers simple
-		// (they can blast cancel without checking state).
 		logger.Info(
 			"match_cancel no-op: request_id=%s already cleaned up",
 			args.RequestID)
 		resp, _ := json.Marshal(
 			map[string]any{"ok": true, "noop": true})
 		return string(resp), nil
+	}
+
+	// Server-to-server callers always pass; client callers must
+	// be cancelling a match that fleet_allocator flagged synthetic.
+	userID, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	synthetic := isSyntheticMatch(ctx, logger, nk, args.RequestID)
+	if userID != "" && !synthetic {
+		return "", runtime.NewError(
+			"forbidden: client cancel only allowed for synthetic matches",
+			7)
 	}
 
 	logger.Info(
