@@ -148,6 +148,33 @@ type matchEndPlayer struct {
 	Bumps  int    `json:"bumps"`
 }
 
+// isSyntheticMatch returns true when fleet_allocator persisted a
+// synthetic-match marker for the given request_id. Used by
+// match_end to skip leaderboard/history writes and by
+// match_cancel to admit client-initiated cancellation.
+func isSyntheticMatch(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	requestID string,
+) bool {
+	rows, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+		Collection: syntheticMatchCollection,
+		Key:        requestID,
+	}})
+	if err != nil {
+		// Treat read failures as "not synthetic" — a Postgres
+		// blip on the cancel path shouldn't pollute the
+		// leaderboard, but we'd rather over-count than over-
+		// trust an unreadable row.
+		logger.Warn(
+			"synthetic-match read for %s: %v",
+			requestID, err)
+		return false
+	}
+	return len(rows) > 0
+}
+
 // MatchEndRpc is called by the game server when a match ends. We
 // post the result to the leaderboard and clean up the registration
 // entry.
@@ -164,6 +191,10 @@ type matchEndPlayer struct {
 //   - Storage delete of the registration is what makes match_end
 //     dedup itself: a second call for the same request_id finds
 //     no registration and is rejected.
+//   - Synthetic-probe matches (request_id in the
+//     synthetic_matches collection) skip leaderboard/history
+//     writes so the synthetic-match-probe job doesn't pollute
+//     real player stats.
 func (m *matchLifecycle) MatchEndRpc(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -247,52 +278,62 @@ func (m *matchLifecycle) MatchEndRpc(
 		"match ended: request_id=%s winner=%s players=%d",
 		args.RequestID, args.WinnerID, len(args.Players))
 
+	synthetic := isSyntheticMatch(ctx, logger, nk, args.RequestID)
+	if synthetic {
+		logger.Info(
+			"match %s is synthetic; skipping leaderboard + history writes",
+			args.RequestID)
+	}
+
 	// Write leaderboard records and a per-user match_history row
 	// in one pass. The history row is what get_match_history
 	// reads back; the leaderboard record is what
-	// get_player_stats / the global FFA board read.
-	endedAt := nowUnix()
-	historyWrites := make([]*runtime.StorageWrite, 0, len(args.Players))
-	for _, p := range args.Players {
-		if p.UserID == "" {
-			continue
-		}
-		_, err := nk.LeaderboardRecordWrite(ctx,
-			"ffa",
-			p.UserID,
-			"",
-			int64(p.Score),
-			0,
-			map[string]any{
-				"kills": p.Kills,
-				"bumps": p.Bumps,
-			},
-			nil)
-		if err != nil {
-			logger.Warn("leaderboard write for %s: %v", p.UserID, err)
-		}
+	// get_player_stats / the global FFA board read. Skipped for
+	// synthetic probe matches.
+	if !synthetic {
+		endedAt := nowUnix()
+		historyWrites := make([]*runtime.StorageWrite, 0, len(args.Players))
+		for _, p := range args.Players {
+			if p.UserID == "" {
+				continue
+			}
+			_, err := nk.LeaderboardRecordWrite(ctx,
+				"ffa",
+				p.UserID,
+				"",
+				int64(p.Score),
+				0,
+				map[string]any{
+					"kills": p.Kills,
+					"bumps": p.Bumps,
+				},
+				nil)
+			if err != nil {
+				logger.Warn("leaderboard write for %s: %v", p.UserID, err)
+			}
 
-		entry := map[string]any{
-			"match_id":  args.RequestID,
-			"ended_at":  endedAt,
-			"is_winner": p.UserID == args.WinnerID,
-			"score":     p.Score,
-			"kills":     p.Kills,
-			"bumps":     p.Bumps,
+			entry := map[string]any{
+				"match_id":  args.RequestID,
+				"ended_at":  endedAt,
+				"is_winner": p.UserID == args.WinnerID,
+				"score":     p.Score,
+				"kills":     p.Kills,
+				"bumps":     p.Bumps,
+			}
+			value, _ := json.Marshal(entry)
+			historyWrites = append(historyWrites, &runtime.StorageWrite{
+				Collection:      "match_history",
+				Key:             args.RequestID,
+				UserID:          p.UserID,
+				Value:           string(value),
+				PermissionRead:  1, // owner-only.
+				PermissionWrite: 0, // server-only writes.
+			})
 		}
-		value, _ := json.Marshal(entry)
-		historyWrites = append(historyWrites, &runtime.StorageWrite{
-			Collection:      "match_history",
-			Key:             args.RequestID,
-			UserID:          p.UserID,
-			Value:           string(value),
-			PermissionRead:  1, // owner-only.
-			PermissionWrite: 0, // server-only writes.
-		})
-	}
-	if len(historyWrites) > 0 {
-		if _, err := nk.StorageWrite(ctx, historyWrites); err != nil {
-			logger.Warn("match_history write: %v", err)
+		if len(historyWrites) > 0 {
+			if _, err := nk.StorageWrite(ctx, historyWrites); err != nil {
+				logger.Warn("match_history write: %v", err)
+			}
 		}
 	}
 
@@ -306,6 +347,17 @@ func (m *matchLifecycle) MatchEndRpc(
 	}}); err != nil {
 		// Non-fatal: maybe registration was never written.
 		logger.Warn("storage delete: %v", err)
+	}
+
+	if synthetic {
+		if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
+			Collection: syntheticMatchCollection,
+			Key:        args.RequestID,
+		}}); err != nil {
+			logger.Warn(
+				"synthetic-match marker delete for %s: %v",
+				args.RequestID, err)
+		}
 	}
 
 	// Terminate the Edgegap deployment so the container stops
@@ -346,14 +398,27 @@ type matchCancelArgs struct {
 // cleanup half. The difference: no leaderboard / match_history
 // writes (there's nothing to record).
 //
-// Hardening (same anti-forgery model as MatchEndRpc): the
+// Auth model:
+//   - Server-to-server (no RUNTIME_CTX_USER_ID) is the normal
+//     path: the in-container Godot calls this when its idle/grace
+//     timer fires.
+//   - Client sessions are admitted ONLY for synthetic-probe
+//     matches (a `synthetic_matches` storage row exists for the
+//     request_id). The synthetic-match-probe job uses this to
+//     tear down its Edgegap deploy promptly after DataChannel-
+//     open instead of waiting on the in-container idle timer.
+//     Real client tampering is contained: a forger can only
+//     cancel matches that the runtime itself flagged synthetic,
+//     and synthetic matches don't write to the leaderboard.
+//
+// Other hardening (same anti-forgery model as MatchEndRpc): the
 // request_id MUST correspond to an active server registration.
 // A forger would have to first call register_server (also
 // hardened) for a request_id Edgegap actually allocated.
 //
 // Idempotent the same way MatchEndRpc is — the storage delete
 // is what dedups: a second call finds no registration and is
-// rejected.
+// returned as a silent no-op.
 func (m *matchLifecycle) MatchCancelRpc(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -361,15 +426,22 @@ func (m *matchLifecycle) MatchCancelRpc(
 	nk runtime.NakamaModule,
 	payload string,
 ) (string, error) {
-	if err := requireServerToServer(ctx); err != nil {
-		return "", err
-	}
 	args := matchCancelArgs{}
 	if err := json.Unmarshal([]byte(payload), &args); err != nil {
 		return "", runtime.NewError("invalid payload: "+err.Error(), 3)
 	}
 	if args.RequestID == "" {
 		return "", runtime.NewError("request_id required", 3)
+	}
+
+	// Server-to-server callers always pass; client callers must
+	// be cancelling a match that fleet_allocator flagged synthetic.
+	userID, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	synthetic := isSyntheticMatch(ctx, logger, nk, args.RequestID)
+	if userID != "" && !synthetic {
+		return "", runtime.NewError(
+			"forbidden: client cancel only allowed for synthetic matches",
+			7)
 	}
 
 	// Verify the request_id is a registered server.
@@ -395,14 +467,25 @@ func (m *matchLifecycle) MatchCancelRpc(
 	}
 
 	logger.Info(
-		"match cancelled: request_id=%s reason=%s",
-		args.RequestID, args.Reason)
+		"match cancelled: request_id=%s reason=%s synthetic=%t",
+		args.RequestID, args.Reason, synthetic)
 
 	if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
 		Collection: "server_registrations",
 		Key:        args.RequestID,
 	}}); err != nil {
 		logger.Warn("storage delete: %v", err)
+	}
+
+	if synthetic {
+		if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
+			Collection: syntheticMatchCollection,
+			Key:        args.RequestID,
+		}}); err != nil {
+			logger.Warn(
+				"synthetic-match marker delete for %s: %v",
+				args.RequestID, err)
+		}
 	}
 
 	if m.edgegap != nil {

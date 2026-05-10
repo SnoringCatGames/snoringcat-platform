@@ -25,6 +25,12 @@ import (
 // a leaked URL is useless within a few minutes.
 const signalingTokenLifetime = 5 * time.Minute
 
+// syntheticMatchCollection is the storage collection that flags
+// probe-driven matches so match_end skips leaderboard writes and
+// match_cancel accepts a client-initiated tear-down. Keyed by
+// Edgegap request_id; row exists only while the match is live.
+const syntheticMatchCollection = "synthetic_matches"
+
 // signSignalingURL builds a "wss://<domain>/connect/<token>"
 // URL where the token is base64url("ip:port:exp:hex-hmac")
 // signed with the shared HMAC-SHA256 secret. Must stay in sync
@@ -373,6 +379,30 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 
 	transportType := selectTransportType(platforms)
 
+	// Synthetic-match detection. The synthetic-match-probe job
+	// authenticates two probe identities and tags each ticket with
+	// `probe:"true"`; pairing happens against the targeted query
+	// `+properties.probe:true`, so a real player never lands in
+	// one of these matches. We exclude the resulting match from
+	// leaderboard/history writes and tag the Edgegap deploy so
+	// downstream tooling (cost monitor, server-side analytics) can
+	// distinguish probe traffic. Defense-in-depth: if any entry
+	// lacks the marker, treat the match as real (better to over-
+	// count than to silently exclude a real player).
+	isProbeMatch := len(entries) > 0
+	for _, e := range entries {
+		marked := false
+		if props := e.GetProperties(); props != nil {
+			if v, ok := props["probe"].(string); ok && v == "true" {
+				marked = true
+			}
+		}
+		if !marked {
+			isProbeMatch = false
+			break
+		}
+	}
+
 	deployReq := edgegapDeployRequest{
 		AppName:     a.appName,
 		VersionName: a.appVersion,
@@ -399,6 +429,10 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				Key:   "SIGNALING_PORT",
 				Value: "4434",
 			},
+			{
+				Key:   "IS_PROBE_MATCH",
+				Value: strconv.FormatBool(isProbeMatch),
+			},
 		},
 	}
 	if len(ipList) == 0 {
@@ -415,6 +449,25 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		return "", err
 	}
 	logger.Info("edgegap request_id=%s, polling for ready", deploy.RequestID)
+
+	// Persist the synthetic flag so match_end / match_cancel can
+	// look it up by request_id. The Edgegap env var is also there,
+	// but we don't want the cancel path to depend on the game
+	// server's continued health to know whether to skip
+	// leaderboard writes.
+	if isProbeMatch {
+		if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
+			Collection:      syntheticMatchCollection,
+			Key:             deploy.RequestID,
+			Value:           `{"synthetic":true}`,
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}}); err != nil {
+			logger.Warn(
+				"failed to mark match %s synthetic: %v",
+				deploy.RequestID, err)
+		}
+	}
 
 	// Poll for READY.
 	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
