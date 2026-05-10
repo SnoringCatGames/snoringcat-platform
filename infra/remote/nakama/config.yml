@@ -19,14 +19,13 @@ session:
   refresh_token_expiry_sec: 604800
 
 # Tighter than Nakama's defaults (interval_sec=15, max_intervals=2).
-# At hopnbop's player counts the matcher runs ~free, and a long
-# interval is dominated by ticket-aging delay. 1 s ticks with a
-# 30 s patience window for hitting max_count gives sub-second
-# match formation when max_count is achievable, and the same
-# 30 s ceiling before relaxing to min_count when it isn't.
+# 1 s ticks for sub-second formation when max_count (4) is
+# achievable; 10 s ceiling before relaxing to min_count (2) so
+# under-filled lobbies don't sit waiting for a stranger that
+# isn't coming.
 matchmaker:
   interval_sec: 1
-  max_intervals: 30
+  max_intervals: 10
 
 console:
   username: "admin"
