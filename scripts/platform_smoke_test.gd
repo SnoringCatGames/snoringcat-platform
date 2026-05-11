@@ -6,7 +6,7 @@ extends SceneTree
 ## /v1/version.
 ##
 ## Run from repo root:
-##   powershell -Command "godot --headless --path . -s scripts/platform_smoke_test.gd"
+##   pwsh -Command "godot --headless --path . -s scripts/platform_smoke_test.gd"
 
 const _API_URL := (
 	"https://r20b7wqop6.execute-api.us-west-2.amazonaws.com/prod"

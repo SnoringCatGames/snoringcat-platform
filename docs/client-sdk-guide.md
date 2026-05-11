@@ -94,7 +94,7 @@ contract breaks when bumping the platform submodule:
 
 ```yaml
 - run: |
-    powershell -File scripts/setup-platform-addon.ps1
+    pwsh -File scripts/setup-platform-addon.ps1
     godot --headless --path . -s addons/gut/gut_cmdln.gd \
       -gdir=res://addons/snoringcat_platform_client/test/compliance \
       -gexit
