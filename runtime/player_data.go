@@ -28,6 +28,28 @@ type playerStatsResponse struct {
 	Matches  int    `json:"matches"`
 }
 
+// getPlayerStatsRpcFactory threads the per-game config store
+// through to the handler so the caller's session can be
+// validated against the registered game_id. The leaderboard ID
+// is still hardcoded to "ffa"; Stage 3.6 prefixes it with
+// {game_id}_.
+func getPlayerStatsRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return getPlayerStatsRpc(ctx, logger, nk, games, payload)
+	}
+}
+
 // getPlayerStatsRpc returns rating + match count for the
 // requested player. Rating is sourced from the `ffa` leaderboard
 // (default 1500 for unranked players); match count is derived
@@ -36,12 +58,15 @@ type playerStatsResponse struct {
 func getPlayerStatsRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	payload string,
 ) (string, error) {
 	caller, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 	args := playerStatsArgs{}
@@ -104,6 +129,25 @@ type matchHistoryResponse struct {
 	Matches []matchHistoryEntry `json:"matches"`
 }
 
+// getMatchHistoryRpcFactory threads the per-game config store
+// through so the handler can enforce game_id on the session.
+func getMatchHistoryRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return getMatchHistoryRpc(ctx, logger, nk, games, payload)
+	}
+}
+
 // getMatchHistoryRpc lists recent matches for the calling user.
 // Records are written by match_lifecycle.MatchEndRpc into a
 // per-user storage collection ("match_history"). Most-recent
@@ -111,12 +155,15 @@ type matchHistoryResponse struct {
 func getMatchHistoryRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	_ string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 
@@ -162,6 +209,28 @@ type exportResponse struct {
 	Friends            []map[string]any         `json:"friends"`
 }
 
+// exportPlayerDataRpcFactory threads the per-game config store
+// through so the handler can enforce game_id on the session.
+// Export is currently cross-game (lists every storage object the
+// user owns); the game_id check is a session-identity assertion
+// only, not a per-game filter.
+func exportPlayerDataRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return exportPlayerDataRpc(ctx, logger, nk, games, payload)
+	}
+}
+
 // exportPlayerDataRpc returns the calling user's account,
 // storage objects, leaderboard records, and friend list — the
 // data needed to satisfy a GDPR data export request. Limited to
@@ -170,12 +239,15 @@ type exportResponse struct {
 func exportPlayerDataRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	_ string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 

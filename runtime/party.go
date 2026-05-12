@@ -41,6 +41,29 @@ type partyStartMatchmakingResp struct {
 	MatchmakerProperties map[string]string `json:"matchmaker_properties"`
 }
 
+// partyStartMatchmakingRpcFactory threads the per-game config
+// store through so the handler can enforce game_id on the
+// session. The party group's own game_id scoping (so two games
+// can have isolated parties) is deferred to Stage 3 — today the
+// group prefix is the only namespace separator.
+func partyStartMatchmakingRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyStartMatchmakingRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
 // partyStartMatchmakingRpc handles the leader's "start matchmaking
 // for the whole party" request. The actual matchmaker ticketing is
 // driven from each member's client (Nakama's server runtime can't
@@ -65,12 +88,15 @@ type partyStartMatchmakingResp struct {
 func partyStartMatchmakingRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 	args := partyStartMatchmakingArgs{}

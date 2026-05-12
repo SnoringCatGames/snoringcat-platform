@@ -78,6 +78,29 @@ type deletionQueueRecord struct {
 	OriginalDisplayName string `json:"original_display_name"`
 }
 
+// deleteAccountRpcFactory threads the per-game config store
+// through so the handler can validate the caller's session
+// game_id. Account deletion is intentionally cross-game (the
+// audit trail covers the whole identity, not just the calling
+// game's slice) — the game_id check is a session-identity
+// assertion only.
+func deleteAccountRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return deleteAccountRpc(ctx, logger, nk, games, payload)
+	}
+}
+
 // deleteAccountRpc handles a player's request to soft-delete
 // their own account. See the file-level comment for the full
 // flow. Returns UNAUTHENTICATED (16) when called outside a
@@ -85,12 +108,15 @@ type deletionQueueRecord struct {
 func deleteAccountRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	_ string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 	now := time.Now().UTC()

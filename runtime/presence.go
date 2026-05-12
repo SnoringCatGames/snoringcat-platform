@@ -39,17 +39,45 @@ type presenceResponse struct {
 	OnlineFriends map[string]presenceRecord `json:"online_friends"`
 }
 
+// updateAndGetPresenceRpcFactory wires the RPC to the per-game
+// config store so the handler can validate that the caller's
+// session was minted with a known game_id. The presence record
+// itself is still keyed only by user (collection="presence",
+// key="current") — Stage 3.1 will fold game_id into the storage
+// key so two games can record presence for the same user
+// independently.
+func updateAndGetPresenceRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return updateAndGetPresenceRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
 // updateAndGetPresenceRpc writes the caller's presence and
 // returns every online friend's presence in one round trip.
 func updateAndGetPresenceRpc(
 	ctx context.Context,
 	logger runtime.Logger,
-	_ *sql.DB,
 	nk runtime.NakamaModule,
+	games *perGameConfig,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
 	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
 	args := presenceArgs{}

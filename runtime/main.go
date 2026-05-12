@@ -8,6 +8,14 @@
 //   - MatchmakerMatched: allocates an Edgegap deployment for the
 //     matched players and notifies them with connection info.
 //
+// Hooks registered (always):
+//   - BeforeAuthenticate{Device,Google,Facebook,Apple,Steam}:
+//     enforces that every authenticate call carries a known
+//     game_id in its `vars` map. The vars get baked into the
+//     session token and are exposed to subsequent RPCs via
+//     RUNTIME_CTX_VARS.
+//   - BeforeSessionRefresh: same rule on token refresh.
+//
 // RPCs registered:
 //   Server-to-server (HTTP-key gated):
 //   - register_server:     game server checks in after boot.
@@ -34,6 +42,7 @@ import (
 	"database/sql"
 	"strconv"
 
+	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
@@ -61,6 +70,17 @@ func InitModule(
 	appName := env["EDGEGAP_APP_NAME"]
 	appVersion := env["EDGEGAP_APP_VERSION"]
 
+	// Per-game config store. Created first so both the auth hooks
+	// and every stateful RPC can validate game_id against it. The
+	// DDL is idempotent (CREATE TABLE IF NOT EXISTS) and the cache
+	// warm is fast on an empty table, so this is cheap to run at
+	// every plugin reload. Fatal on failure — every game-scoped
+	// RPC below assumes the store is readable.
+	games, err := newPerGameConfig(ctx, db)
+	if err != nil {
+		return err
+	}
+
 	// Register the status probe first so the runtime is
 	// diagnosable even if a downstream init step fails or is
 	// skipped because of missing config. The status RPC reads
@@ -69,10 +89,6 @@ func InitModule(
 	// automatically.
 	matchmakerHookEnabled := edgegapToken != ""
 	registered := []string{}
-	// games is initialized below (after the status RPC is
-	// registered). The status RPC dereferences this pointer at
-	// call time, so it picks up the store once it exists.
-	var games *perGameConfig
 	statusFn := statusRpcFactory(runtimeStatusConfig{
 		EdgegapAppName:       appName,
 		EdgegapAppVersion:    appVersion,
@@ -96,6 +112,19 @@ func InitModule(
 		}
 		registered = append(registered, name)
 		return nil
+	}
+
+	// Register the BeforeAuthenticate* hooks. Each enforces that
+	// the inbound request carries a known game_id in its vars
+	// map. The vars propagate into the session token; the same
+	// game_id is then visible to every RPC via RUNTIME_CTX_VARS.
+	//
+	// Bootstrap exemption: while the `games` table is empty
+	// (e.g. immediately after first deploy, before
+	// sync-game-config.ps1 has run), all auths pass through.
+	// See validateGameIDInVars for the rule.
+	if err := registerAuthHooks(initializer, games); err != nil {
+		return err
 	}
 
 	// Shared Edgegap client used by both the matchmaker hook
@@ -194,38 +223,48 @@ func InitModule(
 	if err := addRpc("version_check", versionCheckRpcFactory(verCfg)); err != nil {
 		return err
 	}
-	if err := addRpc("update_and_get_presence", updateAndGetPresenceRpc); err != nil {
+	// Every client-session RPC below reads game_id from the
+	// session vars (set by the BeforeAuthenticate* hooks above)
+	// and rejects when missing once `games` is populated. The
+	// game_id value isn't fully wired into reads/writes yet —
+	// Stage 3 of MULTI_GAME_ROADMAP.md applies the per-game
+	// scoping to presence storage, leaderboards, party groups,
+	// and Edgegap allocation.
+	if err := addRpc(
+		"update_and_get_presence",
+		updateAndGetPresenceRpcFactory(games)); err != nil {
 		return err
 	}
-	if err := addRpc("get_player_stats", getPlayerStatsRpc); err != nil {
+	if err := addRpc(
+		"get_player_stats",
+		getPlayerStatsRpcFactory(games)); err != nil {
 		return err
 	}
-	if err := addRpc("get_match_history", getMatchHistoryRpc); err != nil {
+	if err := addRpc(
+		"get_match_history",
+		getMatchHistoryRpcFactory(games)); err != nil {
 		return err
 	}
-	if err := addRpc("export_player_data", exportPlayerDataRpc); err != nil {
+	if err := addRpc(
+		"export_player_data",
+		exportPlayerDataRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc("transport_select", transportSelectRpc); err != nil {
 		return err
 	}
-	if err := addRpc("party_start_matchmaking", partyStartMatchmakingRpc); err != nil {
+	if err := addRpc(
+		"party_start_matchmaking",
+		partyStartMatchmakingRpcFactory(games)); err != nil {
 		return err
 	}
-	if err := addRpc("delete_account", deleteAccountRpc); err != nil {
+	if err := addRpc(
+		"delete_account",
+		deleteAccountRpcFactory(games)); err != nil {
 		return err
 	}
 
-	// Per-game config: ensure the `games` table exists, warm the
-	// in-process cache, and register the upsert + read RPCs. A
-	// startup failure here is fatal — every game-scoped RPC the
-	// runtime is about to register depends on this store being
-	// readable. `games` was declared above so runtime_status can
-	// observe it once init succeeds.
-	games, err := newPerGameConfig(ctx, db)
-	if err != nil {
-		return err
-	}
+	// Per-game config RPCs.
 	if err := addRpc("register_game", games.RegisterGameRpc); err != nil {
 		return err
 	}
@@ -237,6 +276,117 @@ func InitModule(
 		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t games=%v)",
 		BuildID, appName, appVersion, matchmakerHookEnabled,
 		games.GameIDs())
+	return nil
+}
+
+// registerAuthHooks wires the BeforeAuthenticate* and
+// BeforeSessionRefresh hooks that enforce the game_id-in-vars
+// invariant. Each hook is a thin wrapper around
+// validateGameIDInVars that pulls the vars off the provider-
+// specific request shape.
+func registerAuthHooks(
+	initializer runtime.Initializer,
+	games *perGameConfig,
+) error {
+	if err := initializer.RegisterBeforeAuthenticateDevice(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.AuthenticateDeviceRequest,
+		) (*api.AuthenticateDeviceRequest, error) {
+			var vars map[string]string
+			if in.GetAccount() != nil {
+				vars = in.GetAccount().GetVars()
+			}
+			if err := validateGameIDInVars(vars, games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeAuthenticateGoogle(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.AuthenticateGoogleRequest,
+		) (*api.AuthenticateGoogleRequest, error) {
+			var vars map[string]string
+			if in.GetAccount() != nil {
+				vars = in.GetAccount().GetVars()
+			}
+			if err := validateGameIDInVars(vars, games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeAuthenticateFacebook(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.AuthenticateFacebookRequest,
+		) (*api.AuthenticateFacebookRequest, error) {
+			var vars map[string]string
+			if in.GetAccount() != nil {
+				vars = in.GetAccount().GetVars()
+			}
+			if err := validateGameIDInVars(vars, games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeAuthenticateApple(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.AuthenticateAppleRequest,
+		) (*api.AuthenticateAppleRequest, error) {
+			var vars map[string]string
+			if in.GetAccount() != nil {
+				vars = in.GetAccount().GetVars()
+			}
+			if err := validateGameIDInVars(vars, games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeAuthenticateSteam(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.AuthenticateSteamRequest,
+		) (*api.AuthenticateSteamRequest, error) {
+			var vars map[string]string
+			if in.GetAccount() != nil {
+				vars = in.GetAccount().GetVars()
+			}
+			if err := validateGameIDInVars(vars, games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeSessionRefresh(
+		func(
+			_ context.Context, _ runtime.Logger, _ *sql.DB,
+			_ runtime.NakamaModule,
+			in *api.SessionRefreshRequest,
+		) (*api.SessionRefreshRequest, error) {
+			if err := validateGameIDInVars(
+				in.GetVars(), games); err != nil {
+				return nil, err
+			}
+			return in, nil
+		}); err != nil {
+		return err
+	}
 	return nil
 }
 

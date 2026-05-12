@@ -326,6 +326,11 @@ type getGameConfigResponse struct {
 // client session. Unauthenticated callers are rejected; a future
 // pre-auth variant (for the version-check screen) would call a
 // separate `get_protocol_version` RPC.
+//
+// The game_id resolves in this order: the payload's explicit
+// `game_id` (lets a client browse other games' public config),
+// then the session's game_id var (set by the
+// BeforeAuthenticate* hook). Missing in both is an error.
 func (c *perGameConfig) GetGameConfigRpc(
 	ctx context.Context,
 	_ runtime.Logger,
@@ -344,11 +349,17 @@ func (c *perGameConfig) GetGameConfigRpc(
 		}
 	}
 	if args.GameID == "" {
-		// Stage 2.5 lands the game_id JWT claim; until then,
-		// the caller must specify it explicitly.
-		return "", runtime.NewError(
-			"game_id required (Stage 2.5 will read it from"+
-				" the session)", 3)
+		sessionGameID, err := requireGameID(ctx, c)
+		if err != nil {
+			return "", err
+		}
+		if sessionGameID == "" {
+			return "", runtime.NewError(
+				"game_id required (no payload override and"+
+					" session vars carry no game_id —"+
+					" re-authenticate with vars set)", 3)
+		}
+		args.GameID = sessionGameID
 	}
 	gc, ok := c.Get(args.GameID)
 	if !ok {
