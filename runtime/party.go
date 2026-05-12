@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"strings"
@@ -65,6 +66,44 @@ const (
 // leave / kick) so a member rejoining doesn't carry forward a
 // stale ready flag from a previous session.
 const partyReadyCollection = "party_ready"
+
+// partyInviteCodeCollection holds the bidirectional mapping
+// between a 6-character invite code and the party group it
+// belongs to. Two rows per active code:
+//
+//	(partyInviteCodeCollection, "code:" + CODE,    "") → {party_id}
+//	(partyInviteCodeCollection, "party:" + partyID, "") → {code}
+//
+// Both rows are server-owned (UserID="") and server-only
+// readable / writable (Permissions 0/0); the RPCs below are the
+// only access path. The forward row by code lets join-by-code
+// resolve a code to a party in O(1); the reverse by party lets
+// repeat callers of party_get_invite_code skip generation.
+//
+// Stale rows are cleaned lazily: party_join_by_code deletes the
+// pair when it discovers the underlying group no longer exists.
+// account.go's bulk per-user scrub doesn't touch these because
+// they aren't user-owned, which is the right call (the code
+// belongs to the party, not the person who generated it).
+const partyInviteCodeCollection = "party_invite_codes"
+
+// partyInviteCodeAlphabet is the character set used to build
+// invite codes. 32 chars, deliberately omitting I, O, 0, and 1
+// to reduce visual ambiguity when reading a code aloud or off a
+// screenshot. 32^6 ≈ 1.07B combinations.
+const partyInviteCodeAlphabet = (
+	"23456789ABCDEFGHJKLMNPQRSTUVWXYZ")
+
+// partyInviteCodeLength is fixed at 6. Short enough to type
+// quickly on a gamepad's on-screen keyboard, long enough that
+// brute-forcing the code namespace is uninteresting.
+const partyInviteCodeLength = 6
+
+// partyInviteCodeMaxAttempts bounds the collision-retry loop in
+// generatePartyInviteCode. With 32^6 codes and typical active-
+// party counts in the low thousands, the expected collision rate
+// is well under 0.001%, so a small cap is fine.
+const partyInviteCodeMaxAttempts = 5
 
 type partyStartMatchmakingArgs struct {
 	PartyID  string `json:"party_id"`
@@ -627,6 +666,470 @@ func partySetReadyRpc(
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
+}
+
+// partyGetInviteCodeArgs is the client → runtime payload for
+// fetching (or generating) an invite code for a party.
+type partyGetInviteCodeArgs struct {
+	PartyID string `json:"party_id"`
+}
+
+// partyGetInviteCodeResp echoes the resolved code so the caller's
+// UI can render it without a second roundtrip.
+type partyGetInviteCodeResp struct {
+	OK      bool   `json:"ok"`
+	PartyID string `json:"party_id"`
+	Code    string `json:"code"`
+}
+
+func partyGetInviteCodeRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyGetInviteCodeRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partyGetInviteCodeRpc returns the party's shareable invite
+// code. Any active member (state 0/1/2) of the party may fetch
+// it; pending invitees and non-members are rejected. The code is
+// generated lazily on first request and reused on subsequent
+// calls, so re-sharing doesn't churn through the alphabet.
+//
+// Authorization: caller must be an active member of the party.
+// Returns PERMISSION_DENIED (7) otherwise.
+func partyGetInviteCodeRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partyGetInviteCodeArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+
+	// Validate the group exists, is a party, and the caller is an
+	// active member. Pending invitees can't share the code — that
+	// would leak it to strangers via the invitee's own UI.
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	if !strings.HasPrefix(groups[0].Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+	members, _, err := nk.GroupUsersList(
+		ctx, args.PartyID, 100, nil, "")
+	if err != nil {
+		logger.Error("GroupUsersList(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	memberFound := false
+	for _, m := range members {
+		if m.User == nil || m.User.Id != userID {
+			continue
+		}
+		if m.State != nil && m.State.Value == 3 {
+			return "", runtime.NewError(
+				"accept the party invite before sharing"+
+					" its code", 9)
+		}
+		memberFound = true
+		break
+	}
+	if !memberFound {
+		return "", runtime.NewError(
+			"caller is not a member of party "+args.PartyID, 7)
+	}
+
+	code, err := resolveOrCreatePartyInviteCode(
+		ctx, logger, nk, args.PartyID)
+	if err != nil {
+		return "", err
+	}
+	out, _ := json.Marshal(partyGetInviteCodeResp{
+		OK:      true,
+		PartyID: args.PartyID,
+		Code:    code,
+	})
+	return string(out), nil
+}
+
+// resolveOrCreatePartyInviteCode reads the existing code for the
+// party from storage, returning it verbatim if present. On miss,
+// generates a fresh code, writes both forward/reverse rows, and
+// returns the new code. Collision retries are bounded by
+// partyInviteCodeMaxAttempts.
+func resolveOrCreatePartyInviteCode(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+) (string, error) {
+	// Reverse lookup: party → code. Hit means we've seen this
+	// party before; reuse the code.
+	reverseReads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyInviteCodeCollection,
+			Key:        partyInviteCodeReverseKey(partyID),
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		logger.Error("invite code reverse read: %v", err)
+		return "", err
+	}
+	for _, obj := range reverseReads {
+		parsed := map[string]any{}
+		if err := json.Unmarshal(
+			[]byte(obj.Value), &parsed); err != nil {
+			continue
+		}
+		if code, ok := parsed["code"].(string); ok && code != "" {
+			return code, nil
+		}
+	}
+
+	// Generate a new code. The forward write uses Version="*" so
+	// Nakama refuses to overwrite an existing row, which would
+	// otherwise steal another party's code on collision.
+	for attempt := 0; attempt < partyInviteCodeMaxAttempts; attempt++ {
+		code, err := generatePartyInviteCode()
+		if err != nil {
+			return "", err
+		}
+		forward, _ := json.Marshal(map[string]any{
+			"party_id":   partyID,
+			"created_at": nowUnix(),
+		})
+		_, err = nk.StorageWrite(
+			ctx,
+			[]*runtime.StorageWrite{{
+				Collection:      partyInviteCodeCollection,
+				Key:             partyInviteCodeForwardKey(code),
+				UserID:          "",
+				Value:           string(forward),
+				Version:         "*",
+				PermissionRead:  0,
+				PermissionWrite: 0,
+			}},
+		)
+		if err != nil {
+			// "Storage write failed: version check failed"
+			// indicates the row already exists for a different
+			// party — retry with a new code.
+			if strings.Contains(
+				err.Error(), "version check failed") {
+				continue
+			}
+			logger.Error(
+				"invite code forward write: %v", err)
+			return "", err
+		}
+
+		reverse, _ := json.Marshal(map[string]any{
+			"code":       code,
+			"created_at": nowUnix(),
+		})
+		if _, err := nk.StorageWrite(
+			ctx,
+			[]*runtime.StorageWrite{{
+				Collection:      partyInviteCodeCollection,
+				Key:             partyInviteCodeReverseKey(partyID),
+				UserID:          "",
+				Value:           string(reverse),
+				PermissionRead:  0,
+				PermissionWrite: 0,
+			}},
+		); err != nil {
+			logger.Error(
+				"invite code reverse write: %v", err)
+			return "", err
+		}
+		return code, nil
+	}
+	return "", runtime.NewError(
+		"failed to generate a unique invite code", 13)
+}
+
+// generatePartyInviteCode draws partyInviteCodeLength random
+// bytes and maps each into partyInviteCodeAlphabet. crypto/rand
+// is used so codes can't be predicted from a known starting
+// state — though the namespace is small enough that an attacker
+// trying random codes will hit a real party occasionally
+// regardless. The brute-force vector is bounded by party
+// turnover, not RNG strength.
+func generatePartyInviteCode() (string, error) {
+	buf := make([]byte, partyInviteCodeLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, partyInviteCodeLength)
+	for i, b := range buf {
+		out[i] = partyInviteCodeAlphabet[int(b)%len(partyInviteCodeAlphabet)]
+	}
+	return string(out), nil
+}
+
+func partyInviteCodeForwardKey(code string) string {
+	return "code:" + code
+}
+
+func partyInviteCodeReverseKey(partyID string) string {
+	return "party:" + partyID
+}
+
+// partyJoinByCodeArgs is the client → runtime payload for the
+// join-by-code path.
+type partyJoinByCodeArgs struct {
+	Code string `json:"code"`
+}
+
+type partyJoinByCodeResp struct {
+	OK      bool   `json:"ok"`
+	PartyID string `json:"party_id"`
+	Code    string `json:"code"`
+}
+
+func partyJoinByCodeRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyJoinByCodeRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partyJoinByCodeRpc looks the code up in storage, validates the
+// underlying party still exists and has room, and adds the
+// caller as an active member (state=2) using server authority so
+// the closed-group rule that forces invitees to state=3 is
+// bypassed.
+//
+// Stale rows (party deleted out from under the code) are removed
+// inline; the caller sees NOT_FOUND in that case rather than a
+// confusing partial-success.
+func partyJoinByCodeRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partyJoinByCodeArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	// Normalize: strip whitespace, uppercase, then validate
+	// alphabet membership. Rejecting unknown chars up front saves
+	// a storage read on obviously bad input.
+	code := strings.ToUpper(strings.TrimSpace(args.Code))
+	if code == "" {
+		return "", runtime.NewError("code required", 3)
+	}
+	if len(code) != partyInviteCodeLength {
+		return "", runtime.NewError(
+			"invalid code length", 3)
+	}
+	for _, c := range code {
+		if !strings.ContainsRune(
+			partyInviteCodeAlphabet, c) {
+			return "", runtime.NewError(
+				"invalid character in code", 3)
+		}
+	}
+
+	// Forward lookup: code → party_id.
+	forwardReads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyInviteCodeCollection,
+			Key:        partyInviteCodeForwardKey(code),
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		logger.Error("invite code forward read: %v", err)
+		return "", err
+	}
+	if len(forwardReads) == 0 {
+		return "", runtime.NewError("code not found", 5)
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(
+		[]byte(forwardReads[0].Value), &parsed); err != nil {
+		return "", runtime.NewError("code row malformed", 13)
+	}
+	partyID, _ := parsed["party_id"].(string)
+	if partyID == "" {
+		return "", runtime.NewError("code row missing party_id", 13)
+	}
+
+	// Validate the party still exists and has room. If the group
+	// is gone (party disbanded since the code was issued), delete
+	// both rows so the same code can be reissued cleanly when a
+	// new party next requests one.
+	groups, err := nk.GroupsGetId(ctx, []string{partyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", partyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		deleteStalePartyInviteCode(
+			ctx, logger, nk, code, partyID)
+		return "", runtime.NewError(
+			"party no longer exists", 5)
+	}
+	g := groups[0]
+	if !strings.HasPrefix(g.Name, partyGroupPrefix) {
+		// The code points at a non-party group; treat as not-found
+		// rather than letting a malicious code RPC drop a user
+		// into an unrelated group. Clean up the stale row too.
+		deleteStalePartyInviteCode(
+			ctx, logger, nk, code, partyID)
+		return "", runtime.NewError("code not found", 5)
+	}
+	if g.EdgeCount >= g.MaxCount {
+		return "", runtime.NewError("party is full", 9)
+	}
+
+	// Bail early if the caller is already in the party in any
+	// state — GroupUsersAdd would reject duplicate adds anyway,
+	// and the error surface is friendlier this way.
+	members, _, err := nk.GroupUsersList(
+		ctx, partyID, 100, nil, "")
+	if err != nil {
+		logger.Error("GroupUsersList(%s): %v", partyID, err)
+		return "", err
+	}
+	for _, m := range members {
+		if m.User != nil && m.User.Id == userID {
+			// Active member: idempotent success. Pending
+			// invitee (state=3): treat as "already on the
+			// invite list" — they can accept normally.
+			out, _ := json.Marshal(partyJoinByCodeResp{
+				OK:      true,
+				PartyID: partyID,
+				Code:    code,
+			})
+			return string(out), nil
+		}
+	}
+
+	// Add the caller directly as state=2 (Member). Empty callerID
+	// invokes server authority, which bypasses the closed-group
+	// invite-and-accept dance — exactly what we want for join-by-
+	// code, since holding the code IS the invitation.
+	if err := nk.GroupUsersAdd(
+		ctx, "", partyID, []string{userID},
+	); err != nil {
+		logger.Error(
+			"GroupUsersAdd(party=%s user=%s): %v",
+			partyID, userID, err)
+		return "", err
+	}
+
+	// Fan out the same notification the AfterJoinGroup hook would
+	// have sent for a self-initiated join, so the rest of the
+	// party's UI refreshes. AfterAddGroupUsers will fire for the
+	// nk.GroupUsersAdd call above and emit `invited`, but the
+	// joiner is state=2 (not state=3 pending), so the semantics
+	// are closer to `joined` from the party's perspective. Wire
+	// it explicitly here and accept the duplicate fan-out (the
+	// client dedups by notification id).
+	clearPartyReadyRows(ctx, logger, nk, partyID, nil)
+	notifyPartyMembers(
+		ctx, logger, nk, partyID, partyEventJoined,
+		[]string{userID},
+	)
+
+	logger.Info(
+		"party_join_by_code: party=%s user=%s code=%s",
+		partyID, userID, code)
+
+	out, _ := json.Marshal(partyJoinByCodeResp{
+		OK:      true,
+		PartyID: partyID,
+		Code:    code,
+	})
+	return string(out), nil
+}
+
+// deleteStalePartyInviteCode removes both mapping rows for a
+// code whose underlying party has been deleted. Best-effort; a
+// failure here doesn't change the caller-visible outcome.
+func deleteStalePartyInviteCode(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	code string,
+	partyID string,
+) {
+	if err := nk.StorageDelete(
+		ctx,
+		[]*runtime.StorageDelete{
+			{
+				Collection: partyInviteCodeCollection,
+				Key:        partyInviteCodeForwardKey(code),
+				UserID:     "",
+			},
+			{
+				Collection: partyInviteCodeCollection,
+				Key:        partyInviteCodeReverseKey(partyID),
+				UserID:     "",
+			},
+		},
+	); err != nil {
+		logger.Warn(
+			"delete stale invite code (party=%s code=%s): %v",
+			partyID, code, err)
+	}
 }
 
 // clearPartyReadyRows deletes every member's ready row for the

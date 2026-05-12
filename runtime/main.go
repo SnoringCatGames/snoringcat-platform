@@ -39,6 +39,10 @@
 //                            enqueue with a shared party_id.
 //   - party_set_ready:     toggle the caller's per-party ready
 //                            flag (fans out party_state_changed).
+//   - party_get_invite_code: fetch / generate a 6-char invite
+//                            code for the caller's party.
+//   - party_join_by_code:   join a party using a previously-
+//                            generated invite code.
 //   - delete_account:      soft-delete + cascade (GDPR / CCPA).
 //   - get_game_config:     read a game's public per_game_config.
 package main
@@ -280,6 +284,16 @@ func InitModule(
 	if err := addRpc(
 		"party_set_ready",
 		partySetReadyRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_get_invite_code",
+		partyGetInviteCodeRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_join_by_code",
+		partyJoinByCodeRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(
