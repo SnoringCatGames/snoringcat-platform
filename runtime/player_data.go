@@ -30,9 +30,8 @@ type playerStatsResponse struct {
 
 // getPlayerStatsRpcFactory threads the per-game config store
 // through to the handler so the caller's session can be
-// validated against the registered game_id. The leaderboard ID
-// is still hardcoded to "ffa"; Stage 3.6 prefixes it with
-// {game_id}_.
+// validated against the registered game_id and the leaderboard
+// ID gets per-game scoping (Stage 3.6).
 func getPlayerStatsRpcFactory(
 	games *perGameConfig,
 ) func(
@@ -66,7 +65,8 @@ func getPlayerStatsRpc(
 	if err != nil {
 		return "", err
 	}
-	if _, err := requireGameID(ctx, games); err != nil {
+	gameID, err := requireGameID(ctx, games)
+	if err != nil {
 		return "", err
 	}
 	args := playerStatsArgs{}
@@ -88,9 +88,12 @@ func getPlayerStatsRpc(
 	}
 
 	// LeaderboardRecordsList with ownerIds filters the listing to
-	// just that owner's record (or none if unranked).
+	// just that owner's record (or none if unranked). The board
+	// ID is scoped per game (Stage 3.6) so hopnbop's "ffa" board
+	// doesn't collide with another game's same-named board.
+	leaderboardID := gameScopedLeaderboardID(gameID, "ffa")
 	records, _, _, _, err := nk.LeaderboardRecordsList(
-		ctx, "ffa", []string{target}, 1, "", 0)
+		ctx, leaderboardID, []string{target}, 1, "", 0)
 	if err != nil {
 		// Leaderboard not yet created or transient error: return
 		// the unranked defaults rather than 500ing.
@@ -247,7 +250,8 @@ func exportPlayerDataRpc(
 	if err != nil {
 		return "", err
 	}
-	if _, err := requireGameID(ctx, games); err != nil {
+	gameID, err := requireGameID(ctx, games)
+	if err != nil {
 		return "", err
 	}
 
@@ -326,10 +330,14 @@ func exportPlayerDataRpc(
 		logger.Warn("friends list for export: %v", err)
 	}
 
-	// FFA leaderboard record. Add more boards here as we add
-	// them.
+	// FFA leaderboard record. Scoped to the caller's session
+	// game_id (Stage 3.6); cross-game export is not currently
+	// supported here — the caller only gets the leaderboard
+	// record for the game they're signed into. Add more boards
+	// here as we add them.
+	leaderboardID := gameScopedLeaderboardID(gameID, "ffa")
 	if records, _, _, _, err := nk.LeaderboardRecordsList(
-		ctx, "ffa", []string{userID}, 1, "", 0); err == nil {
+		ctx, leaderboardID, []string{userID}, 1, "", 0); err == nil {
 		for _, r := range records {
 			resp.LeaderboardRecords = append(resp.LeaderboardRecords,
 				map[string]any{

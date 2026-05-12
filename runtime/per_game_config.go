@@ -59,8 +59,15 @@ type GameConfig struct {
 	GameID          string `json:"game_id"`
 	DisplayName     string `json:"display_name"`
 	EdgegapAppSlug  string `json:"edgegap_app_slug"`
-	ProtocolVersion int    `json:"protocol_version"`
-	DisplayVersion  string `json:"display_version"`
+	// EdgegapAppVersion is the registered Edgegap version tag
+	// (e.g. "v8") to allocate against. Stage 3.7 reads this
+	// per-match from the games cache so the runtime no longer
+	// needs the EDGEGAP_APP_VERSION env var bumped by hand
+	// after each game-server deploy. Optional — the runtime
+	// falls back to env-var-supplied appVersion when blank.
+	EdgegapAppVersion string `json:"edgegap_app_version"`
+	ProtocolVersion   int    `json:"protocol_version"`
+	DisplayVersion    string `json:"display_version"`
 
 	// Raw is the verbatim JSON of the original registration
 	// payload (i.e. the source game.yaml converted to JSON).
@@ -200,6 +207,13 @@ ON CONFLICT (game_id) DO UPDATE SET
 	config           = EXCLUDED.config,
 	updated_at       = now()
 `
+	// edgegap_app_version is not a top-level column on the
+	// `games` table (the DDL predates Stage 3.7). The full
+	// game.yaml lives in the JSONB `config` column, so the
+	// value persists either way and is read back into
+	// GameConfig.EdgegapAppVersion by Refresh. Adding a
+	// dedicated column would help admin queries / SQL filters
+	// but isn't load-bearing today.
 	if _, err := c.db.ExecContext(
 		ctx, stmt,
 		gc.GameID, gc.DisplayName, gc.EdgegapAppSlug,

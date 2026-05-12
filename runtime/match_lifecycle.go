@@ -32,6 +32,19 @@ type matchLifecycle struct {
 	edgegap *edgegapClient
 }
 
+// gameScopedLeaderboardID returns the leaderboard ID for a given
+// game's logical board. Stage 3.6 prefixes the bare logical name
+// (e.g. "ffa") with the game_id so two games on one Nakama
+// instance can both have an "ffa" board without colliding. Empty
+// gameID returns the legacy bare name; the leaderboard.delete
+// cascade scrubs both prefixes during the rollout window.
+func gameScopedLeaderboardID(gameID, boardID string) string {
+	if gameID == "" {
+		return boardID
+	}
+	return gameID + "_" + boardID
+}
+
 // Reasonable upper bounds on per-player stats. A genuine match
 // produces low-double-digit numbers; anything beyond this is
 // either client tampering or a bug in our scoring code, and we
@@ -146,6 +159,40 @@ type matchEndPlayer struct {
 	Score  int    `json:"score"`
 	Kills  int    `json:"kills"`
 	Bumps  int    `json:"bumps"`
+}
+
+// readMatchMetadata returns the per-match metadata fleet_allocator
+// stashed when the deploy was created. Empty metadata (no row, or
+// unreadable row) returns the zero value with no error — the caller
+// falls back to legacy behavior (bare leaderboard ID, etc.).
+func readMatchMetadata(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	requestID string,
+) matchMetadata {
+	out := matchMetadata{}
+	rows, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+		Collection: matchMetadataCollection,
+		Key:        requestID,
+	}})
+	if err != nil {
+		logger.Warn(
+			"match metadata read for %s: %v",
+			requestID, err)
+		return out
+	}
+	if len(rows) == 0 {
+		return out
+	}
+	if err := json.Unmarshal(
+		[]byte(rows[0].Value), &out); err != nil {
+		logger.Warn(
+			"match metadata decode for %s: %v",
+			requestID, err)
+		return matchMetadata{}
+	}
+	return out
 }
 
 // isSyntheticMatch returns true when fleet_allocator persisted a
@@ -285,6 +332,16 @@ func (m *matchLifecycle) MatchEndRpc(
 			args.RequestID)
 	}
 
+	// Per-match metadata gives us the game_id fleet_allocator
+	// observed at allocation time. Missing metadata (pre-Stage-3.6
+	// match, or a metadata write that lost to a Postgres blip)
+	// falls back to a bare leaderboard ID so the match still
+	// records — better to write to the legacy board than to drop
+	// a real player's result.
+	metadata := readMatchMetadata(
+		ctx, logger, nk, args.RequestID)
+	leaderboardID := gameScopedLeaderboardID(metadata.GameID, "ffa")
+
 	// Write leaderboard records and a per-user match_history row
 	// in one pass. The history row is what get_match_history
 	// reads back; the leaderboard record is what
@@ -298,7 +355,7 @@ func (m *matchLifecycle) MatchEndRpc(
 				continue
 			}
 			_, err := nk.LeaderboardRecordWrite(ctx,
-				"ffa",
+				leaderboardID,
 				p.UserID,
 				"",
 				int64(p.Score),
@@ -340,24 +397,29 @@ func (m *matchLifecycle) MatchEndRpc(
 	// Delete the registration record. This is also what makes
 	// match_end self-dedup: a second call for the same
 	// request_id finds the registration gone and is rejected
-	// at the read step above.
-	if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
-		Collection: "server_registrations",
-		Key:        args.RequestID,
-	}}); err != nil {
+	// at the read step above. Bundle the match-metadata row in
+	// the same call so we don't leave per-match garbage in
+	// storage after the match resolves.
+	cleanupDeletes := []*runtime.StorageDelete{
+		{
+			Collection: "server_registrations",
+			Key:        args.RequestID,
+		},
+		{
+			Collection: matchMetadataCollection,
+			Key:        args.RequestID,
+		},
+	}
+	if synthetic {
+		cleanupDeletes = append(cleanupDeletes,
+			&runtime.StorageDelete{
+				Collection: syntheticMatchCollection,
+				Key:        args.RequestID,
+			})
+	}
+	if err := nk.StorageDelete(ctx, cleanupDeletes); err != nil {
 		// Non-fatal: maybe registration was never written.
 		logger.Warn("storage delete: %v", err)
-	}
-
-	if synthetic {
-		if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
-			Collection: syntheticMatchCollection,
-			Key:        args.RequestID,
-		}}); err != nil {
-			logger.Warn(
-				"synthetic-match marker delete for %s: %v",
-				args.RequestID, err)
-		}
 	}
 
 	// Terminate the Edgegap deployment so the container stops
@@ -471,22 +533,25 @@ func (m *matchLifecycle) MatchCancelRpc(
 		"match cancelled: request_id=%s reason=%s synthetic=%t",
 		args.RequestID, args.Reason, synthetic)
 
-	if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
-		Collection: "server_registrations",
-		Key:        args.RequestID,
-	}}); err != nil {
-		logger.Warn("storage delete: %v", err)
-	}
-
-	if synthetic {
-		if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
-			Collection: syntheticMatchCollection,
+	cancelDeletes := []*runtime.StorageDelete{
+		{
+			Collection: "server_registrations",
 			Key:        args.RequestID,
-		}}); err != nil {
-			logger.Warn(
-				"synthetic-match marker delete for %s: %v",
-				args.RequestID, err)
-		}
+		},
+		{
+			Collection: matchMetadataCollection,
+			Key:        args.RequestID,
+		},
+	}
+	if synthetic {
+		cancelDeletes = append(cancelDeletes,
+			&runtime.StorageDelete{
+				Collection: syntheticMatchCollection,
+				Key:        args.RequestID,
+			})
+	}
+	if err := nk.StorageDelete(ctx, cancelDeletes); err != nil {
+		logger.Warn("storage delete: %v", err)
 	}
 
 	if m.edgegap != nil {

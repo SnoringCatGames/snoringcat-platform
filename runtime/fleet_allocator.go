@@ -31,6 +31,22 @@ const signalingTokenLifetime = 5 * time.Minute
 // Edgegap request_id; row exists only while the match is live.
 const syntheticMatchCollection = "synthetic_matches"
 
+// matchMetadataCollection holds per-match runtime context the
+// game server doesn't supply when it calls match_end (game_id,
+// allocation timestamp). Written by fleet_allocator after the
+// Edgegap deploy succeeds; read by match_end to scope the
+// leaderboard write per game; deleted by match_end/match_cancel
+// alongside server_registrations cleanup.
+const matchMetadataCollection = "match_metadata"
+
+// matchMetadata is the per-match metadata payload written at
+// allocation time. Extend cautiously — every additional field
+// turns into a load-bearing read in match_end.
+type matchMetadata struct {
+	GameID      string `json:"game_id"`
+	AllocatedAt int64  `json:"allocated_at"`
+}
+
 // signSignalingURL builds a "wss://<domain>/connect/<token>"
 // URL where the token is base64url("ip:port:exp:hex-hmac")
 // signed with the shared HMAC-SHA256 secret. Must stay in sync
@@ -273,6 +289,11 @@ type fleetAllocator struct {
 	edgegap    *edgegapClient
 	appName    string
 	appVersion string
+	// games is the per-game config cache. Used by the matchmaker
+	// hook to validate the game_id property each matched player's
+	// client attached to its ticket, and to fall back gracefully
+	// when entries pre-date the client update (no game_id prop).
+	games *perGameConfig
 	// signalingDomain is the stable FQDN that fronts the
 	// per-deploy WebSocket signaling, e.g.
 	// "signaling.snoringcat.games". The runtime hook signs an
@@ -337,6 +358,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// compliance suite can probe it via the transport_select
 	// RPC.
 	platforms := make([]string, 0, len(entries))
+	// game_id votes — clients of the same game pass the same
+	// value as a string property. Stage 3.6 uses the dominant
+	// game_id to scope the leaderboard write at match_end. The
+	// matchmaker query stays `*` until Stage 3.8 lands per-game
+	// query filters, so mixed-game matches are *possible* in
+	// theory; the dominant-vote breaks ties without dropping
+	// the match.
+	gameIDVotes := map[string]int{}
 	for _, e := range entries {
 		userID := e.GetPresence().GetUserId()
 
@@ -350,6 +379,9 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			}
 			if p, ok := props["platform"].(string); ok {
 				platform = p
+			}
+			if gid, ok := props["game_id"].(string); ok && gid != "" {
+				gameIDVotes[gid]++
 			}
 		}
 		platforms = append(platforms, platform)
@@ -379,6 +411,33 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 
 	transportType := selectTransportType(platforms)
 
+	// Pick the dominant game_id from the matched players. Mixed-
+	// vote matches use the highest-vote winner; pre-update clients
+	// (no votes) leave matchGameID empty, in which case match_end
+	// falls back to the legacy bare leaderboard ID.
+	matchGameID := pickDominantGameID(gameIDVotes, a.games, logger)
+
+	// Stage 3.7: resolve the Edgegap app coordinates per match
+	// from the games table when we know the match's game_id, so
+	// the runtime no longer needs the EDGEGAP_APP_NAME /
+	// EDGEGAP_APP_VERSION env vars bumped by hand after every
+	// game-server deploy. Per-game values override; missing
+	// fields fall back to the env-var defaults on the allocator
+	// struct (a.appName / a.appVersion) so bootstrap deploys
+	// still work before any game.yaml has been synced.
+	appName := a.appName
+	appVersion := a.appVersion
+	if matchGameID != "" && a.games != nil {
+		if gc, ok := a.games.Get(matchGameID); ok {
+			if gc.EdgegapAppSlug != "" {
+				appName = gc.EdgegapAppSlug
+			}
+			if gc.EdgegapAppVersion != "" {
+				appVersion = gc.EdgegapAppVersion
+			}
+		}
+	}
+
 	// Synthetic-match detection. The synthetic-match-probe job
 	// authenticates two probe identities and tags each ticket with
 	// `probe:"true"`; pairing happens against the targeted query
@@ -404,8 +463,8 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	}
 
 	deployReq := edgegapDeployRequest{
-		AppName:     a.appName,
-		VersionName: a.appVersion,
+		AppName:     appName,
+		VersionName: appVersion,
 		IPList:      ipList,
 		EnvVars: []edgegapEnvKV{
 			{
@@ -467,6 +526,25 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				"failed to mark match %s synthetic: %v",
 				deploy.RequestID, err)
 		}
+	}
+
+	// Persist per-match metadata (game_id, allocated_at) so
+	// match_end can scope leaderboard writes per game without
+	// trusting the game server to know its own game_id.
+	metaBytes, _ := json.Marshal(matchMetadata{
+		GameID:      matchGameID,
+		AllocatedAt: time.Now().Unix(),
+	})
+	if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
+		Collection:      matchMetadataCollection,
+		Key:             deploy.RequestID,
+		Value:           string(metaBytes),
+		PermissionRead:  2,
+		PermissionWrite: 0,
+	}}); err != nil {
+		logger.Warn(
+			"failed to write match metadata for %s: %v",
+			deploy.RequestID, err)
 	}
 
 	// Poll for READY.
@@ -567,4 +645,44 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
+}
+
+// pickDominantGameID returns the most-voted game_id from
+// matchmaker entries. Ties resolve deterministically
+// (alphabetical) so a recurring 1-1 tie picks the same winner
+// across re-allocations. Unregistered game_ids are dropped — a
+// client that lies about its game_id can't write to a game we
+// don't recognize. Returns "" when no votes are present or all
+// votes are unknown (pre-update clients pre-Stage-3.6).
+func pickDominantGameID(
+	votes map[string]int,
+	games *perGameConfig,
+	logger runtime.Logger,
+) string {
+	if len(votes) == 0 || games == nil {
+		return ""
+	}
+	bestID := ""
+	bestCount := 0
+	for gid, count := range votes {
+		if _, ok := games.Get(gid); !ok {
+			logger.Warn(
+				"matchmaker entry vote for unknown game_id %q"+
+					" dropped",
+				gid)
+			continue
+		}
+		if count > bestCount ||
+			(count == bestCount && (bestID == "" || gid < bestID)) {
+			bestID = gid
+			bestCount = count
+		}
+	}
+	if len(votes) > 1 && bestID != "" {
+		logger.Info(
+			"matchmaker matched mixed-game_id players;"+
+				" using dominant=%s votes=%v",
+			bestID, votes)
+	}
+	return bestID
 }

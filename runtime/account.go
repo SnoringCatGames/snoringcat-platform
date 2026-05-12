@@ -56,12 +56,59 @@ const (
 	anonymizedDisplayName = "[deleted]"
 )
 
-// leaderboardsToScrub lists every leaderboard the platform
-// writes player records to. The hopnbop runtime currently only
-// uses "ffa"; when Stage 3.6 (per-game leaderboard scoping)
-// lands, this list should be sourced from per_game_config rather
-// than hardcoded.
-var leaderboardsToScrub = []string{"ffa"}
+// leaderboardIDsToScrub returns every leaderboard ID the
+// cascade should clear records from. Stage 3.6 sources this from
+// each registered game's `game.yaml::leaderboards[]` (prefixed
+// with `{game_id}_` to match match_lifecycle's writes) instead
+// of a hardcoded list. The legacy bare "ffa" board is always
+// appended so the cascade also scrubs records from before
+// Stage 3.6 prefixing landed.
+func leaderboardIDsToScrub(games *perGameConfig) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, gc := range games.List() {
+		for _, id := range parseLeaderboardIDs(gc) {
+			add(gc.GameID + "_" + id)
+		}
+	}
+	// Pre-Stage-3.6 records lived on a bare leaderboard ID with
+	// no game_id prefix. Always include "ffa" so historical
+	// hopnbop records get scrubbed too.
+	add("ffa")
+	return out
+}
+
+// parseLeaderboardIDs pulls the `leaderboards: [{id, ...}]`
+// list out of a game's raw config. Tolerant of missing /
+// malformed entries — anything unparseable is skipped silently
+// (the cascade is best-effort, not a critical-path read).
+func parseLeaderboardIDs(gc *GameConfig) []string {
+	if gc == nil || len(gc.Raw) == 0 {
+		return nil
+	}
+	var blob struct {
+		Leaderboards []struct {
+			ID string `json:"id"`
+		} `json:"leaderboards"`
+	}
+	if err := json.Unmarshal(gc.Raw, &blob); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(blob.Leaderboards))
+	for _, lb := range blob.Leaderboards {
+		if lb.ID != "" {
+			out = append(out, lb.ID)
+		}
+	}
+	return out
+}
 
 type deleteAccountResp struct {
 	OK           bool   `json:"ok"`
@@ -244,18 +291,32 @@ func deleteAccountRpc(
 		groupCursor = next
 	}
 
-	// 3c. Presence record (collection="presence", key="current").
-	if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{{
-		Collection: "presence",
-		Key:        "current",
-		UserID:     userID,
-	}}); err != nil {
+	// 3c. Presence records — one per game the user has touched,
+	// plus the pre-Stage-3 legacy key for users whose last
+	// presence ping predates the migration.
+	presenceDeletes := []*runtime.StorageDelete{}
+	for _, gid := range games.GameIDs() {
+		presenceDeletes = append(presenceDeletes,
+			&runtime.StorageDelete{
+				Collection: presenceCollection,
+				Key:        presenceKey(gid),
+				UserID:     userID,
+			})
+	}
+	presenceDeletes = append(presenceDeletes,
+		&runtime.StorageDelete{
+			Collection: presenceCollection,
+			Key:        presenceKeyLegacy,
+			UserID:     userID,
+		})
+	if err := nk.StorageDelete(
+		ctx, presenceDeletes); err != nil {
 		logger.Warn(
 			"delete presence for %s: %v", userID, err)
 	}
 
 	// 3d. Leaderboard records.
-	for _, lb := range leaderboardsToScrub {
+	for _, lb := range leaderboardIDsToScrub(games) {
 		if err := nk.LeaderboardRecordDelete(
 			ctx, lb, userID); err != nil {
 			logger.Warn(

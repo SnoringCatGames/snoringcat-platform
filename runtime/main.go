@@ -173,6 +173,7 @@ func InitModule(
 			appVersion:          appVersion,
 			signalingDomain:     env["SIGNALING_DOMAIN"],
 			signalingHmacSecret: []byte(env["SIGNALING_HMAC_SECRET"]),
+			games:               games,
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {
@@ -220,7 +221,9 @@ func InitModule(
 		GameVersion:     env["NAKAMA_GAME_VERSION"],
 		ProtocolVersion: parseEnvInt(env, "NAKAMA_PROTOCOL_VERSION", 0),
 	}
-	if err := addRpc("version_check", versionCheckRpcFactory(verCfg)); err != nil {
+	if err := addRpc(
+		"version_check",
+		versionCheckRpcFactory(verCfg, games)); err != nil {
 		return err
 	}
 	// Every client-session RPC below reads game_id from the
