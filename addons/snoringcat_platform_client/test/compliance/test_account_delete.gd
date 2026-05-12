@@ -1,12 +1,17 @@
 extends GutTest
 ## Account self-deletion (GDPR data deletion). Two surfaces:
 ##
-##   1. Custom `delete_account` RPC. PLATFORM_ARCHITECTURE.md
-##      describes a soft-delete-with-grace-period flow, but the
-##      RPC isn't implemented yet (no handler in runtime/). When
-##      it lands, this test should switch to it.
-##   2. Nakama's built-in DELETE /v2/account. The current path
-##      a SDK can use today; deletes the user's row hard.
+##   1. Custom `delete_account` RPC. Soft-delete-with-grace-period
+##      per PLATFORM_ARCHITECTURE.md §"Account deletion": queues a
+##      `account_deletion_queue` record, anonymizes the user's
+##      display name, cascade-clears friends/groups/presence/
+##      leaderboards/storage, and bans the user so the existing
+##      session can no longer authenticate. The hard-delete cron
+##      is not yet implemented; the soft-delete is the user-
+##      facing fact today.
+##   2. Nakama's built-in DELETE /v2/account. Hard-deletes the
+##      user's row; useful as a fallback and exercised here to
+##      keep the contract that "delete really deletes" green.
 ##
 ## Tests use a one-shot device_id (timestamped) so each run
 ## creates + deletes a fresh account. No leaking state.
@@ -97,12 +102,14 @@ func test_delete_endpoint_removes_account() -> void:
 			+ " — delete was a no-op")
 
 
-func test_delete_account_rpc_documented_but_not_implemented() -> void:
-	# When the platform ships the soft-delete-with-grace-period
-	# RPC described in PLATFORM_ARCHITECTURE.md, this test
-	# should be replaced with a real flow. Probe that the RPC
-	# either doesn't exist (current expected state) or, if it
-	# does, the gate is wired correctly.
+func test_delete_account_rpc_soft_deletes_and_bans() -> void:
+	# End-to-end: create a one-shot device account, call the
+	# `delete_account` RPC, verify (a) the response carries the
+	# soft-delete payload, and (b) the existing session token can
+	# no longer authenticate against the user (the ban took
+	# effect). The hard-delete cron is not yet implemented; this
+	# test covers the soft-delete + ban surface that
+	# PLATFORM_ARCHITECTURE.md §"Account deletion" describes.
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")
 		return
@@ -110,20 +117,47 @@ func test_delete_account_rpc_documented_but_not_implemented() -> void:
 		pending("NAKAMA_SERVER_KEY env var not set")
 		return
 
-	var token: String = await _helper.nakama_anon_session(
-		"compliance-anon-fixed-1")
+	var device_id := _one_shot_device_id()
+
+	# Step 1: create a one-shot account.
+	var auth: Dictionary = await _helper.http_post(
+		"/v2/account/authenticate/device?create=true",
+		{"id": device_id},
+		"basic_server_key")
+	assert_eq(
+		auth.status_code, 200,
+		"create one-shot account: %s" % auth.text)
+	var token: String = str(auth.body.get("token", ""))
+	assert_false(token.is_empty(), "no session token after create")
+
+	# Step 2: call delete_account.
 	var result: Dictionary = await _helper.session_rpc(
 		"delete_account", token, null)
-	# Nakama returns a structured error for unregistered RPCs.
-	# The handler doesn't exist yet — accept 404/400/5xx-with-
-	# error-payload — but flag a 200 as the "we accidentally
-	# implemented this and forgot to update the test" case.
-	if result.status_code == 200:
-		pending(
-			"delete_account RPC now responds with 200 — replace"
-			+ " this placeholder test with a real soft-delete"
-			+ " flow per PLATFORM_ARCHITECTURE.md.")
-		return
-	# Otherwise: the contract is just "RPC isn't there". No
-	# assertion to fail; this is documentation in test form.
-	assert_true(true, "delete_account RPC not yet implemented")
+	assert_eq(
+		result.status_code, 200,
+		"delete_account RPC failed: %s" % result.text)
+	assert_true(
+		result.body is Dictionary,
+		"delete_account body not a Dictionary: %s" % result.text)
+	if result.body is Dictionary:
+		assert_true(
+			bool(result.body.get("ok", false)),
+			"delete_account response not ok: %s" % result.text)
+		assert_gt(
+			int(result.body.get("scheduled_for", 0)),
+			0,
+			"delete_account missing scheduled_for")
+		assert_gt(
+			int(result.body.get("grace_days", 0)),
+			0,
+			"delete_account missing grace_days")
+
+	# Step 3: verify the session token can no longer read the
+	# account (the ban took effect, even though the JWT itself
+	# is cryptographically valid until expiry).
+	var account: Dictionary = await _helper.http_get(
+		"/v2/account", "bearer:" + token)
+	assert_ne(
+		account.status_code, 200,
+		"banned session still reads /v2/account — ban did not"
+		+ " take effect: %s" % account.text)

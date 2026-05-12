@@ -24,6 +24,7 @@
 //   - transport_select:    pick ENet vs WebRTC vs WebSocket.
 //   - party_start_matchmaking: leader notifies party members to
 //                            enqueue with a shared party_id.
+//   - delete_account:      soft-delete + cascade (GDPR / CCPA).
 package main
 
 import (
@@ -202,6 +203,9 @@ func InitModule(
 		return err
 	}
 	if err := addRpc("party_start_matchmaking", partyStartMatchmakingRpc); err != nil {
+		return err
+	}
+	if err := addRpc("delete_account", deleteAccountRpc); err != nil {
 		return err
 	}
 
