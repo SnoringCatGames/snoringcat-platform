@@ -37,6 +37,8 @@
 //   - transport_select:    pick ENet vs WebRTC vs WebSocket.
 //   - party_start_matchmaking: leader notifies party members to
 //                            enqueue with a shared party_id.
+//   - party_set_ready:     toggle the caller's per-party ready
+//                            flag (fans out party_state_changed).
 //   - delete_account:      soft-delete + cascade (GDPR / CCPA).
 //   - get_game_config:     read a game's public per_game_config.
 package main
@@ -273,6 +275,11 @@ func InitModule(
 	if err := addRpc(
 		"party_start_matchmaking",
 		partyStartMatchmakingRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_set_ready",
+		partySetReadyRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(

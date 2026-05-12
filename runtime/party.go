@@ -47,11 +47,24 @@ const partyStateChangedCode = 101
 type partyEvent string
 
 const (
-	partyEventInvited partyEvent = "invited"
-	partyEventJoined  partyEvent = "joined"
-	partyEventLeft    partyEvent = "left"
-	partyEventKicked  partyEvent = "kicked"
+	partyEventInvited      partyEvent = "invited"
+	partyEventJoined       partyEvent = "joined"
+	partyEventLeft         partyEvent = "left"
+	partyEventKicked       partyEvent = "kicked"
+	partyEventReadyChanged partyEvent = "ready_changed"
 )
+
+// partyReadyCollection holds per-member ready-state rows. Each
+// member owns their own row at (partyReadyCollection, partyID,
+// memberID) with PermissionRead=2 / PermissionWrite=0 — clients
+// can read everyone's row but only the runtime can write, so
+// `party_set_ready` is the sole entry point and the fan-out
+// notification can't be bypassed.
+//
+// Rows are cleared whenever the active roster changes (join /
+// leave / kick) so a member rejoining doesn't carry forward a
+// stale ready flag from a previous session.
+const partyReadyCollection = "party_ready"
 
 type partyStartMatchmakingArgs struct {
 	PartyID  string `json:"party_id"`
@@ -315,6 +328,7 @@ func afterJoinGroupHook(
 ) error {
 	// The joiner is the auth'd user and is now a real member;
 	// GroupUsersList will include them. No extras needed.
+	clearPartyReadyRows(ctx, logger, nk, in.GetGroupId(), nil)
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -340,6 +354,8 @@ func afterLeaveGroupHook(
 	if leaver != "" {
 		extras = append(extras, leaver)
 	}
+	clearPartyReadyRows(
+		ctx, logger, nk, in.GetGroupId(), extras)
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -358,6 +374,8 @@ func afterKickGroupUsersHook(
 ) error {
 	// Kicked users are gone from GroupUsersList; include them
 	// explicitly so their UI sees the kick.
+	clearPartyReadyRows(
+		ctx, logger, nk, in.GetGroupId(), in.GetUserIds())
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -444,5 +462,223 @@ func notifyPartyMembers(
 				"party hook: notify uid=%s event=%s err=%v",
 				uid, event, err)
 		}
+	}
+}
+
+// partySetReadyArgs is the client → runtime payload for the ready
+// toggle.
+type partySetReadyArgs struct {
+	PartyID string `json:"party_id"`
+	Ready   bool   `json:"ready"`
+}
+
+// partySetReadyResp echoes back the new state so the client UI can
+// stop showing a pending spinner without waiting for the next
+// fetch_party_status round-trip.
+type partySetReadyResp struct {
+	OK      bool   `json:"ok"`
+	PartyID string `json:"party_id"`
+	UserID  string `json:"user_id"`
+	Ready   bool   `json:"ready"`
+}
+
+// partySetReadyRpcFactory wires the per-game config so the handler
+// can enforce the game_id-in-vars invariant established by Stage
+// 2.6. Pattern mirrors partyStartMatchmakingRpcFactory.
+func partySetReadyRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partySetReadyRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partySetReadyRpc toggles the caller's per-party ready flag. The
+// row is owned by the caller so a future "list everyone's readies"
+// read can use a single batched StorageRead keyed on the active
+// member ids the client already has.
+//
+// Authorization: caller must be an active member of the party
+// (state 0/1/2). Pending invitees (state 3) cannot mark themselves
+// ready — they have to accept the invite first.
+func partySetReadyRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partySetReadyArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+
+	// Confirm the group is a party (name prefix) and the caller is
+	// an active member. Pending invitees (state=3) are rejected.
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	if !strings.HasPrefix(groups[0].Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+	members, _, err := nk.GroupUsersList(
+		ctx, args.PartyID, 100, nil, "")
+	if err != nil {
+		logger.Error(
+			"GroupUsersList(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	memberFound := false
+	for _, m := range members {
+		if m.User == nil || m.User.Id != userID {
+			continue
+		}
+		if m.State != nil && m.State.Value == 3 {
+			return "", runtime.NewError(
+				"accept the party invite before marking"+
+					" yourself ready", 9)
+		}
+		memberFound = true
+		break
+	}
+	if !memberFound {
+		return "", runtime.NewError(
+			"caller is not a member of party "+args.PartyID, 7)
+	}
+
+	if args.Ready {
+		value, _ := json.Marshal(map[string]any{
+			"ready":      true,
+			"updated_at": nowUnix(),
+		})
+		if _, err := nk.StorageWrite(
+			ctx,
+			[]*runtime.StorageWrite{{
+				Collection:      partyReadyCollection,
+				Key:             args.PartyID,
+				UserID:          userID,
+				Value:           string(value),
+				PermissionRead:  2,
+				PermissionWrite: 0,
+			}},
+		); err != nil {
+			logger.Error(
+				"party_set_ready write uid=%s party=%s: %v",
+				userID, args.PartyID, err)
+			return "", err
+		}
+	} else if err := nk.StorageDelete(
+		ctx,
+		[]*runtime.StorageDelete{{
+			Collection: partyReadyCollection,
+			Key:        args.PartyID,
+			UserID:     userID,
+		}},
+	); err != nil {
+		// Delete failure is logged but not fatal — the most
+		// common cause is "row already absent", which is the
+		// state the caller asked for anyway.
+		logger.Warn(
+			"party_set_ready delete uid=%s party=%s: %v",
+			userID, args.PartyID, err)
+	}
+
+	// Fan out party_state_changed so every member's UI reflects
+	// the new ready state without waiting on the catch-up poll.
+	notifyPartyMembers(
+		ctx, logger, nk,
+		args.PartyID,
+		partyEventReadyChanged,
+		nil,
+	)
+
+	resp := partySetReadyResp{
+		OK:      true,
+		PartyID: args.PartyID,
+		UserID:  userID,
+		Ready:   args.Ready,
+	}
+	out, _ := json.Marshal(resp)
+	return string(out), nil
+}
+
+// clearPartyReadyRows deletes every member's ready row for the
+// given party, including any extras (e.g. the user who just left
+// or was kicked and is no longer in GroupUsersList). Best-effort:
+// failures log and continue, mirroring notifyPartyMembers.
+func clearPartyReadyRows(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+	extras []string,
+) {
+	if partyID == "" {
+		return
+	}
+	members, _, err := nk.GroupUsersList(
+		ctx, partyID, 100, nil, "")
+	if err != nil {
+		logger.Warn(
+			"clear ready: GroupUsersList(%s) err=%v",
+			partyID, err)
+		return
+	}
+	seen := map[string]bool{}
+	deletes := []*runtime.StorageDelete{}
+	add := func(uid string) {
+		if uid == "" || seen[uid] {
+			return
+		}
+		seen[uid] = true
+		deletes = append(deletes, &runtime.StorageDelete{
+			Collection: partyReadyCollection,
+			Key:        partyID,
+			UserID:     uid,
+		})
+	}
+	for _, m := range members {
+		if m.User == nil {
+			continue
+		}
+		add(m.User.Id)
+	}
+	for _, uid := range extras {
+		add(uid)
+	}
+	if len(deletes) == 0 {
+		return
+	}
+	if err := nk.StorageDelete(ctx, deletes); err != nil {
+		logger.Warn(
+			"clear ready: StorageDelete party=%s err=%v",
+			partyID, err)
 	}
 }
