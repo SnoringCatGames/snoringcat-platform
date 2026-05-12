@@ -15,6 +15,7 @@
 //   - bulk_import:         Phase E migration RPC.
 //   - runtime_status:      read-only probe of build + config.
 //   - record_client_ip:    pre-matchmaking IP recorder.
+//   - register_game:       upsert a game's per_game_config row.
 //   Client session:
 //   - version_check:       client/server compatibility check.
 //   - update_and_get_presence: write own presence + read friends'.
@@ -25,6 +26,7 @@
 //   - party_start_matchmaking: leader notifies party members to
 //                            enqueue with a shared party_id.
 //   - delete_account:      soft-delete + cascade (GDPR / CCPA).
+//   - get_game_config:     read a game's public per_game_config.
 package main
 
 import (
@@ -67,12 +69,17 @@ func InitModule(
 	// automatically.
 	matchmakerHookEnabled := edgegapToken != ""
 	registered := []string{}
+	// games is initialized below (after the status RPC is
+	// registered). The status RPC dereferences this pointer at
+	// call time, so it picks up the store once it exists.
+	var games *perGameConfig
 	statusFn := statusRpcFactory(runtimeStatusConfig{
 		EdgegapAppName:       appName,
 		EdgegapAppVersion:    appVersion,
 		EdgegapTokenSet:      edgegapToken != "",
 		MatchmakerHookActive: matchmakerHookEnabled,
 		RegisteredRpcs:       &registered,
+		Games:                &games,
 	})
 	if err := initializer.RegisterRpc("runtime_status", statusFn); err != nil {
 		return err
@@ -209,9 +216,27 @@ func InitModule(
 		return err
 	}
 
+	// Per-game config: ensure the `games` table exists, warm the
+	// in-process cache, and register the upsert + read RPCs. A
+	// startup failure here is fatal — every game-scoped RPC the
+	// runtime is about to register depends on this store being
+	// readable. `games` was declared above so runtime_status can
+	// observe it once init succeeds.
+	games, err := newPerGameConfig(ctx, db)
+	if err != nil {
+		return err
+	}
+	if err := addRpc("register_game", games.RegisterGameRpc); err != nil {
+		return err
+	}
+	if err := addRpc("get_game_config", games.GetGameConfigRpc); err != nil {
+		return err
+	}
+
 	logger.Info(
-		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t)",
-		BuildID, appName, appVersion, matchmakerHookEnabled)
+		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t games=%v)",
+		BuildID, appName, appVersion, matchmakerHookEnabled,
+		games.GameIDs())
 	return nil
 }
 

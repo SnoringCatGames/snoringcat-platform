@@ -32,6 +32,7 @@ type runtimeStatusResponse struct {
 	EdgegapTokenSet    bool     `json:"edgegap_token_set"`
 	RegisteredRpcs     []string `json:"registered_rpcs"`
 	RegisteredHooks    []string `json:"registered_hooks"`
+	RegisteredGames    []string `json:"registered_games"`
 }
 
 // runtimeStatusConfig captures the values main.go decided at
@@ -44,12 +45,19 @@ type runtimeStatusResponse struct {
 // call time, so the response always reflects the actual
 // registered set (notably: bulk_import only appears when
 // BULK_IMPORT_ENABLED gated it on).
+//
+// Games is a pointer-to-pointer to the perGameConfig store.
+// The status RPC is registered before newPerGameConfig runs
+// (so runtime_status stays diagnosable even when DDL/cache-warm
+// fails); main.go assigns `*Games` once init succeeds, and the
+// RPC handler dereferences at call time.
 type runtimeStatusConfig struct {
 	EdgegapAppName       string
 	EdgegapAppVersion    string
 	EdgegapTokenSet      bool
 	MatchmakerHookActive bool
 	RegisteredRpcs       *[]string
+	Games                **perGameConfig
 }
 
 // statusRpcFactory binds the snapshot of configuration into a
@@ -86,6 +94,13 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 		if cfg.RegisteredRpcs != nil {
 			rpcs = append(rpcs, (*cfg.RegisteredRpcs)...)
 		}
+		// Same logic for games: snapshot at call time so a
+		// runtime_status hit after a register_game upsert
+		// reflects the new row.
+		games := []string{}
+		if cfg.Games != nil && *cfg.Games != nil {
+			games = (*cfg.Games).GameIDs()
+		}
 		resp := runtimeStatusResponse{
 			BuildID:           BuildID,
 			BuildTime:         BuildTime,
@@ -95,6 +110,7 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 			EdgegapTokenSet:   cfg.EdgegapTokenSet,
 			RegisteredRpcs:    rpcs,
 			RegisteredHooks:   hooks,
+			RegisteredGames:   games,
 		}
 		out, err := json.Marshal(resp)
 		if err != nil {

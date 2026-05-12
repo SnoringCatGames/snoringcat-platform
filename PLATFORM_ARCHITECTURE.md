@@ -308,9 +308,14 @@ in `snoringcat-platform/backend/schemas/game_yaml/`. Adding a new
 key without breaking existing games doesn't bump the schema; only
 breaking changes do.
 
-**Storage:** at backend startup, `per_game_config.go` reads each
-known game's `game.yaml` (paths configured via env var) and
-upserts a row into the Postgres `games` table:
+**Storage:** at backend startup, `per_game_config.go` ensures
+the Postgres `games` table exists (idempotent DDL) and warms an
+in-process cache from whatever rows are already there. The
+runtime does NOT read `game.yaml` files from the filesystem —
+the Nakama container has no access to game repos. Instead, each
+game's deploy pipeline POSTs its `game.yaml` (converted to JSON)
+to the server-to-server `register_game` RPC, which upserts the
+row and refreshes the cache.
 
 ```sql
 CREATE TABLE games (
@@ -319,14 +324,28 @@ CREATE TABLE games (
   edgegap_app_slug TEXT NOT NULL,
   protocol_version INTEGER NOT NULL,
   display_version TEXT NOT NULL,
-  config JSONB NOT NULL,         -- full game.yaml content
+  config JSONB NOT NULL,         -- full game.yaml content as JSON
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-Runtime modules read from this table (cached in process memory,
-invalidated on update RPC).
+Sync flow:
+
+1. Game repo's `scripts/sync-game-config.ps1` parses
+   `game.yaml`, validates required fields locally, converts to
+   JSON.
+2. POSTs to
+   `https://nakama.../v2/rpc/register_game?http_key=...&unwrap=true`
+   with the JSON as body.
+3. Runtime `register_game` handler (server-to-server gated)
+   unmarshals, re-validates, upserts via `INSERT ... ON CONFLICT
+   ... DO UPDATE`, then refreshes the in-process cache entry.
+4. Clients read public projections via `get_game_config`.
+
+Runtime modules read from the cache (refreshed on each
+`register_game` write — no TTL today; a future background
+refresh could pick up out-of-band Postgres edits).
 
 ---
 
