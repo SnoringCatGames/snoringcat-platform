@@ -15,6 +15,10 @@
 //     session token and are exposed to subsequent RPCs via
 //     RUNTIME_CTX_VARS.
 //   - BeforeSessionRefresh: same rule on token refresh.
+//   - AfterAddGroupUsers / AfterJoinGroup / AfterLeaveGroup /
+//     AfterKickGroupUsers: fan out a party_state_changed
+//     notification on every membership change to a `party-`
+//     group. Drives the client's real-time party UI.
 //
 // RPCs registered:
 //   Server-to-server (HTTP-key gated):
@@ -124,6 +128,16 @@ func InitModule(
 	// sync-game-config.ps1 has run), all auths pass through.
 	// See validateGameIDInVars for the rule.
 	if err := registerAuthHooks(initializer, games); err != nil {
+		return err
+	}
+
+	// AfterAddGroupUsers / AfterJoinGroup / AfterLeaveGroup /
+	// AfterKickGroupUsers hooks fan out party_state_changed
+	// notifications when a `party-` group's membership changes.
+	// Clients subscribed via a Nakama realtime socket refresh
+	// their local party state on receipt, replacing the legacy
+	// polling cadence in party_manager.gd.
+	if err := registerPartyGroupHooks(initializer); err != nil {
 		return err
 	}
 

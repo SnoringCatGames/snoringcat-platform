@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
@@ -22,6 +23,35 @@ const partyGroupPrefix = "party-"
 // drop its own matchmaker ticket with the matching party_id
 // property so the whole party lands in one match.
 const partyMatchmakingStartSubject = "party_matchmaking_start"
+
+// partyStateChangedSubject fires on every party membership change
+// (invite, join, leave, kick). Clients listening on a Nakama
+// realtime socket refresh their local party state when they see it,
+// replacing the previous 3 s / 10 s polling cadence in
+// `party_manager.gd`. Sent transient (persistent=false) so the
+// notifications don't accumulate in Nakama's inbox; clients always
+// refetch on socket reconnect, so a missed event between a drop and
+// reconnect is self-healing.
+const partyStateChangedSubject = "party_state_changed"
+
+// partyStateChangedCode is the application-defined notification
+// code paired with partyStateChangedSubject. 100 is reserved for
+// match_ready / party_matchmaking_start; pick a distinct value so
+// downstream filters can route on either field.
+const partyStateChangedCode = 101
+
+// partyEvent describes which membership operation triggered a
+// party_state_changed notification. Clients today refresh state on
+// any event, but the field is included so a future UI can render
+// "Alice joined the party" / "Bob left" without a second roundtrip.
+type partyEvent string
+
+const (
+	partyEventInvited partyEvent = "invited"
+	partyEventJoined  partyEvent = "joined"
+	partyEventLeft    partyEvent = "left"
+	partyEventKicked  partyEvent = "kicked"
+)
 
 type partyStartMatchmakingArgs struct {
 	PartyID  string `json:"party_id"`
@@ -212,4 +242,207 @@ func partyStartMatchmakingRpc(
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
+}
+
+// registerPartyGroupHooks wires Nakama's AfterAddGroupUsers /
+// AfterJoinGroup / AfterLeaveGroup / AfterKickGroupUsers hooks to
+// fan out party_state_changed notifications. Each hook gates on the
+// target group's name starting with partyGroupPrefix; non-party
+// groups don't generate notifications.
+//
+// Caller authentication is enforced by Nakama before the hook runs
+// — for the add/kick paths the actor is the auth'd session user;
+// for join/leave it's the auth'd user joining/leaving themselves.
+// We don't need to validate authority again here.
+//
+// The notifications are transient (persistent=false). Clients
+// always refetch party state on socket reconnect, so a missed event
+// between a socket drop and reconnect is recovered automatically
+// without burning a row in the recipient's persistent notification
+// inbox.
+func registerPartyGroupHooks(
+	initializer runtime.Initializer,
+) error {
+	if err := initializer.RegisterAfterAddGroupUsers(
+		afterAddGroupUsersHook,
+	); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterJoinGroup(
+		afterJoinGroupHook,
+	); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterLeaveGroup(
+		afterLeaveGroupHook,
+	); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterKickGroupUsers(
+		afterKickGroupUsersHook,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func afterAddGroupUsersHook(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.AddGroupUsersRequest,
+) error {
+	// in.UserIds are the freshly-invited users. Nakama hasn't
+	// returned them through GroupUsersList as state=3 yet by the
+	// time the after-hook fires (write ordering varies), so include
+	// them as extra recipients explicitly.
+	notifyPartyMembers(
+		ctx, logger, nk,
+		in.GetGroupId(),
+		partyEventInvited,
+		in.GetUserIds(),
+	)
+	return nil
+}
+
+func afterJoinGroupHook(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.JoinGroupRequest,
+) error {
+	// The joiner is the auth'd user and is now a real member;
+	// GroupUsersList will include them. No extras needed.
+	notifyPartyMembers(
+		ctx, logger, nk,
+		in.GetGroupId(),
+		partyEventJoined,
+		nil,
+	)
+	return nil
+}
+
+func afterLeaveGroupHook(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.LeaveGroupRequest,
+) error {
+	// The leaver is no longer in GroupUsersList. Pull their user_id
+	// from the request context so they also get the notification
+	// (their UI flips off the in-party view immediately rather than
+	// waiting for the local optimistic clear).
+	leaver, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	extras := []string{}
+	if leaver != "" {
+		extras = append(extras, leaver)
+	}
+	notifyPartyMembers(
+		ctx, logger, nk,
+		in.GetGroupId(),
+		partyEventLeft,
+		extras,
+	)
+	return nil
+}
+
+func afterKickGroupUsersHook(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.KickGroupUsersRequest,
+) error {
+	// Kicked users are gone from GroupUsersList; include them
+	// explicitly so their UI sees the kick.
+	notifyPartyMembers(
+		ctx, logger, nk,
+		in.GetGroupId(),
+		partyEventKicked,
+		in.GetUserIds(),
+	)
+	return nil
+}
+
+// notifyPartyMembers fans out a party_state_changed notification to
+// every current member of the group plus any extra recipients
+// (users who were just added or kicked and may not appear in
+// GroupUsersList anymore). Non-party groups (name prefix mismatch)
+// are silently skipped.
+//
+// Best-effort by design: a NotificationSend failure is logged at
+// warn level but doesn't bubble up. The slow catch-up poll on the
+// client absorbs any missed deliveries.
+func notifyPartyMembers(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	groupID string,
+	event partyEvent,
+	extras []string,
+) {
+	if groupID == "" {
+		return
+	}
+	groups, err := nk.GroupsGetId(ctx, []string{groupID})
+	if err != nil {
+		logger.Warn(
+			"party hook: GroupsGetId(%s) err=%v",
+			groupID, err)
+		return
+	}
+	if len(groups) == 0 {
+		return
+	}
+	if !strings.HasPrefix(groups[0].Name, partyGroupPrefix) {
+		return
+	}
+	members, _, err := nk.GroupUsersList(
+		ctx, groupID, 100, nil, "")
+	if err != nil {
+		logger.Warn(
+			"party hook: GroupUsersList(%s) err=%v",
+			groupID, err)
+		return
+	}
+	seen := map[string]bool{}
+	recipients := make([]string, 0, len(members)+len(extras))
+	for _, m := range members {
+		if m.User == nil || m.User.Id == "" {
+			continue
+		}
+		if seen[m.User.Id] {
+			continue
+		}
+		seen[m.User.Id] = true
+		recipients = append(recipients, m.User.Id)
+	}
+	for _, uid := range extras {
+		if uid == "" || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		recipients = append(recipients, uid)
+	}
+	content := map[string]any{
+		"party_id": groupID,
+		"event":    string(event),
+	}
+	for _, uid := range recipients {
+		if err := nk.NotificationSend(
+			ctx, uid,
+			partyStateChangedSubject,
+			content,
+			partyStateChangedCode,
+			"",
+			false,
+		); err != nil {
+			logger.Warn(
+				"party hook: notify uid=%s event=%s err=%v",
+				uid, event, err)
+		}
+	}
 }
