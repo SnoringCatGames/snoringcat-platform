@@ -21,6 +21,9 @@
 //   - get_player_stats:    rating + match count.
 //   - get_match_history:   recent matches for the caller.
 //   - export_player_data:  GDPR data export.
+//   - transport_select:    pick ENet vs WebRTC vs WebSocket.
+//   - party_start_matchmaking: leader notifies party members to
+//                            enqueue with a shared party_id.
 package main
 
 import (
@@ -196,6 +199,9 @@ func InitModule(
 		return err
 	}
 	if err := addRpc("transport_select", transportSelectRpc); err != nil {
+		return err
+	}
+	if err := addRpc("party_start_matchmaking", partyStartMatchmakingRpc); err != nil {
 		return err
 	}
 
