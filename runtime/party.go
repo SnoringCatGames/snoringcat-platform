@@ -48,12 +48,29 @@ const partyStateChangedCode = 101
 type partyEvent string
 
 const (
-	partyEventInvited      partyEvent = "invited"
-	partyEventJoined       partyEvent = "joined"
-	partyEventLeft         partyEvent = "left"
-	partyEventKicked       partyEvent = "kicked"
-	partyEventReadyChanged partyEvent = "ready_changed"
+	partyEventInvited       partyEvent = "invited"
+	partyEventJoined        partyEvent = "joined"
+	partyEventLeft          partyEvent = "left"
+	partyEventKicked        partyEvent = "kicked"
+	partyEventReadyChanged  partyEvent = "ready_changed"
+	partyEventLeaderChanged partyEvent = "leader_changed"
 )
+
+// partyLeaderCollection holds the optional "current leader"
+// override for a party. Nakama groups have an immutable
+// `creator_id` field, so we can't reassign leadership by mutating
+// the group itself; instead, the runtime stores an override row
+// here whenever `party_transfer_leadership` runs. Schema:
+//
+//	(partyLeaderCollection, partyID, "") → {user_id, transferred_at}
+//
+// The row is server-owned (UserID="") with PermissionRead=2 so
+// any party member can fold the override into their local view
+// of leader_id, but PermissionWrite=0 keeps the transfer RPC as
+// the sole way to mutate it. `resolvePartyLeader` reads this row
+// first and falls back to `group.CreatorId` when absent, keeping
+// pre-transfer parties working without a migration.
+const partyLeaderCollection = "party_leader"
 
 // partyReadyCollection holds per-member ready-state rows. Each
 // member owns their own row at (partyReadyCollection, partyID,
@@ -211,11 +228,18 @@ func partyStartMatchmakingRpc(
 				partyGroupPrefix+"\")",
 			3)
 	}
-	if group.CreatorId != userID {
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, args.PartyID, group.CreatorId)
+	if err != nil {
+		logger.Error(
+			"resolvePartyLeader(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if leaderID != userID {
 		logger.Info(
 			"party_start_matchmaking refused for non-leader:"+
 				" user=%s party=%s leader=%s",
-			userID, args.PartyID, group.CreatorId)
+			userID, args.PartyID, leaderID)
 		return "", runtime.NewError(
 			"only the party leader can start matchmaking", 7)
 	}
@@ -294,6 +318,420 @@ func partyStartMatchmakingRpc(
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
+}
+
+// loadPartyLeaderOverride reads the (partyLeaderCollection,
+// partyID, "") storage row if present. Returns ("", false, nil)
+// when the row doesn't exist (caller should fall back to the
+// group's creator_id). Errors propagate so the caller can surface
+// them rather than silently masking a leadership change.
+func loadPartyLeaderOverride(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	partyID string,
+) (string, bool, error) {
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyLeaderCollection,
+			Key:        partyID,
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		return "", false, err
+	}
+	if len(reads) == 0 {
+		return "", false, nil
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &parsed); err != nil {
+		return "", false, nil
+	}
+	uid, _ := parsed["user_id"].(string)
+	if uid == "" {
+		return "", false, nil
+	}
+	return uid, true, nil
+}
+
+// resolvePartyLeader returns the current leader's user_id for the
+// party, honoring any transfer override stored in
+// partyLeaderCollection and falling back to the group's immutable
+// creator_id when no override exists. The override is dropped
+// automatically by the partyEventLeft handler when the prior leader
+// leaves, so a stale row pointing at someone no longer in the
+// party shouldn't be possible in steady state. As defense in depth,
+// resolvePartyLeader does NOT validate the resolved id against the
+// active roster; callers that care (e.g. authorization checks)
+// should re-verify membership separately.
+func resolvePartyLeader(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	partyID string,
+	fallbackCreatorID string,
+) (string, error) {
+	uid, ok, err := loadPartyLeaderOverride(ctx, nk, partyID)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return uid, nil
+	}
+	return fallbackCreatorID, nil
+}
+
+// partyTransferLeadershipArgs is the client → runtime payload for
+// transferring leadership to another active member.
+type partyTransferLeadershipArgs struct {
+	PartyID      string `json:"party_id"`
+	TargetUserID string `json:"target_user_id"`
+}
+
+// partyTransferLeadershipResp echoes the resolved {party, leader}
+// pair so the caller's UI can flip leader-only affordances off
+// without waiting for the next fetch_party_status round-trip.
+type partyTransferLeadershipResp struct {
+	OK       bool   `json:"ok"`
+	PartyID  string `json:"party_id"`
+	LeaderID string `json:"leader_id"`
+}
+
+func partyTransferLeadershipRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyTransferLeadershipRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partyTransferLeadershipRpc reassigns the leader of a party.
+// Nakama groups have an immutable creator_id, so the actual
+// reassignment is implemented as a storage-row override in
+// partyLeaderCollection that resolvePartyLeader consults. The
+// override is preserved across the original creator leaving (so
+// the second transferee can keep leading), and is implicitly
+// dropped along with the group when the party disbands.
+//
+// Authorization: caller must be the current leader. Returns
+// PERMISSION_DENIED (7) otherwise. The target must be an active
+// member (state 0/1/2) of the same party. Pending invitees
+// (state=3) and non-members are rejected with INVALID_ARGUMENT
+// (3) so the failure message points at the data, not the auth
+// state.
+func partyTransferLeadershipRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partyTransferLeadershipArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+	if args.TargetUserID == "" {
+		return "", runtime.NewError("target_user_id required", 3)
+	}
+	if args.TargetUserID == userID {
+		return "", runtime.NewError(
+			"target_user_id is the caller; nothing to transfer", 3)
+	}
+
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	group := groups[0]
+	if !strings.HasPrefix(group.Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+
+	currentLeader, err := resolvePartyLeader(
+		ctx, nk, args.PartyID, group.CreatorId)
+	if err != nil {
+		logger.Error(
+			"resolvePartyLeader(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if currentLeader != userID {
+		logger.Info(
+			"party_transfer_leadership refused: caller=%s"+
+				" current_leader=%s party=%s",
+			userID, currentLeader, args.PartyID)
+		return "", runtime.NewError(
+			"only the party leader can transfer leadership", 7)
+	}
+
+	// Verify target is an active member. Walking the full roster
+	// rather than a single-member lookup also gives us the chance
+	// to confirm the caller is still on it — a defense against
+	// stale storage overrides surviving a missed AfterLeaveGroup
+	// hook.
+	members, _, err := nk.GroupUsersList(
+		ctx, args.PartyID, 100, nil, "")
+	if err != nil {
+		logger.Error(
+			"GroupUsersList(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	callerActive := false
+	targetActive := false
+	for _, m := range members {
+		if m.User == nil {
+			continue
+		}
+		state := int32(2)
+		if m.State != nil {
+			state = m.State.Value
+		}
+		if state == 3 {
+			continue
+		}
+		if m.User.Id == userID {
+			callerActive = true
+		}
+		if m.User.Id == args.TargetUserID {
+			targetActive = true
+		}
+	}
+	if !callerActive {
+		return "", runtime.NewError(
+			"caller is not an active member of party "+
+				args.PartyID, 7)
+	}
+	if !targetActive {
+		return "", runtime.NewError(
+			"target is not an active member of party "+
+				args.PartyID, 3)
+	}
+
+	value, _ := json.Marshal(map[string]any{
+		"user_id":        args.TargetUserID,
+		"transferred_at": nowUnix(),
+		"transferred_by": userID,
+	})
+	if _, err := nk.StorageWrite(
+		ctx,
+		[]*runtime.StorageWrite{{
+			Collection:      partyLeaderCollection,
+			Key:             args.PartyID,
+			UserID:          "",
+			Value:           string(value),
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}},
+	); err != nil {
+		logger.Error(
+			"party_leader write party=%s new=%s: %v",
+			args.PartyID, args.TargetUserID, err)
+		return "", err
+	}
+	// Elevate the new leader to admin so their client can call the
+	// standard Nakama group endpoints for kick / invite. No-op (and
+	// nil error) when the target is already admin or superadmin.
+	// We don't demote the previous leader — Nakama doesn't allow
+	// demoting the creator, and ad-hoc demotion of a non-creator
+	// previous leader would prevent them ever taking leadership
+	// back via another transfer.
+	if err := nk.GroupUsersPromote(
+		ctx, "", args.PartyID, []string{args.TargetUserID},
+	); err != nil {
+		logger.Warn(
+			"GroupUsersPromote party=%s to=%s: %v",
+			args.PartyID, args.TargetUserID, err)
+	}
+
+	// Fan out so every member's UI refreshes and the new leader's
+	// affordances light up immediately. Reuses partyStateChanged
+	// so existing clients don't need a new subject filter.
+	notifyPartyMembers(
+		ctx, logger, nk,
+		args.PartyID,
+		partyEventLeaderChanged,
+		nil,
+	)
+
+	logger.Info(
+		"party_transfer_leadership: party=%s from=%s to=%s",
+		args.PartyID, userID, args.TargetUserID)
+
+	out, _ := json.Marshal(partyTransferLeadershipResp{
+		OK:       true,
+		PartyID:  args.PartyID,
+		LeaderID: args.TargetUserID,
+	})
+	return string(out), nil
+}
+
+// autoTransferIfLeaderDeparted promotes a new leader when the
+// current leader has left (or been kicked from) the party. The
+// pick is "first active member returned by GroupUsersList" — not
+// principled, but deterministic relative to a given roster state,
+// which is sufficient to keep the party functional. The new
+// leader is also promoted to Nakama admin via GroupUsersPromote
+// so the standard kick / invite client paths (which call Nakama
+// directly with the caller's session) succeed.
+//
+// No-op when the departing user wasn't the leader, when there
+// are no remaining active members (the party is effectively
+// over), or when promote / storage write fails (best-effort:
+// resolvePartyLeader on the next caller will fall back to the
+// group's creator_id, which keeps the original-creator-still-in-
+// party case working).
+func autoTransferIfLeaderDeparted(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+	departed string,
+) {
+	if partyID == "" || departed == "" {
+		return
+	}
+	groups, err := nk.GroupsGetId(ctx, []string{partyID})
+	if err != nil || len(groups) == 0 {
+		return
+	}
+	if !strings.HasPrefix(groups[0].Name, partyGroupPrefix) {
+		return
+	}
+	leader, err := resolvePartyLeader(
+		ctx, nk, partyID, groups[0].CreatorId)
+	if err != nil {
+		logger.Warn(
+			"auto-transfer resolve party=%s err=%v",
+			partyID, err)
+		return
+	}
+	if leader != departed {
+		return
+	}
+	members, _, err := nk.GroupUsersList(
+		ctx, partyID, 100, nil, "")
+	if err != nil {
+		logger.Warn(
+			"auto-transfer roster party=%s err=%v",
+			partyID, err)
+		return
+	}
+	var next string
+	for _, m := range members {
+		if m.User == nil || m.User.Id == "" {
+			continue
+		}
+		if m.User.Id == departed {
+			continue
+		}
+		state := int32(2)
+		if m.State != nil {
+			state = m.State.Value
+		}
+		if state == 3 {
+			continue
+		}
+		next = m.User.Id
+		break
+	}
+	if next == "" {
+		// No remaining active members. Drop the override so the
+		// row doesn't leak into a future reuse of this party
+		// (Nakama can recycle the group when the last member
+		// leaves; in our flow that's already an empty party).
+		clearPartyLeaderOverride(ctx, logger, nk, partyID)
+		return
+	}
+	value, _ := json.Marshal(map[string]any{
+		"user_id":        next,
+		"transferred_at": nowUnix(),
+		"transferred_by": "auto:" + departed,
+	})
+	if _, err := nk.StorageWrite(
+		ctx,
+		[]*runtime.StorageWrite{{
+			Collection:      partyLeaderCollection,
+			Key:             partyID,
+			UserID:          "",
+			Value:           string(value),
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}},
+	); err != nil {
+		logger.Warn(
+			"auto-transfer write party=%s to=%s err=%v",
+			partyID, next, err)
+		return
+	}
+	if err := nk.GroupUsersPromote(
+		ctx, "", partyID, []string{next},
+	); err != nil {
+		// Promote failure is recoverable — the override is the
+		// app-level source of truth; the only loss is that some
+		// Nakama-SDK-direct operations (invite, kick) might fail
+		// for the new leader until they're promoted manually.
+		logger.Warn(
+			"auto-transfer promote party=%s to=%s err=%v",
+			partyID, next, err)
+	}
+	logger.Info(
+		"party auto-transfer: party=%s from=%s to=%s",
+		partyID, departed, next)
+}
+
+// clearPartyLeaderOverride removes the partyLeaderCollection row
+// for a party. Best-effort: a missing row (the common case for
+// parties that never transferred leadership) is silent.
+func clearPartyLeaderOverride(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+) {
+	if partyID == "" {
+		return
+	}
+	if err := nk.StorageDelete(
+		ctx,
+		[]*runtime.StorageDelete{{
+			Collection: partyLeaderCollection,
+			Key:        partyID,
+			UserID:     "",
+		}},
+	); err != nil {
+		// "object not found" surfaces as an error from
+		// StorageDelete for missing rows; demote to debug-level
+		// noise.
+		logger.Debug(
+			"clear party leader override party=%s err=%v",
+			partyID, err)
+	}
 }
 
 // registerPartyGroupHooks wires Nakama's AfterAddGroupUsers /
@@ -395,6 +833,14 @@ func afterLeaveGroupHook(
 	}
 	clearPartyReadyRows(
 		ctx, logger, nk, in.GetGroupId(), extras)
+	// If the leaver was the current (override-aware) leader, auto-
+	// transfer to a remaining active member so the party isn't
+	// stranded with no leader. This also handles the case where the
+	// original creator left long ago and a transferred leader is now
+	// leaving — `resolvePartyLeader` would otherwise return the long-
+	// gone creator on subsequent calls.
+	autoTransferIfLeaderDeparted(
+		ctx, logger, nk, in.GetGroupId(), leaver)
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -415,6 +861,15 @@ func afterKickGroupUsersHook(
 	// explicitly so their UI sees the kick.
 	clearPartyReadyRows(
 		ctx, logger, nk, in.GetGroupId(), in.GetUserIds())
+	// If any kicked user was the current leader, auto-transfer to
+	// keep the surviving party functional. The "leader kicks self"
+	// path isn't reachable via the client UI (kick_member checks
+	// is_leader + skips self), but a malicious / racy direct
+	// Nakama API call could exit through here; defense in depth.
+	for _, uid := range in.GetUserIds() {
+		autoTransferIfLeaderDeparted(
+			ctx, logger, nk, in.GetGroupId(), uid)
+	}
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),

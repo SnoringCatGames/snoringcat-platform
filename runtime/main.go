@@ -43,6 +43,8 @@
 //                            code for the caller's party.
 //   - party_join_by_code:   join a party using a previously-
 //                            generated invite code.
+//   - party_transfer_leadership: leader hands the party's lead
+//                            role to another active member.
 //   - delete_account:      soft-delete + cascade (GDPR / CCPA).
 //   - get_game_config:     read a game's public per_game_config.
 package main
@@ -294,6 +296,11 @@ func InitModule(
 	if err := addRpc(
 		"party_join_by_code",
 		partyJoinByCodeRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_transfer_leadership",
+		partyTransferLeadershipRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(
