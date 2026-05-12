@@ -38,7 +38,7 @@ func test_refresh_returns_fresh_session_pair() -> void:
 	# Step 1: anon-auth, capture refresh_token.
 	var auth: Dictionary = await _helper.http_post(
 		"/v2/account/authenticate/device?create=true",
-		{"id": _DEVICE_ID},
+		_helper.device_auth_body(_DEVICE_ID),
 		"basic_server_key")
 	assert_eq(
 		auth.status_code, 200,
@@ -52,7 +52,7 @@ func test_refresh_returns_fresh_session_pair() -> void:
 	# Step 2: refresh.
 	var refresh: Dictionary = await _helper.http_post(
 		"/v2/account/session/refresh",
-		{"token": refresh_token},
+		_helper.session_refresh_body(refresh_token),
 		"basic_server_key")
 	assert_eq(
 		refresh.status_code, 200,
@@ -89,11 +89,12 @@ func test_refresh_token_unlocks_account_endpoint() -> void:
 
 	var auth: Dictionary = await _helper.http_post(
 		"/v2/account/authenticate/device?create=true",
-		{"id": _DEVICE_ID},
+		_helper.device_auth_body(_DEVICE_ID),
 		"basic_server_key")
 	var refresh: Dictionary = await _helper.http_post(
 		"/v2/account/session/refresh",
-		{"token": str(auth.body.get("refresh_token", ""))},
+		_helper.session_refresh_body(
+			str(auth.body.get("refresh_token", ""))),
 		"basic_server_key")
 	assert_eq(refresh.status_code, 200)
 

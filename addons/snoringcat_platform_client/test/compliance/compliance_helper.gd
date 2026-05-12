@@ -181,16 +181,74 @@ func http_delete(path: String, auth: String = "") -> Dictionary:
 ## session token (or empty string on failure). The device_id is
 ## stable across runs so the same compliance account is reused
 ## (avoids polluting the users table).
+##
+## When the consuming game has initialized the `Platform`
+## autoload with a `game_id`, that value is included in the
+## auth request's `vars` map so the runtime's
+## BeforeAuthenticateDevice hook accepts the call. Falls back
+## to the `PLATFORM_GAME_ID` env var when Platform is
+## unavailable (compliance suite running standalone).
 func nakama_anon_session(device_id: String) -> String:
 	var result: Dictionary = await http_post(
 		"/v2/account/authenticate/device?create=true",
-		{"id": device_id},
+		device_auth_body(device_id),
 		"basic_server_key")
 	if result.status_code != 200:
 		return ""
 	if result.body == null or not (result.body is Dictionary):
 		return ""
 	return str(result.body.get("token", ""))
+
+
+## Returns a `/v2/account/authenticate/device` POST body with
+## `game_id` injected into `vars` so the runtime's
+## BeforeAuthenticateDevice hook accepts the call. Use this in
+## place of `{"id": device_id}` for any compliance test that
+## hits the authenticate endpoint directly.
+func device_auth_body(device_id: String) -> Dictionary:
+	var body: Dictionary = {"id": device_id}
+	var game_id := _resolve_game_id()
+	if not game_id.is_empty():
+		body["vars"] = {"game_id": game_id}
+	return body
+
+
+## Returns a `/v2/account/session/refresh` POST body with
+## `game_id` injected into `vars`. Mirrors device_auth_body
+## for the refresh flow.
+func session_refresh_body(refresh_token: String) -> Dictionary:
+	var body: Dictionary = {"token": refresh_token}
+	var game_id := _resolve_game_id()
+	if not game_id.is_empty():
+		body["vars"] = {"game_id": game_id}
+	return body
+
+
+## Resolves the `game_id` to attach to authenticate vars.
+## Prefers a live `Platform.game_id` (when the addon's autoload
+## has been initialized by the consuming game) over the
+## `PLATFORM_GAME_ID` env var. Returns "" when neither is
+## available; callers default to legacy no-vars behavior.
+func _resolve_game_id() -> String:
+	if Engine.has_singleton("Platform"):
+		var platform: Object = Engine.get_singleton("Platform")
+		if (
+			platform != null
+			and platform.get("is_initialized") == true
+		):
+			return str(platform.get("game_id"))
+	# The autoload is registered as a script (not a singleton),
+	# so look it up through the SceneTree's root.
+	var tree := Engine.get_main_loop()
+	if tree is SceneTree:
+		var root: Node = (tree as SceneTree).root
+		var node: Node = root.get_node_or_null("Platform")
+		if (
+			node != null
+			and node.get("is_initialized") == true
+		):
+			return str(node.get("game_id"))
+	return OS.get_environment("PLATFORM_GAME_ID")
 
 
 ## Convenience: call a server-to-server RPC by name. The RPC's

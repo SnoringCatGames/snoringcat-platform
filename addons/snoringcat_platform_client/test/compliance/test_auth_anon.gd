@@ -33,7 +33,7 @@ func test_anon_sign_in_returns_token() -> void:
 
 	var result: Dictionary = await _helper.http_post(
 		"/v2/account/authenticate/device?create=true",
-		{"id": _COMPLIANCE_DEVICE_ID},
+		_helper.device_auth_body(_COMPLIANCE_DEVICE_ID),
 		"basic_server_key")
 
 	assert_true(
@@ -76,7 +76,7 @@ func test_anon_token_carries_user_id_claim() -> void:
 
 	var result: Dictionary = await _helper.http_post(
 		"/v2/account/authenticate/device?create=true",
-		{"id": _COMPLIANCE_DEVICE_ID},
+		_helper.device_auth_body(_COMPLIANCE_DEVICE_ID),
 		"basic_server_key")
 	assert_eq(
 		result.status_code, 200,

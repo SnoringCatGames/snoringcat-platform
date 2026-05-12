@@ -76,7 +76,7 @@ func test_link_secondary_device_to_anon_account() -> void:
 	# mean the link silently no-op'd.
 	var secondary_result: Dictionary = await _helper.http_post(
 		"/v2/account/authenticate/device?create=false",
-		{"id": _LINK_DEVICE_ID},
+		_helper.device_auth_body(_LINK_DEVICE_ID),
 		"basic_server_key")
 	assert_eq(
 		secondary_result.status_code, 200,
