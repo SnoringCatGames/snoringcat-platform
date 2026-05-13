@@ -200,6 +200,73 @@ func nakama_anon_session(device_id: String) -> String:
 	return str(result.body.get("token", ""))
 
 
+## Mint `count` independently-authenticated anonymous sessions
+## in one call. Each user gets a one-shot device_id (run
+## timestamp + random + index) so concurrent CI runs don't
+## collide and a single run doesn't bind any persistent state.
+##
+## Returns Array[Dictionary] of
+##   {token, refresh_token, user_id, username, device_id}
+## on success. Returns [] on the first auth failure so callers
+## can pending() with a clean state. The accounts linger after
+## the test for ops-side sweep (prefix "compliance-multi-");
+## tests that want strict cleanup can call
+## delete_one_shot_account(user) per user in after_each.
+func multi_session_anon(
+	count: int,
+	prefix: String = "compliance-multi",
+) -> Array:
+	var users: Array = []
+	var run_id := (
+		"%d-%d"
+		% [
+			Time.get_unix_time_from_system() as int,
+			randi() % 100000,
+		])
+	for i in range(count):
+		var device_id := "%s-%s-%d" % [prefix, run_id, i]
+		var result: Dictionary = await http_post(
+			"/v2/account/authenticate/device?create=true",
+			device_auth_body(device_id),
+			"basic_server_key")
+		if result.status_code != 200:
+			return []
+		if result.body == null or not (result.body is Dictionary):
+			return []
+		var token := str(result.body.get("token", ""))
+		if token.is_empty():
+			return []
+		var refresh := str(result.body.get("refresh_token", ""))
+		var claims := decode_jwt_claims(token)
+		var user_id := str(claims.get("uid", ""))
+		var username := str(claims.get("usn", ""))
+		users.append({
+			"token": token,
+			"refresh_token": refresh,
+			"user_id": user_id,
+			"username": username,
+			"device_id": device_id,
+		})
+	return users
+
+
+## Hard-delete a one-shot account created by multi_session_anon
+## via Nakama's built-in `DELETE /v2/account` (bypasses the
+## platform soft-delete RPC's 30-day grace, which would leave
+## the account intact for the cron). Best-effort: a non-2xx
+## status returns false; nothing else fails. Useful in
+## after_each() for tests that want to keep the users table
+## clean during local iteration.
+func delete_one_shot_account(user: Dictionary) -> bool:
+	var token := str(user.get("token", ""))
+	if token.is_empty():
+		return false
+	var result: Dictionary = await http_delete(
+		"/v2/account", "bearer:" + token)
+	return (
+		result.status_code >= 200 and result.status_code < 300)
+
+
 ## Returns a `/v2/account/authenticate/device` POST body with
 ## `game_id` injected into `vars` so the runtime's
 ## BeforeAuthenticateDevice hook accepts the call. Use this in

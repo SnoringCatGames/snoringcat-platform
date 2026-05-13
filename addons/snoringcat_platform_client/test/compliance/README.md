@@ -54,6 +54,7 @@ The suite runs in one of two modes, controlled by
 | Account         | `test_account.gd`          | `/v2/account` GET returns the user block; `display_name` update round-trips. |
 | Account delete  | `test_account_delete.gd`   | `DELETE /v2/account` removes a one-shot account end-to-end (re-auth fails post-delete). Custom `delete_account` RPC documented but not yet implemented. |
 | Friends         | `test_friends.gd`          | `/v2/friend` GET returns a well-formed list; add-with-bogus-id rejects without 5xx'ing. |
+| Friends (2-user) | `test_friends_multiuser.gd` | Two real anon accounts: A → request → B accepts → both see each other as FRIEND. Canaries the `multi_session_anon` helper. |
 | Party           | `test_party.gd`            | Group create → leave roundtrip via `/v2/group`. |
 | Settings        | `test_settings.gd`         | Storage write-then-read round-trip via `/v2/storage`. |
 | Presence        | `test_presence.gd`         | `update_and_get_presence` RPC writes presence + returns online friends; rejects http_key callers (auth gate sanity). |
@@ -86,3 +87,26 @@ these later.
 5. Skip with `pending()` when an env var is missing or when
    `is_live_mode()` is false.
 6. Update the table above.
+
+### Multi-user tests
+
+`_helper.multi_session_anon(count)` mints `count` independent
+anonymous accounts in one call, returning
+`[{token, refresh_token, user_id, username, device_id}, ...]`.
+Device ids are one-shot per run (prefix `compliance-multi-`)
+so concurrent CI runs don't collide.
+
+Pair with `_helper.delete_one_shot_account(user)` in `after_each`
+when you want strict cleanup; otherwise the rows linger for
+grep-and-prune. See `test_friends_multiuser.gd` for the
+canonical pattern.
+
+### Socket tests
+
+`compliance_socket_helper.gd` wraps the Nakama SDK's
+`NakamaSocket`. It exposes `session_from_token(jwt)`,
+`create_socket()`, `connect_with_timeout(sock, session, sec)`,
+and `wait_for_signal_with_timeout(obj, name, sec)`. Combine
+with `multi_session_anon` to drive multi-socket fan-out tests
+(party `party_state_changed`, matchmaker, chat). See
+`test_socket_chat.gd` for the single-user pattern.
