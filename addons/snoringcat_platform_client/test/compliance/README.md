@@ -56,8 +56,10 @@ The suite runs in one of two modes, controlled by
 | Friends         | `test_friends.gd`          | `/v2/friend` GET returns a well-formed list; add-with-bogus-id rejects without 5xx'ing. |
 | Friends (2-user) | `test_friends_multiuser.gd` | Two real anon accounts: A → request → B accepts → both see each other as FRIEND. Canaries the `multi_session_anon` helper. |
 | Party           | `test_party.gd`            | Group create → leave roundtrip via `/v2/group`. |
+| Party (invite)  | `test_party_invite_flow.gd` | Two-user closed-group invite: A invites B, B's group state is JoinRequest(3), B accepts via `/join`, state flips to Member(2). Guards Stage 1.2/1.3 member-list shape and Stage 5.11 pending-vs-active split. |
 | Settings        | `test_settings.gd`         | Storage write-then-read round-trip via `/v2/storage`. |
 | Presence        | `test_presence.gd`         | `update_and_get_presence` RPC writes presence + returns online friends; rejects http_key callers (auth gate sanity). |
+| Presence (filter) | `test_presence_game_filter.gd` | Three-user visibility check: A↔B mutual, A→C pending. A's presence read sees B but not C, and B's record carries `game_id`. Guards Stage 3.2/3.3 mutual-only filter + game_id field. |
 | Player stats    | `test_player_stats.gd`     | `get_player_stats` (caller + explicit player_id forms; unranked defaults), `get_match_history` (always returns array, never null). |
 | Data export     | `test_data_export.gd`      | `export_player_data` envelope shape (generated_at, account, storage_objects, leaderboard_records, friends); GDPR-required path. |
 | Matchmaking     | `test_matchmaking.gd`      | Matchmaker hook is registered (via `runtime_status`); full socket flow flagged pending. |
