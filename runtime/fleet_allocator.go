@@ -311,6 +311,72 @@ type fleetAllocator struct {
 	// env. Both must be set; the runtime fails fast at boot
 	// otherwise.
 	signalingHmacSecret []byte
+	// mockDeploy short-circuits the real Edgegap allocate/poll/
+	// stop dance for compliance tests so they don't burn paid
+	// container-hours. When true, the matchmaker hook synthesizes
+	// a canned deploy response (loopback IP, fixed ports), skips
+	// the in-container `register_server` wait, and still emits
+	// `match_ready` notifications so the addon-side
+	// PlatformMatchmakingClient receives a well-formed payload.
+	// Enabled via the EDGEGAP_MOCK_DEPLOY=true env var; the
+	// runtime logs a loud warning at boot so prod never enables
+	// it by accident.
+	mockDeploy bool
+}
+
+// mockEdgegapRequestIDPrefix tags synthetic deploys so downstream
+// tooling (cost monitor, audit-followups skill) can spot mock
+// allocations in storage rows without parsing the matchmaker entry
+// list. The prefix is also surfaced via the match_ready payload's
+// `request_id` field so the addon-side test can sanity-check that
+// it ran against a mock-mode runtime.
+const mockEdgegapRequestIDPrefix = "mock-"
+
+// mockPublicIP / mockUDPPort / mockTCPPort are the canned Edgegap
+// status values mock mode hands back. Loopback so a misconfigured
+// production runtime that flipped the env var on by accident would
+// fail loudly when clients try to connect to 127.0.0.1.
+const (
+	mockPublicIP = "127.0.0.1"
+	mockUDPPort  = 14433
+	mockTCPPort  = 14434
+)
+
+// synthesizeMockDeploy returns a canned (deploy, status) pair the
+// matchmaker hook uses in EDGEGAP_MOCK_DEPLOY mode. The request_id
+// embeds the current unix nanos so two concurrent mock matches
+// don't collide on the synthetic_matches / match_metadata storage
+// rows. Ports map mirrors Dockerfile.edgegap's container ports
+// (4433/UDP for the game, 4434/TCP for signaling) so the
+// pickTCPPort path lights up the same code branch as the real
+// Edgegap response.
+func synthesizeMockDeploy(now time.Time) (
+	*edgegapDeployResponse, *edgegapStatusResponse,
+) {
+	requestID := fmt.Sprintf(
+		"%s%d", mockEdgegapRequestIDPrefix, now.UnixNano())
+	deploy := &edgegapDeployResponse{
+		RequestID: requestID,
+		Message:   "mock deploy (EDGEGAP_MOCK_DEPLOY=true)",
+	}
+	status := &edgegapStatusResponse{
+		RequestID:     requestID,
+		CurrentStatus: "Status.READY",
+		PublicIP:      mockPublicIP,
+		Ports: map[string]edgegapPort{
+			"game": {
+				External: mockUDPPort,
+				Internal: 4433,
+				Protocol: "UDP",
+			},
+			"signaling": {
+				External: mockTCPPort,
+				Internal: 4434,
+				Protocol: "TCP",
+			},
+		},
+	}
+	return deploy, status
 }
 
 // OnMatchmakerMatched is the Nakama matchmaker hook. Returning a
@@ -548,12 +614,52 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		// different default, change this list.
 		deployReq.Geographies = []string{"north_america"}
 	}
-	deploy, err := a.edgegap.Deploy(ctx, deployReq)
-	if err != nil {
-		logger.Error("edgegap deploy: %v", err)
-		return "", err
+	// Allocate. Real mode hits Edgegap; mock mode synthesizes the
+	// deploy + status response so compliance tests don't burn paid
+	// container-hours. Both paths produce the same (deploy, status)
+	// shape so every downstream step (storage writes, signaling
+	// URL, match_ready fan-out) reads from one branch only.
+	var (
+		deploy *edgegapDeployResponse
+		status *edgegapStatusResponse
+	)
+	if a.mockDeploy {
+		deploy, status = synthesizeMockDeploy(time.Now())
+		logger.Warn(
+			"EDGEGAP_MOCK_DEPLOY=true: synthesized request_id=%s"+
+				" (no real Edgegap allocation, deployReq=%+v)",
+			deploy.RequestID, deployReq)
+	} else {
+		d, err := a.edgegap.Deploy(ctx, deployReq)
+		if err != nil {
+			logger.Error("edgegap deploy: %v", err)
+			return "", err
+		}
+		logger.Info(
+			"edgegap request_id=%s, polling for ready",
+			d.RequestID)
+		deploy = d
 	}
-	logger.Info("edgegap request_id=%s, polling for ready", deploy.RequestID)
+
+	// Helper: terminate the deploy we just allocated when an
+	// allocation-side error makes it impossible to ship a
+	// usable match_ready. Without this, the deploy stays alive
+	// until Edgegap's 24h max_duration cap. No-op in mock mode
+	// (no real deploy to stop).
+	stopOnErr := func(reason string) {
+		if a.mockDeploy {
+			return
+		}
+		if stopErr := a.edgegap.Stop(ctx, deploy.RequestID); stopErr != nil {
+			logger.Warn(
+				"failed to stop orphaned deploy %s after %s: %v",
+				deploy.RequestID, reason, stopErr)
+		} else {
+			logger.Info(
+				"stopped orphaned deploy %s (%s)",
+				deploy.RequestID, reason)
+		}
+	}
 
 	// Persist the synthetic flag so match_end / match_cancel can
 	// look it up by request_id. The Edgegap env var is also there,
@@ -593,40 +699,27 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			deploy.RequestID, err)
 	}
 
-	// Poll for READY.
-	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-	var status *edgegapStatusResponse
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
-		s, err := a.edgegap.Status(pollCtx, deploy.RequestID)
-		if err != nil {
-			logger.Warn("edgegap status check: %v", err)
-		} else if s.CurrentStatus == "Status.READY" || s.CurrentStatus == "Ready" {
-			status = s
-			break
+	// Poll Edgegap for READY (real mode only). Mock mode already
+	// has a synthesized status with CurrentStatus="Status.READY"
+	// and the canned ports map, so it skips this loop entirely.
+	if !a.mockDeploy {
+		pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		deadline := time.Now().Add(90 * time.Second)
+		for time.Now().Before(deadline) {
+			s, err := a.edgegap.Status(pollCtx, deploy.RequestID)
+			if err != nil {
+				logger.Warn("edgegap status check: %v", err)
+			} else if s.CurrentStatus == "Status.READY" || s.CurrentStatus == "Ready" {
+				status = s
+				break
+			}
+			time.Sleep(2 * time.Second)
 		}
-		time.Sleep(2 * time.Second)
-	}
-	// Helper: terminate the deploy we just allocated when an
-	// allocation-side error makes it impossible to ship a
-	// usable match_ready. Without this, the deploy stays alive
-	// until Edgegap's 24h max_duration cap.
-	stopOnErr := func(reason string) {
-		if stopErr := a.edgegap.Stop(ctx, deploy.RequestID); stopErr != nil {
-			logger.Warn(
-				"failed to stop orphaned deploy %s after %s: %v",
-				deploy.RequestID, reason, stopErr)
-		} else {
-			logger.Info(
-				"stopped orphaned deploy %s (%s)",
-				deploy.RequestID, reason)
+		if status == nil {
+			stopOnErr("polling timeout")
+			return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
 		}
-	}
-
-	if status == nil {
-		stopOnErr("polling timeout")
-		return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
 	}
 
 	// Build the signed signaling URL clients connect to.
@@ -658,10 +751,16 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// window get connection-refused on every retry. The server
 	// posts to register_server immediately after binding, so
 	// the storage row's existence is the readiness signal.
-	if err := waitForServerRegistered(
-		ctx, logger, nk, deploy.RequestID); err != nil {
-		stopOnErr("server didn't register: " + err.Error())
-		return "", err
+	//
+	// Mock mode skips this — no real game server is going to
+	// register, and a 30 s wait per mock match would defeat the
+	// "fast test feedback" goal.
+	if !a.mockDeploy {
+		if err := waitForServerRegistered(
+			ctx, logger, nk, deploy.RequestID); err != nil {
+			stopOnErr("server didn't register: " + err.Error())
+			return "", err
+		}
 	}
 
 	// Notify each matched player with connection info. Each
@@ -679,6 +778,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			"session_ids":    mp.SessionIDs,
 			"transport_type": transportType,
 			"signaling_url":  signalingURL,
+		}
+		if a.mockDeploy {
+			// Surface mock mode in the payload so compliance
+			// tests can sanity-check that they ran against a
+			// mock-enabled runtime (and so a misconfigured prod
+			// flipping the env on by accident is loudly visible
+			// on the client side too).
+			connInfo["mock"] = true
 		}
 		connInfoJSON, _ := json.Marshal(connInfo)
 		if err := nk.NotificationSend(ctx, mp.UserID, subject, map[string]any{

@@ -318,6 +318,26 @@ func _resolve_game_id() -> String:
 	return OS.get_environment("PLATFORM_GAME_ID")
 
 
+## True when the runtime has EDGEGAP_MOCK_DEPLOY=true set. Tests
+## that exercise the matchmaker-fires-allocation path must check
+## this and pending() when false — otherwise a CI run against
+## prod would burn real Edgegap allocations.
+##
+## Reads runtime_status (HTTP-key gated) and returns false on
+## missing key / RPC failure / missing field, so callers can
+## treat the result as "is it safe to exercise the matchmaker
+## end-to-end."
+func is_mock_deploy_mode() -> bool:
+	if http_key().is_empty():
+		return false
+	var result: Dictionary = await http_key_rpc("runtime_status")
+	if result.status_code != 200:
+		return false
+	if not (result.inner is Dictionary):
+		return false
+	return bool(result.inner.get("edgegap_mock_deploy", false))
+
+
 ## Convenience: call a server-to-server RPC by name. The RPC's
 ## payload is sent as the request body. We add `unwrap=true`
 ## to the URL so Nakama treats the body as the raw payload

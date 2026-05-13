@@ -4,9 +4,15 @@
 // image and mounted at /nakama/data/modules/snoringcat.so.
 // Nakama loads the plugin at startup and calls InitModule.
 //
-// Hooks registered (when EDGEGAP_TOKEN is set):
+// Hooks registered (when EDGEGAP_TOKEN is set, OR when
+// EDGEGAP_MOCK_DEPLOY=true is set for compliance-test mode):
 //   - MatchmakerMatched: allocates an Edgegap deployment for the
 //     matched players and notifies them with connection info.
+//     In EDGEGAP_MOCK_DEPLOY mode, the Edgegap allocation is
+//     synthesized (no real container spin-up); match_ready
+//     notifications carry `"mock": true` so the compliance tests
+//     can sanity-check that they ran against the mock-enabled
+//     runtime. See Stage 8.13 of MULTI_GAME_ROADMAP.md.
 //
 // Hooks registered (always):
 //   - BeforeAuthenticate{Device,Google,Facebook,Apple,Steam}:
@@ -82,12 +88,25 @@ func InitModule(
 	}
 
 	edgegapToken := env["EDGEGAP_TOKEN"]
+	// EDGEGAP_MOCK_DEPLOY=true short-circuits the matchmaker
+	// hook's Edgegap allocation path so compliance tests don't
+	// burn paid container-hours. Mock mode also enables the
+	// matchmaker hook when EDGEGAP_TOKEN is unset (so a fresh
+	// test Nakama can run end-to-end matchmaking flows without
+	// a real Edgegap account). The runtime logs a loud warning at
+	// boot and surfaces the flag via runtime_status so a prod
+	// instance that flipped this on by accident is loudly
+	// visible. Stage 8.13 of MULTI_GAME_ROADMAP.md.
+	mockDeploy := env["EDGEGAP_MOCK_DEPLOY"] == "true" ||
+		env["EDGEGAP_MOCK_DEPLOY"] == "1"
 	// EDGEGAP_APP_NAME and EDGEGAP_APP_VERSION are required when
-	// the matchmaker hook is enabled (i.e. when EDGEGAP_TOKEN is
-	// set). When the hook is disabled, both can be empty — the
-	// runtime still loads and serves RPCs, just without fleet
+	// the matchmaker hook is enabled in real (non-mock) mode.
+	// When the hook is disabled, both can be empty — the runtime
+	// still loads and serves RPCs, just without fleet
 	// allocation. This module is platform-shared (multiple games
-	// can mount it), so there's no game-specific default.
+	// can mount it), so there's no game-specific default. Mock
+	// mode supplies dummy defaults below so a bare test Nakama
+	// can boot with just EDGEGAP_MOCK_DEPLOY=true.
 	appName := env["EDGEGAP_APP_NAME"]
 	appVersion := env["EDGEGAP_APP_VERSION"]
 
@@ -108,12 +127,13 @@ func InitModule(
 	// `registered` at call time (it captures &registered, not a
 	// value), so subsequent registrations below show up
 	// automatically.
-	matchmakerHookEnabled := edgegapToken != ""
+	matchmakerHookEnabled := edgegapToken != "" || mockDeploy
 	registered := []string{}
 	statusFn := statusRpcFactory(runtimeStatusConfig{
 		EdgegapAppName:       appName,
 		EdgegapAppVersion:    appVersion,
 		EdgegapTokenSet:      edgegapToken != "",
+		EdgegapMockDeploy:    mockDeploy,
 		MatchmakerHookActive: matchmakerHookEnabled,
 		RegisteredRpcs:       &registered,
 		Games:                &games,
@@ -162,9 +182,10 @@ func InitModule(
 	// (to allocate deployments) and matchLifecycle.MatchEndRpc
 	// (to terminate them on match end). Stays nil if no token
 	// is configured; matchLifecycle no-ops the stop call in
-	// that case.
+	// that case. Mock mode also leaves it nil — the allocator
+	// branches on a.mockDeploy and never reads the client.
 	var edgegap *edgegapClient
-	if matchmakerHookEnabled {
+	if edgegapToken != "" {
 		edgegap = &edgegapClient{token: edgegapToken}
 	}
 
@@ -174,37 +195,71 @@ func InitModule(
 				" not registered. Players will pair but never" +
 				" receive match_ready notifications. Set the" +
 				" env var on the Nakama host and restart the" +
-				" container to recover.")
-	} else if appName == "" || appVersion == "" {
-		// EDGEGAP_TOKEN is set but the app coordinates aren't.
-		// Fail loudly rather than silently allocating against
-		// a wrong default — this runtime is platform-shared and
-		// has no game-specific fallback.
-		return runtime.NewError(
-			"EDGEGAP_TOKEN set but EDGEGAP_APP_NAME and/or"+
-				" EDGEGAP_APP_VERSION missing. Both must be"+
-				" set in the Nakama runtime env when the"+
-				" matchmaker hook is enabled.", 3)
-	} else if env["SIGNALING_DOMAIN"] == "" ||
-		env["SIGNALING_HMAC_SECRET"] == "" {
-		// Fail fast rather than allocate deploys whose
-		// match_ready notifications would carry an empty
-		// signaling_url. Both vars must be wired on the
-		// Nakama runtime env (config.yml's runtime.env
-		// block) before the matchmaker hook is useful.
-		return runtime.NewError(
-			"EDGEGAP_TOKEN set but SIGNALING_DOMAIN and/or"+
-				" SIGNALING_HMAC_SECRET missing. Both must be"+
-				" set in the Nakama runtime env when the"+
-				" matchmaker hook is enabled.", 3)
+				" container to recover. (Set" +
+				" EDGEGAP_MOCK_DEPLOY=true to enable the hook" +
+				" in compliance-test mode without a real" +
+				" Edgegap account.)")
 	} else {
+		if mockDeploy {
+			// Loud, repeated warning so a misconfigured prod
+			// instance with mock mode flipped on is impossible
+			// to miss in the daily prod-health-check digest.
+			logger.Warn(
+				"EDGEGAP_MOCK_DEPLOY=true: matchmaker hook will" +
+					" synthesize deploy responses (no real" +
+					" Edgegap allocations). This MUST be off in" +
+					" production.")
+			// Mock mode supplies reasonable defaults so a fresh
+			// test Nakama can boot with just EDGEGAP_MOCK_DEPLOY
+			// set. Real-mode defaults stay strict (fail-fast on
+			// missing config).
+			if appName == "" {
+				appName = "mock-app"
+			}
+			if appVersion == "" {
+				appVersion = "v0"
+			}
+		} else if appName == "" || appVersion == "" {
+			// Real mode: EDGEGAP_TOKEN is set but the app
+			// coordinates aren't. Fail loudly rather than
+			// silently allocating against a wrong default —
+			// this runtime is platform-shared and has no
+			// game-specific fallback.
+			return runtime.NewError(
+				"EDGEGAP_TOKEN set but EDGEGAP_APP_NAME and/or"+
+					" EDGEGAP_APP_VERSION missing. Both must be"+
+					" set in the Nakama runtime env when the"+
+					" matchmaker hook is enabled.", 3)
+		}
+		// Signaling URL config. Real mode: fail-fast on missing
+		// env so prod never ships match_ready notifications with
+		// a half-formed signaling URL. Mock mode: hand out
+		// placeholder values so a fresh test Nakama can boot
+		// without operator pre-config.
+		signalingDomain := env["SIGNALING_DOMAIN"]
+		signalingHmacSecret := env["SIGNALING_HMAC_SECRET"]
+		if mockDeploy {
+			if signalingDomain == "" {
+				signalingDomain = "mock-signaling.test"
+			}
+			if signalingHmacSecret == "" {
+				signalingHmacSecret = "mock-hmac-secret"
+			}
+		} else if signalingDomain == "" || signalingHmacSecret == "" {
+			return runtime.NewError(
+				"EDGEGAP_TOKEN set but SIGNALING_DOMAIN and/or"+
+					" SIGNALING_HMAC_SECRET missing. Both must be"+
+					" set in the Nakama runtime env when the"+
+					" matchmaker hook is enabled.", 3)
+		}
 		alloc := &fleetAllocator{
 			edgegap:             edgegap,
 			appName:             appName,
 			appVersion:          appVersion,
-			signalingDomain:     env["SIGNALING_DOMAIN"],
-			signalingHmacSecret: []byte(env["SIGNALING_HMAC_SECRET"]),
+			signalingDomain:     signalingDomain,
+			signalingHmacSecret: []byte(signalingHmacSecret),
 			games:               games,
+			mockDeploy:          mockDeploy,
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {
@@ -348,9 +403,9 @@ func InitModule(
 	startAccountCron(logger, nk)
 
 	logger.Info(
-		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t games=%v)",
+		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t mock_deploy=%t games=%v)",
 		BuildID, appName, appVersion, matchmakerHookEnabled,
-		games.GameIDs())
+		mockDeploy, games.GameIDs())
 	return nil
 }
 

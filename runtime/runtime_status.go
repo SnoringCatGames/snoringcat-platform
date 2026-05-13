@@ -30,6 +30,11 @@ type runtimeStatusResponse struct {
 	EdgegapAppName     string   `json:"edgegap_app_name"`
 	EdgegapAppVersion  string   `json:"edgegap_app_version"`
 	EdgegapTokenSet    bool     `json:"edgegap_token_set"`
+	// EdgegapMockDeploy is true when the runtime is short-
+	// circuiting real Edgegap allocations (Stage 8.13). MUST be
+	// false in production; the daily prod-health-check job
+	// alerts on a true value.
+	EdgegapMockDeploy  bool     `json:"edgegap_mock_deploy"`
 	RegisteredRpcs     []string `json:"registered_rpcs"`
 	RegisteredHooks    []string `json:"registered_hooks"`
 	RegisteredGames    []string `json:"registered_games"`
@@ -55,6 +60,7 @@ type runtimeStatusConfig struct {
 	EdgegapAppName       string
 	EdgegapAppVersion    string
 	EdgegapTokenSet      bool
+	EdgegapMockDeploy    bool
 	MatchmakerHookActive bool
 	RegisteredRpcs       *[]string
 	Games                **perGameConfig
@@ -108,6 +114,7 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 			EdgegapAppName:    cfg.EdgegapAppName,
 			EdgegapAppVersion: cfg.EdgegapAppVersion,
 			EdgegapTokenSet:   cfg.EdgegapTokenSet,
+			EdgegapMockDeploy: cfg.EdgegapMockDeploy,
 			RegisteredRpcs:    rpcs,
 			RegisteredHooks:   hooks,
 			RegisteredGames:   games,
