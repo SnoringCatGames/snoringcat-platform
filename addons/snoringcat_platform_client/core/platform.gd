@@ -12,6 +12,27 @@
 ##     Platform.api          — generic HTTP client
 ##     Platform.token_store  — encrypted token persistence
 ##
+## Subsystem references (populated incrementally as Stage 6 of the
+## multi-game extraction lands each one):
+##     Platform.auth          — sign-in, sign-out, token refresh
+##     Platform.account       — profile, link/unlink, delete
+##     Platform.friends       — list, add by code, accept/decline
+##     Platform.party         — create, invite, leave, chat
+##     Platform.presence      — set / read presence
+##     Platform.settings      — local + cloud sync (global / per-game)
+##     Platform.matchmaking   — start, poll, cancel
+##     Platform.session       — connect / disconnect (delegates to
+##                              game-side session-provider)
+##     Platform.screens       — reusable auth / consent screens
+##
+## Game code assigns its own implementations into these slots (or
+## the addon does, once a subsystem is extracted). Today all
+## subsystem properties default to null and the consuming game
+## populates whichever ones have been extracted via
+## Platform.register_subsystem(name, value). Slots that have not
+## yet been extracted stay null; consumers fall back to G.* in the
+## meantime.
+##
 ## Implementation note: subsystem scripts are resolved via
 ## runtime `load()` rather than `preload()`. Godot 4.6 has a
 ## parser-cache bug where preloading sibling addon files at
@@ -28,9 +49,29 @@ var game_id: String = ""
 var api_base_url: String = ""
 var sdk_version: String = ""
 
-# Subsystem references. Untyped to dodge the same parser-cache bug.
+# Core references populated by initialize(). Untyped to dodge the
+# same parser-cache bug that prevents class_name imports here.
 var token_store
 var api
+
+# Subsystem slots. Assigned by the consuming game during its
+# bootstrap, after Platform.initialize() runs, via:
+#     Platform.register_subsystem("friends", friends_api_client)
+#
+# Each slot stays null until the corresponding Stage 6 extraction
+# lands and the consuming game wires the implementation in. Code
+# that reads a subsystem must tolerate null (typical pattern:
+# `if Platform.friends != null: Platform.friends.foo(...)`) until
+# the extraction completes.
+var auth
+var account
+var friends
+var party
+var presence
+var settings
+var matchmaking
+var session
+var screens
 
 
 func initialize(config: Dictionary) -> void:
@@ -64,3 +105,31 @@ func initialize(config: Dictionary) -> void:
 
 	is_initialized = true
 	initialized.emit()
+
+
+## Assign a subsystem implementation. The consuming game calls this
+## during bootstrap to wire its own *_api_client / manager objects
+## into the Platform.<name> surface, e.g.:
+##
+##     Platform.register_subsystem("friends", friends_api_client)
+##
+## Asserts on unknown names so typos surface at first call rather
+## than turning into silent nulls. Re-registration is allowed (the
+## last call wins) so a test harness can swap an implementation
+## without restarting.
+func register_subsystem(subsystem_name: String, value) -> void:
+	match subsystem_name:
+		"auth": auth = value
+		"account": account = value
+		"friends": friends = value
+		"party": party = value
+		"presence": presence = value
+		"settings": settings = value
+		"matchmaking": matchmaking = value
+		"session": session = value
+		"screens": screens = value
+		_:
+			assert(
+				false,
+				"Platform.register_subsystem: unknown name '%s'"
+						% subsystem_name)
