@@ -32,6 +32,14 @@ const _STATE_PENDING_OUTGOING := 1
 const _STATE_PENDING_INCOMING := 2
 const _STATE_BANNED := 3
 
+# Pagination caps for fetch_friends. Matches the runtime
+# account.go cascade pattern (10 pages × 100 = 1000 entries) so a
+# pathologically-large friend list stays bounded without an
+# unbounded loop. Real player lists are << 100 in current
+# deployment; this only matters for future high-cap accounts.
+const _FRIENDS_PAGE_SIZE := 100
+const _FRIENDS_PAGE_CAP := 10
+
 
 var cached_friends: Array[Dictionary] = []
 var cached_sent_requests: Array[Dictionary] = []
@@ -49,30 +57,39 @@ func fetch_friends() -> void:
 	if session == null:
 		_is_busy = false
 		return
-	var result = await Platform.nakama_client.list_friends_async(
-		session, null, 100, null)
+	var next_friends: Array[Dictionary] = []
+	var next_sent: Array[Dictionary] = []
+	var next_incoming: Array[Dictionary] = []
+	var cursor: String = ""
+	for page in _FRIENDS_PAGE_CAP:
+		var result = await Platform.nakama_client.list_friends_async(
+			session, null, _FRIENDS_PAGE_SIZE, cursor)
+		if result.is_exception():
+			_is_busy = false
+			request_failed.emit(_describe(result.get_exception()))
+			return
+		for f in result.friends:
+			var entry := {
+				"player_id": f.user.id,
+				"display_name": f.user.display_name,
+				"username": f.user.username,
+				"avatar_url": f.user.avatar_url,
+				"online": f.user.online,
+			}
+			match f.state:
+				_STATE_FRIEND:
+					next_friends.append(entry)
+				_STATE_PENDING_OUTGOING:
+					next_sent.append(entry)
+				_STATE_PENDING_INCOMING:
+					next_incoming.append(entry)
+		cursor = result.cursor if result.cursor != null else ""
+		if cursor.is_empty():
+			break
 	_is_busy = false
-	if result.is_exception():
-		request_failed.emit(_describe(result.get_exception()))
-		return
-	cached_friends = []
-	cached_sent_requests = []
-	cached_incoming_requests = []
-	for f in result.friends:
-		var entry := {
-			"player_id": f.user.id,
-			"display_name": f.user.display_name,
-			"username": f.user.username,
-			"avatar_url": f.user.avatar_url,
-			"online": f.user.online,
-		}
-		match f.state:
-			_STATE_FRIEND:
-				cached_friends.append(entry)
-			_STATE_PENDING_OUTGOING:
-				cached_sent_requests.append(entry)
-			_STATE_PENDING_INCOMING:
-				cached_incoming_requests.append(entry)
+	cached_friends = next_friends
+	cached_sent_requests = next_sent
+	cached_incoming_requests = next_incoming
 	friends_received.emit({
 		"friends": cached_friends,
 		"sent_requests": cached_sent_requests,
