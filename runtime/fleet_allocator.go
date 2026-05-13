@@ -366,6 +366,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// theory; the dominant-vote breaks ties without dropping
 	// the match.
 	gameIDVotes := map[string]int{}
+	// Stage 3.9: per-user client_protocol_version tally for the
+	// pre-allocate protocol check. Empty / missing entries are
+	// graceful (pre-3.9 clients omit the property; they pass
+	// through). The check fires only when at least one entry
+	// declares a version AND the dominant game's registered
+	// ProtocolVersion is known. Walked once after we resolve
+	// matchGameID below.
+	protocolByUser := map[string]int{}
 	for _, e := range entries {
 		userID := e.GetPresence().GetUserId()
 
@@ -382,6 +390,11 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			}
 			if gid, ok := props["game_id"].(string); ok && gid != "" {
 				gameIDVotes[gid]++
+			}
+			if raw, ok := props["client_protocol_version"].(string); ok && raw != "" {
+				if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+					protocolByUser[userID] = parsed
+				}
 			}
 		}
 		platforms = append(platforms, platform)
@@ -416,6 +429,39 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// (no votes) leave matchGameID empty, in which case match_end
 	// falls back to the legacy bare leaderboard ID.
 	matchGameID := pickDominantGameID(gameIDVotes, a.games, logger)
+
+	// Stage 3.9: pre-allocate protocol_version check. Each
+	// post-3.9 client declares its compile-time protocol_version
+	// as a ticket property; we compare against the registered
+	// game's ProtocolVersion from the games cache and abort the
+	// match before burning an Edgegap deploy if any declared
+	// version mismatches. Pre-3.9 clients (no declared property)
+	// pass through — the rollout is graceful and the boot-time
+	// version_check on the client side is still the primary gate.
+	// Skipped when we don't know which game's protocol to compare
+	// against (no dominant game_id, or games cache empty in
+	// bootstrap).
+	if matchGameID != "" && a.games != nil && len(protocolByUser) > 0 {
+		if gc, ok := a.games.Get(matchGameID); ok && gc.ProtocolVersion > 0 {
+			expected := gc.ProtocolVersion
+			mismatched := map[string]int{}
+			for uid, got := range protocolByUser {
+				if got != expected {
+					mismatched[uid] = got
+				}
+			}
+			if len(mismatched) > 0 {
+				logger.Warn(
+					"protocol_version mismatch in match: game=%s"+
+						" expected=%d mismatched=%v;"+
+						" aborting before edgegap allocation",
+					matchGameID, expected, mismatched)
+				abortProtocolMismatch(
+					ctx, logger, nk, entries, expected, mismatched)
+				return "", nil
+			}
+		}
+	}
 
 	// Stage 3.7: resolve the Edgegap app coordinates per match
 	// from the games table when we know the match's game_id, so
@@ -645,6 +691,58 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
+}
+
+// abortProtocolMismatch sends a per-player `match_failed`
+// notification to every matched user and is called instead of
+// allocating an Edgegap deploy when at least one entry's declared
+// `client_protocol_version` differs from the game's registered
+// ProtocolVersion. Mismatched users get the actionable "your
+// version is stale" payload; compatible users get a generic
+// abort-shaped payload so they don't sit on a 120s client
+// timeout. Best-effort — a failed NotificationSend logs but does
+// not abort the abort.
+//
+// Notification subject `match_failed` is parsed by the addon-side
+// `PlatformMatchmakingClient`, which emits `matchmaking_failed`
+// with the human-readable message. The game's failure classifier
+// surfaces it as a fatal failure (toast + back to lobby).
+func abortProtocolMismatch(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	entries []runtime.MatchmakerEntry,
+	expected int,
+	mismatched map[string]int,
+) {
+	subject := "match_failed"
+	for _, e := range entries {
+		userID := e.GetPresence().GetUserId()
+		gotProto, isMismatched := mismatched[userID]
+		content := map[string]any{
+			"reason":   "protocol_mismatch",
+			"expected": expected,
+		}
+		if isMismatched {
+			content["got"] = gotProto
+			content["message"] = fmt.Sprintf(
+				"Your client is out of date (protocol %d,"+
+					" server expects %d). Please restart"+
+					" the game to update.",
+				gotProto, expected)
+		} else {
+			content["message"] = fmt.Sprintf(
+				"Match aborted: another player's client is"+
+					" out of date (server expects protocol %d).",
+				expected)
+		}
+		if err := nk.NotificationSend(
+			ctx, userID, subject, content, 100, "", true,
+		); err != nil {
+			logger.Warn(
+				"notify match_failed to %s: %v", userID, err)
+		}
+	}
 }
 
 // pickDominantGameID returns the most-voted game_id from
