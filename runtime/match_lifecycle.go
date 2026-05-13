@@ -161,6 +161,27 @@ type matchEndPlayer struct {
 	Bumps  int    `json:"bumps"`
 }
 
+// clampPlayerStats coerces score/kills/bumps to the [0, max*]
+// range in place. Extracted from MatchEndRpc so the bounding rule
+// is unit-testable without a Nakama runtime mock.
+func clampPlayerStats(p *matchEndPlayer) {
+	if p.Score < 0 {
+		p.Score = 0
+	} else if p.Score > maxScore {
+		p.Score = maxScore
+	}
+	if p.Kills < 0 {
+		p.Kills = 0
+	} else if p.Kills > maxKills {
+		p.Kills = maxKills
+	}
+	if p.Bumps < 0 {
+		p.Bumps = 0
+	} else if p.Bumps > maxBumps {
+		p.Bumps = maxBumps
+	}
+}
+
 // readMatchMetadata returns the per-match metadata fleet_allocator
 // stashed when the deploy was created. Empty metadata (no row, or
 // unreadable row) returns the zero value with no error — the caller
@@ -295,29 +316,12 @@ func (m *matchLifecycle) MatchEndRpc(
 	}
 	for i := range args.Players {
 		p := &args.Players[i]
-		if p.Score < 0 || p.Score > maxScore {
+		origScore := p.Score
+		clampPlayerStats(p)
+		if origScore != p.Score {
 			logger.Warn(
-				"match_end: clamping score=%d for user=%s",
-				p.Score, p.UserID)
-			if p.Score < 0 {
-				p.Score = 0
-			} else {
-				p.Score = maxScore
-			}
-		}
-		if p.Kills < 0 || p.Kills > maxKills {
-			if p.Kills < 0 {
-				p.Kills = 0
-			} else {
-				p.Kills = maxKills
-			}
-		}
-		if p.Bumps < 0 || p.Bumps > maxBumps {
-			if p.Bumps < 0 {
-				p.Bumps = 0
-			} else {
-				p.Bumps = maxBumps
-			}
+				"match_end: clamped score=%d→%d for user=%s",
+				origScore, p.Score, p.UserID)
 		}
 	}
 
