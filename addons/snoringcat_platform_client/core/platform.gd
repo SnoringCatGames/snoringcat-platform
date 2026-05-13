@@ -54,6 +54,14 @@ var sdk_version: String = ""
 var token_store
 var api
 
+# Shared NakamaClient singleton. Populated by the consuming game's
+# auth_client on first creation (Stage 6.4: auth lives game-side
+# until Stage 6.2 extracts it into Platform.auth). All addon
+# subsystems (friends, presence, party, matchmaking, ...) read this
+# field rather than reaching into game code so the dependency
+# direction is addon→Platform, not addon→game.
+var nakama_client
+
 # Subsystem slots. Assigned by the consuming game during its
 # bootstrap, after Platform.initialize() runs, via:
 #     Platform.register_subsystem("friends", friends_api_client)
@@ -105,6 +113,20 @@ func initialize(config: Dictionary) -> void:
 
 	is_initialized = true
 	initialized.emit()
+
+
+## Constructs a NakamaSession from the persisted JWT + refresh
+## token in token_store. Returns null when the store has no valid
+## session. Subsystems use this to attach a session to authenticated
+## Nakama SDK calls.
+func build_session_from_store() -> NakamaSession:
+	if token_store == null or token_store.jwt_token.is_empty():
+		return null
+	return NakamaSession.new(
+		token_store.jwt_token,
+		false,
+		token_store.refresh_token,
+		null)
 
 
 ## Assign a subsystem implementation. The consuming game calls this
