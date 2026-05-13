@@ -317,6 +317,12 @@ func InitModule(
 		return err
 	}
 
+	// Stage 1.4 hard-delete cron. Scans account_deletion_queue
+	// across all users every hour, calls nk.AccountDeleteId for
+	// each row whose scheduled_for has elapsed, and drops the
+	// queue row. See runtime/account_cron.go.
+	startAccountCron(logger, nk)
+
 	logger.Info(
 		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t games=%v)",
 		BuildID, appName, appVersion, matchmakerHookEnabled,
