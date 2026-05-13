@@ -48,6 +48,13 @@
 //   - party_transfer_leadership: leader hands the party's lead
 //                            role to another active member.
 //   - delete_account:      soft-delete + cascade (GDPR / CCPA).
+//   - get_account_deletion_status: check whether the caller has
+//                            an active account_deletion_queue
+//                            row (Stage 1.5). Client polls at
+//                            auth_completed to prompt cancel.
+//   - cancel_account_deletion: restore username + display name
+//                            and drop the queue row before the
+//                            cron fires (Stage 1.5).
 //   - get_game_config:     read a game's public per_game_config.
 package main
 
@@ -313,6 +320,16 @@ func InitModule(
 	if err := addRpc(
 		"delete_account",
 		deleteAccountRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"get_account_deletion_status",
+		getAccountDeletionStatusRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"cancel_account_deletion",
+		cancelAccountDeletionRpcFactory(games)); err != nil {
 		return err
 	}
 

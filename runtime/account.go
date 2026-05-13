@@ -15,26 +15,21 @@ import (
 // PLATFORM_ARCHITECTURE.md §"Account deletion":
 //
 //   1. Queue a record in `account_deletion_queue` with
-//      `scheduled_for = now + 30d`. A future cron job (TBD)
-//      reads this and runs `nk.AccountDeleteId` once the grace
-//      period elapses.
+//      `scheduled_for = now + 30d`. The hourly account_cron
+//      consumes elapsed rows by calling nk.AccountDeleteId
+//      (Stage 1.4).
 //   2. Anonymize the user's display name to "[deleted]".
 //   3. Cascade-clear: friends, group memberships, presence,
 //      leaderboards, and user-owned storage.
-//   4. Ban the user so the existing JWT can no longer
-//      authenticate and any retained identity link (Google /
-//      device / etc.) can't be used to re-enter during the
-//      grace period.
 //
-// The hard-delete cron itself is not yet implemented. For Stage
-// 1 the audit trail (queue record) is the durable artifact; the
-// game-visible state is scrubbed immediately and the user is
-// banned, so the soft-delete is the user-facing fact.
-//
-// Cancellation-from-grace UI is also TBD. Once it lands, the
-// flow will read `account_deletion_queue` on sign-in, prompt the
-// user to confirm cancellation, and remove the queue record +
-// unban the user.
+// Sign-in stays available during the grace window so the user
+// can cancel via `cancel_account_deletion` RPC (Stage 1.5).
+// `get_account_deletion_status` lets the client detect the
+// queued state and prompt at auth time. The pre-1.5 design also
+// banned the user via UsersBanId — that was dropped here so the
+// cancellation surface is reachable; the boot-time
+// get_account_deletion_status check is now the gate that
+// surfaces the prompt instead.
 
 const (
 	// accountDeletionCollection holds grace-period soft-delete
@@ -115,6 +110,30 @@ type deleteAccountResp struct {
 	UserID       string `json:"user_id"`
 	ScheduledFor int64  `json:"scheduled_for"`
 	GraceDays    int    `json:"grace_days"`
+}
+
+// accountDeletionStatusResp is the public-facing view of the
+// caller's account_deletion_queue row, surfaced via the
+// get_account_deletion_status RPC (Stage 1.5). `pending=false`
+// means the caller has no queued row; the other fields are then
+// undefined.
+type accountDeletionStatusResp struct {
+	Pending             bool   `json:"pending"`
+	UserID              string `json:"user_id,omitempty"`
+	RequestedAt         int64  `json:"requested_at,omitempty"`
+	ScheduledFor        int64  `json:"scheduled_for,omitempty"`
+	OriginalUsername    string `json:"original_username,omitempty"`
+	OriginalDisplayName string `json:"original_display_name,omitempty"`
+}
+
+// cancelAccountDeletionResp echoes the restored identity so the
+// client can patch its session-store view without round-tripping
+// through AccountGetId. Stage 1.5.
+type cancelAccountDeletionResp struct {
+	OK          bool   `json:"ok"`
+	UserID      string `json:"user_id"`
+	Username    string `json:"username,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type deletionQueueRecord struct {
@@ -363,13 +382,13 @@ func deleteAccountRpc(
 		}
 	}
 
-	// 4. Ban so the existing session token and any linked
-	// identity provider can no longer authenticate.
-	if err := nk.UsersBanId(
-		ctx, []string{userID}); err != nil {
-		logger.Warn(
-			"ban account %s: %v", userID, err)
-	}
+	// Stage 1.5: no more UsersBanId. The user remains able to
+	// authenticate during the 30-day grace window so the
+	// cancellation flow can prompt them on next sign-in via
+	// get_account_deletion_status + cancel_account_deletion.
+	// The cascade above has already scrubbed the game-visible
+	// state; the queue row + this remaining (anonymized) account
+	// shell is what the cron consumes when the grace elapses.
 
 	logger.Info(
 		"account_deletion soft-deleted user=%s"+
@@ -383,6 +402,217 @@ func deleteAccountRpc(
 		ScheduledFor: scheduledFor.Unix(),
 		GraceDays: int(
 			accountDeletionGracePeriod / (24 * time.Hour)),
+	}
+	out, _ := json.Marshal(resp)
+	return string(out), nil
+}
+
+// getAccountDeletionStatusRpcFactory threads the per-game config
+// store for the standard requireGameID check. Stage 1.5.
+func getAccountDeletionStatusRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		_ string,
+	) (string, error) {
+		return getAccountDeletionStatusRpc(
+			ctx, logger, nk, games)
+	}
+}
+
+// getAccountDeletionStatusRpc returns whether the caller's
+// account has an active soft-deletion queue row. Clients hit
+// this on auth_completed and, if pending=true, prompt the user
+// to either confirm or cancel via cancel_account_deletion.
+// Stage 1.5.
+func getAccountDeletionStatusRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: accountDeletionCollection,
+			Key:        accountDeletionKey,
+			UserID:     userID,
+		}},
+	)
+	if err != nil {
+		logger.Error(
+			"account_deletion_status read user=%s: %v",
+			userID, err)
+		return "", err
+	}
+	if len(reads) == 0 {
+		out, _ := json.Marshal(
+			accountDeletionStatusResp{Pending: false})
+		return string(out), nil
+	}
+	record := deletionQueueRecord{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &record); err != nil {
+		// Malformed row — surface as "no pending deletion"
+		// rather than blocking the user. The cron will
+		// eventually skip-and-warn the same row.
+		logger.Warn(
+			"account_deletion_status: malformed row user=%s: %v",
+			userID, err)
+		out, _ := json.Marshal(
+			accountDeletionStatusResp{Pending: false})
+		return string(out), nil
+	}
+	out, _ := json.Marshal(accountDeletionStatusResp{
+		Pending:             true,
+		UserID:              userID,
+		RequestedAt:         record.RequestedAt,
+		ScheduledFor:        record.ScheduledFor,
+		OriginalUsername:    record.OriginalUsername,
+		OriginalDisplayName: record.OriginalDisplayName,
+	})
+	return string(out), nil
+}
+
+func cancelAccountDeletionRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		_ string,
+	) (string, error) {
+		return cancelAccountDeletionRpc(
+			ctx, logger, nk, games)
+	}
+}
+
+// cancelAccountDeletionRpc resurrects the caller's account
+// during the grace window:
+//   1. Reads the original username + display name from the
+//      account_deletion_queue row.
+//   2. Restores them via AccountUpdateId so the user-visible
+//      profile is back to its pre-deletion shape.
+//   3. Deletes the queue row so the cron stops counting down.
+//
+// Returns INVALID_ARGUMENT (9, FailedPrecondition) when the
+// caller has no pending deletion (caller asked to cancel
+// nothing) so the client UI can show "your account isn't
+// scheduled for deletion" cleanly.
+//
+// Stage 1.5.
+func cancelAccountDeletionRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: accountDeletionCollection,
+			Key:        accountDeletionKey,
+			UserID:     userID,
+		}},
+	)
+	if err != nil {
+		logger.Error(
+			"cancel_account_deletion read user=%s: %v",
+			userID, err)
+		return "", err
+	}
+	if len(reads) == 0 {
+		return "", runtime.NewError(
+			"no pending account deletion to cancel", 9)
+	}
+	record := deletionQueueRecord{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &record); err != nil {
+		// Treat as "no row" — clearer for the caller than
+		// returning an internal error for a corrupt audit row
+		// they didn't cause.
+		logger.Warn(
+			"cancel_account_deletion: malformed row user=%s: %v",
+			userID, err)
+		return "", runtime.NewError(
+			"no pending account deletion to cancel", 9)
+	}
+
+	// Restore the pre-anonymization profile. AccountUpdateId
+	// treats empty strings as "no change", so we only push the
+	// fields we actually captured. If the queue row lacked an
+	// original username (pre-Stage-1.4 audit shape), we leave
+	// the field alone.
+	if err := nk.AccountUpdateId(
+		ctx,
+		userID,
+		record.OriginalUsername,
+		nil,
+		record.OriginalDisplayName,
+		"",
+		"",
+		"",
+		"",
+	); err != nil {
+		logger.Warn(
+			"cancel_account_deletion restore user=%s: %v",
+			userID, err)
+		// Continue: queue-row delete below is the bit that
+		// stops the cron. A failed restore leaves the user
+		// looking like "[deleted]" but their account is alive.
+	}
+
+	if err := nk.StorageDelete(
+		ctx,
+		[]*runtime.StorageDelete{{
+			Collection: accountDeletionCollection,
+			Key:        accountDeletionKey,
+			UserID:     userID,
+		}},
+	); err != nil {
+		logger.Error(
+			"cancel_account_deletion delete row user=%s: %v",
+			userID, err)
+		return "", err
+	}
+
+	logger.Info(
+		"account_deletion cancelled user=%s"+
+			" (was scheduled_for=%s)",
+		userID,
+		time.Unix(record.ScheduledFor, 0).Format(time.RFC3339))
+
+	resp := cancelAccountDeletionResp{
+		OK:          true,
+		UserID:      userID,
+		Username:    record.OriginalUsername,
+		DisplayName: record.OriginalDisplayName,
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
