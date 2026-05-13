@@ -186,6 +186,15 @@ func InitModule(
 		return err
 	}
 
+	// Stage 7.12 + 7.13: BeforeAddFriends hook enforces a cap on
+	// pending outgoing friend requests and a per-caller rate
+	// limit on add-by-username ("friend code") calls. Always on;
+	// no env flag. See runtime/friends_limits.go.
+	if err := registerFriendsLimitHook(
+		initializer, newFriendsLimiter()); err != nil {
+		return err
+	}
+
 	// Shared Edgegap client used by both the matchmaker hook
 	// (to allocate deployments) and matchLifecycle.MatchEndRpc
 	// (to terminate them on match end). Stays nil if no token
