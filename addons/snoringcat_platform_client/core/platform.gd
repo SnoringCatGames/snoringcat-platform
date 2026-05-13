@@ -49,17 +49,33 @@ var game_id: String = ""
 var api_base_url: String = ""
 var sdk_version: String = ""
 
+# Nakama connection (Snoring Cat platform infrastructure, not
+# game-specific). Populated from Platform.initialize config.
+var nakama_host: String = ""
+var nakama_port: int = 443
+var nakama_scheme: String = "https"
+var nakama_server_key: String = ""
+var nakama_http_key: String = ""
+
+# OAuth surface (game-specific URLs / IDs). Populated from
+# Platform.initialize config. The auth subsystem reads these
+# instead of reaching back into game-side settings.
+var oauth_callback_url: String = ""
+var google_token_broker_url: String = ""
+var google_oauth_client_id: String = ""
+var facebook_oauth_client_id: String = ""
+
 # Core references populated by initialize(). Untyped to dodge the
 # same parser-cache bug that prevents class_name imports here.
 var token_store
 var api
 
-# Shared NakamaClient singleton. Populated by the consuming game's
-# auth_client on first creation (Stage 6.4: auth lives game-side
-# until Stage 6.2 extracts it into Platform.auth). All addon
-# subsystems (friends, presence, party, matchmaking, ...) read this
-# field rather than reaching into game code so the dependency
-# direction is addon→Platform, not addon→game.
+# Shared NakamaClient singleton. Lazily created by
+# get_nakama_client() on first access using the nakama_* fields
+# above. All addon subsystems (friends, presence, party,
+# matchmaking, auth, ...) read this field rather than reaching
+# into game code so the dependency direction is addon→Platform,
+# not addon→game.
 var nakama_client
 
 # Subsystem slots. Assigned by the consuming game during its
@@ -92,6 +108,20 @@ func initialize(config: Dictionary) -> void:
 	game_id = config.game_id
 	api_base_url = config.api_base_url
 	sdk_version = config.get("sdk_version", "unknown")
+
+	nakama_host = config.get("nakama_host", "")
+	nakama_port = int(config.get("nakama_port", 443))
+	nakama_scheme = config.get("nakama_scheme", "https")
+	nakama_server_key = config.get("nakama_server_key", "")
+	nakama_http_key = config.get("nakama_http_key", "")
+
+	oauth_callback_url = config.get("oauth_callback_url", "")
+	google_token_broker_url = config.get(
+		"google_token_broker_url", "")
+	google_oauth_client_id = config.get(
+		"google_oauth_client_id", "")
+	facebook_oauth_client_id = config.get(
+		"facebook_oauth_client_id", "")
 
 	var auth_file_path: String = config.get(
 		"auth_file_path",
@@ -127,6 +157,30 @@ func build_session_from_store() -> NakamaSession:
 		false,
 		token_store.refresh_token,
 		null)
+
+
+## Returns the public-facing Nakama base URL (e.g.
+## "https://nakama.snoringcat.games"). Callers that need to hit
+## raw HTTP endpoints (instead of the SDK) use this to build URLs.
+func get_nakama_base_url() -> String:
+	return "%s://%s" % [nakama_scheme, nakama_host]
+
+
+## Returns the shared NakamaClient, lazily creating it on first
+## access. All addon subsystems use this (or the cached
+## Platform.nakama_client field, which the same call populates) so
+## the client is a singleton across the SDK.
+func get_nakama_client() -> NakamaClient:
+	if nakama_client == null:
+		assert(
+			not nakama_host.is_empty(),
+			"Platform.initialize must supply nakama_host")
+		nakama_client = Nakama.create_client(
+			nakama_server_key,
+			nakama_host,
+			nakama_port,
+			nakama_scheme)
+	return nakama_client
 
 
 ## Assign a subsystem implementation. The consuming game calls this
