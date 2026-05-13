@@ -430,3 +430,153 @@ func TestPickDominantGameID(t *testing.T) {
 		}
 	})
 }
+
+// TestRegisterAndDeregisterInflight covers the per-user→inflight
+// mapping the cancel RPC reads. Multiple users in the same match
+// share one *inflightAllocation by design (a single cancel from any
+// of them aborts the whole match), so the lookups for distinct
+// users must return the same pointer.
+func TestRegisterAndDeregisterInflight(t *testing.T) {
+	a := &fleetAllocator{}
+	inflight := &inflightAllocation{cancel: func() {}}
+
+	t.Run("registers-all-users", func(t *testing.T) {
+		a.registerInflight([]string{"u1", "u2", "u3"}, inflight)
+		for _, uid := range []string{"u1", "u2", "u3"} {
+			v, ok := a.inflightByUserID.Load(uid)
+			if !ok {
+				t.Errorf("user %q not registered", uid)
+				continue
+			}
+			if v.(*inflightAllocation) != inflight {
+				t.Errorf("user %q points at wrong inflight", uid)
+			}
+		}
+	})
+
+	t.Run("deregister-removes-all", func(t *testing.T) {
+		a.deregisterInflight([]string{"u1", "u2", "u3"}, inflight)
+		for _, uid := range []string{"u1", "u2", "u3"} {
+			if _, ok := a.inflightByUserID.Load(uid); ok {
+				t.Errorf("user %q still registered after dereg",
+					uid)
+			}
+		}
+	})
+
+	t.Run("empty-userid-skipped", func(t *testing.T) {
+		// A pre-Stage-2 client without a userID shouldn't pollute
+		// the map with an empty-string key (which would otherwise
+		// match every empty-string lookup).
+		a.registerInflight([]string{""}, inflight)
+		if _, ok := a.inflightByUserID.Load(""); ok {
+			t.Errorf("empty userID should not be registered")
+		}
+	})
+
+	t.Run("deregister-respects-newer-entry", func(t *testing.T) {
+		// If a stale dereg fires after a new match has already
+		// registered the same user with a different inflight, the
+		// CompareAndDelete guard must preserve the new entry.
+		older := &inflightAllocation{cancel: func() {}}
+		newer := &inflightAllocation{cancel: func() {}}
+		a.registerInflight([]string{"raceUser"}, older)
+		a.registerInflight([]string{"raceUser"}, newer)
+		// Simulate the older match's deferred dereg firing late.
+		a.deregisterInflight([]string{"raceUser"}, older)
+		v, ok := a.inflightByUserID.Load("raceUser")
+		if !ok {
+			t.Fatalf("newer entry should survive stale dereg")
+		}
+		if v.(*inflightAllocation) != newer {
+			t.Errorf("dereg clobbered the newer entry")
+		}
+		// Cleanup so the test allocator is empty for sibling runs.
+		a.deregisterInflight([]string{"raceUser"}, newer)
+	})
+}
+
+// TestCancelInflightForUser covers the cancel RPC's primary side-
+// effect: lookup → invoke cancel → return true. Missing users
+// return false silently.
+func TestCancelInflightForUser(t *testing.T) {
+	t.Run("registered-user-cancels", func(t *testing.T) {
+		a := &fleetAllocator{}
+		_, allocCancel := context.WithCancel(context.Background())
+		cancelled := false
+		inflight := &inflightAllocation{
+			cancel: func() {
+				cancelled = true
+				allocCancel()
+			},
+		}
+		a.registerInflight([]string{"u1"}, inflight)
+		if !a.cancelInflightForUser("u1") {
+			t.Fatalf("registered user should return true")
+		}
+		if !cancelled {
+			t.Errorf("cancel func was not invoked")
+		}
+	})
+
+	t.Run("unregistered-user-noops", func(t *testing.T) {
+		a := &fleetAllocator{}
+		if a.cancelInflightForUser("ghost") {
+			t.Errorf("ghost user should return false")
+		}
+	})
+
+	t.Run("cancels-shared-inflight-from-any-user", func(t *testing.T) {
+		// Multi-user match: A's cancel invokes the same cancel
+		// func B and C are registered against. Once invoked, B's
+		// or C's subsequent cancel calls are no-op invokes on the
+		// same func — context cancel is idempotent, and the
+		// inflight entry is still in the map until
+		// OnMatchmakerMatched's defer fires.
+		a := &fleetAllocator{}
+		invocations := 0
+		inflight := &inflightAllocation{
+			cancel: func() { invocations++ },
+		}
+		a.registerInflight(
+			[]string{"a", "b", "c"}, inflight)
+		if !a.cancelInflightForUser("a") {
+			t.Fatalf("user a should cancel")
+		}
+		if !a.cancelInflightForUser("b") {
+			t.Fatalf("user b should still find the inflight")
+		}
+		if invocations != 2 {
+			t.Errorf("cancel func invoked %d times, want 2",
+				invocations)
+		}
+		a.deregisterInflight([]string{"a", "b", "c"}, inflight)
+	})
+
+	t.Run("propagates-ctx-cancel", func(t *testing.T) {
+		// End-to-end: the cancel func is context.CancelFunc, so a
+		// real OnMatchmakerMatched-shape setup will see ctx.Done()
+		// fire when the RPC invokes it. Locks in the contract the
+		// allocCtx.Err() != nil checks in OnMatchmakerMatched
+		// depend on.
+		a := &fleetAllocator{}
+		parent := context.Background()
+		allocCtx, allocCancel := context.WithCancel(parent)
+		defer allocCancel()
+		inflight := &inflightAllocation{cancel: allocCancel}
+		a.registerInflight([]string{"u1"}, inflight)
+		if allocCtx.Err() != nil {
+			t.Fatalf("ctx should be alive before cancel")
+		}
+		a.cancelInflightForUser("u1")
+		// Give the runtime a beat to propagate cancellation.
+		select {
+		case <-allocCtx.Done():
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("ctx didn't observe cancel within 100ms")
+		}
+		if allocCtx.Err() == nil {
+			t.Errorf("ctx.Err() should be non-nil after cancel")
+		}
+	})
+}

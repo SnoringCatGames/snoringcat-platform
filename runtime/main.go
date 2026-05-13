@@ -61,6 +61,14 @@
 //   - cancel_account_deletion: restore username + display name
 //                            and drop the queue row before the
 //                            cron fires (Stage 1.5).
+//   - cancel_matchmaking_allocation: matched player aborts an
+//                            in-flight Edgegap allocation
+//                            mid-poll. Registered alongside the
+//                            matchmaker hook; tears down the
+//                            in-progress deploy (if any) and
+//                            fans out match_failed
+//                            reason=cancelled to all matched
+//                            users (Stage 7.2).
 //   - get_game_config:     read a game's public per_game_config.
 package main
 
@@ -263,6 +271,16 @@ func InitModule(
 		}
 		if err := initializer.RegisterMatchmakerMatched(
 			alloc.OnMatchmakerMatched); err != nil {
+			return err
+		}
+		// Stage 7.2: client-session RPC to abort an in-flight
+		// Edgegap allocation. Registered alongside the matchmaker
+		// hook because it operates on the same allocator's
+		// in-flight tracker — registering it without the hook
+		// would always return cancelled=false.
+		if err := addRpc(
+			"cancel_matchmaking_allocation",
+			cancelAllocationRpcFactory(alloc, games)); err != nil {
 			return err
 		}
 	}

@@ -201,13 +201,36 @@ func start_matchmaking(
 ## Remove the active ticket and stop the elapsed timer. The
 ## socket stays open so a subsequent start_matchmaking can
 ## re-use it. Safe to call when not searching.
+##
+## Two server-side cancels fire in sequence:
+##   1. `remove_matchmaker_async` removes the ticket from the
+##      Nakama matchmaker pool. This is the only one that matters
+##      while the user is still queued (phase=queued/searching) —
+##      it prevents the ticket from being matched. No-op once the
+##      ticket has been consumed by OnMatchmakerMatched.
+##   2. `cancel_matchmaking_allocation` RPC (Stage 7.2) signals
+##      the runtime to abort an in-flight Edgegap allocation if
+##      the user has already been matched and the runtime is
+##      currently polling Edgegap. The server fans out a
+##      `match_failed` reason=cancelled notification to every
+##      matched player; the canceller's local `_is_searching`
+##      is already false here so the late-arriving notification
+##      no-ops on this client (see `_handle_match_failed`).
+##
+## Both calls are fire-and-forget. The new RPC silently no-ops
+## server-side when no in-flight allocation exists, so calling it
+## during the searching phase (when the cancel happened before
+## OnMatchmakerMatched fired) is cheap and safe.
 func cancel_matchmaking() -> void:
 	if not _is_searching:
 		return
 	_is_searching = false
 	_elapsed_timer.stop()
-	if _socket != null and not _ticket.is_empty():
-		_socket.remove_matchmaker_async(_ticket)
+	if _socket != null and _socket.is_connected_to_host():
+		if not _ticket.is_empty():
+			_socket.remove_matchmaker_async(_ticket)
+		_socket.rpc_async(
+			"cancel_matchmaking_allocation", "{}")
 	_ticket = ""
 
 

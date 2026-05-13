@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/heroiclabs/nakama-common/runtime"
@@ -283,6 +284,25 @@ type matchedPlayer struct {
 	SessionIDs []string
 }
 
+// inflightAllocation tracks one in-progress Edgegap allocation so a
+// matched user can cancel it mid-flight via the
+// cancel_matchmaking_allocation RPC. The same struct is shared by
+// every user in the match — any one user's cancel propagates to
+// all of them (the matched-as-a-group semantic is enforced by the
+// matchmaker; if one player bails, the whole match aborts because
+// the others are no longer paired against a valid pool).
+//
+// The struct only holds the cancel func: the OnMatchmakerMatched
+// goroutine reads `allocCtx.Err()` at known checkpoints to decide
+// between "normal success", "user cancelled", and "all retries
+// failed" paths. There's no separate "was this cancelled?" bool
+// because ctx.Err() is the source of truth — a parent-ctx
+// cancellation and a user-cancel get the same teardown semantics
+// (stopDeploy + match_failed fan-out).
+type inflightAllocation struct {
+	cancel context.CancelFunc
+}
+
 // fleetAllocator hooks into MatchmakerMatched to spin up an Edgegap
 // deployment for the matched players.
 type fleetAllocator struct {
@@ -322,6 +342,76 @@ type fleetAllocator struct {
 	// runtime logs a loud warning at boot so prod never enables
 	// it by accident.
 	mockDeploy bool
+	// inflightByUserID tracks the active in-progress allocation
+	// for each currently-matched user_id. The
+	// cancel_matchmaking_allocation RPC looks up the caller's
+	// entry and invokes the cancel func to tear down the
+	// in-flight allocation (including a best-effort Edgegap Stop
+	// on any deploy that already started). Cleaned up on
+	// OnMatchmakerMatched exit via defer. Stage 7.2 of
+	// MULTI_GAME_ROADMAP.md.
+	inflightByUserID sync.Map // map[string]*inflightAllocation
+}
+
+// registerInflight associates each matched user_id with the shared
+// in-flight allocation handle. Called once at the start of
+// OnMatchmakerMatched. A subsequent cancel RPC from any of these
+// users will find the same handle and invoke cancel.
+func (a *fleetAllocator) registerInflight(
+	userIDs []string,
+	inflight *inflightAllocation,
+) {
+	for _, uid := range userIDs {
+		if uid == "" {
+			continue
+		}
+		a.inflightByUserID.Store(uid, inflight)
+	}
+}
+
+// deregisterInflight removes the user_id → inflight mapping for
+// each matched user, but only if their current entry still points
+// at this inflight. The CompareAndDelete guard is defensive: if a
+// later match for the same user_id has already registered a
+// different inflight (e.g. the user re-queued before this hook
+// returned, somehow), we don't blow away the newer entry.
+func (a *fleetAllocator) deregisterInflight(
+	userIDs []string,
+	inflight *inflightAllocation,
+) {
+	for _, uid := range userIDs {
+		if uid == "" {
+			continue
+		}
+		a.inflightByUserID.CompareAndDelete(uid, inflight)
+	}
+}
+
+// cancelInflightForUser is the cancel RPC's primary side-effect:
+// look up the caller's in-flight allocation and invoke the cancel
+// func, which propagates ctx cancellation to OnMatchmakerMatched
+// (currently mid-allocation). Returns true when a cancel was
+// triggered; false when no in-flight allocation exists for the
+// caller (either they're not currently being matched, or the
+// allocation already completed past the point of no return).
+//
+// Idempotent: a second cancel for the same user is a no-op (the
+// cancel func is itself idempotent, and the entry is still in the
+// map until OnMatchmakerMatched's defer fires). The actual
+// teardown (stopDeploy + match_failed fan-out) happens in the
+// matchmaker hook goroutine when it observes ctx.Err() — this RPC
+// only signals.
+func (a *fleetAllocator) cancelInflightForUser(userID string) bool {
+	v, ok := a.inflightByUserID.Load(userID)
+	if !ok {
+		return false
+	}
+	inflight, ok := v.(*inflightAllocation)
+	if !ok || inflight == nil || inflight.cancel == nil {
+		return false
+	}
+	inflight.cancel()
+	return true
 }
 
 // mockEdgegapRequestIDPrefix tags synthetic deploys so downstream
@@ -475,6 +565,30 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		return "", nil
 	}
 	logger.Info("matchmaker matched %d players, allocating Edgegap deployment", len(entries))
+
+	// Extract matched user_ids up-front so the inflight tracker
+	// can register them before any I/O kicks off. The same list
+	// drives the cancel-cleanup notification fan-out below if a
+	// matched user invokes cancel_matchmaking_allocation mid-flight.
+	matchedUserIDs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if uid := e.GetPresence().GetUserId(); uid != "" {
+			matchedUserIDs = append(matchedUserIDs, uid)
+		}
+	}
+
+	// Derive a cancelable child context so the
+	// cancel_matchmaking_allocation RPC can abort the allocation
+	// by invoking the inflight's cancel func. The child wraps the
+	// parent ctx so a parent cancellation (e.g. Nakama shutdown)
+	// still propagates, but a user-initiated cancel doesn't kill
+	// the parent — we still need a non-cancelled context for the
+	// post-cancel teardown notifications.
+	allocCtx, allocCancel := context.WithCancel(ctx)
+	defer allocCancel()
+	inflight := &inflightAllocation{cancel: allocCancel}
+	a.registerInflight(matchedUserIDs, inflight)
+	defer a.deregisterInflight(matchedUserIDs, inflight)
 
 	// Collect player IPs from storage (the client calls
 	// `record_client_ip` right before joining the matchmaker —
@@ -718,6 +832,11 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		// failed by definition) and the Geographies field rotates
 		// through allocationGeographyRotation so a saturated
 		// region doesn't trap every attempt.
+		//
+		// Uses allocCtx (not ctx) so a user-initiated cancel via
+		// cancel_matchmaking_allocation propagates through
+		// tryAllocate's polling + register wait, and through the
+		// inter-attempt backoff sleep.
 		var lastErr error
 		for attempt := 0; attempt < maxAllocationAttempts; attempt++ {
 			if attempt > 0 {
@@ -728,14 +847,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 						" (geo=%v, prev err: %v)",
 					attempt+1, maxAllocationAttempts,
 					backoff, fallbackGeo, lastErr)
-				if err := sleepOrCtxDone(ctx, backoff); err != nil {
+				if err := sleepOrCtxDone(allocCtx, backoff); err != nil {
 					lastErr = err
 					break
 				}
 				deployReq.IPList = nil
 				deployReq.Geographies = fallbackGeo
 			}
-			d, s, err := a.tryAllocate(ctx, logger, nk, deployReq)
+			d, s, err := a.tryAllocate(allocCtx, logger, nk, deployReq)
 			if err == nil {
 				deploy = d
 				status = s
@@ -749,8 +868,28 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			logger.Warn(
 				"edgegap allocation attempt %d/%d failed: %v",
 				attempt+1, maxAllocationAttempts, err)
+			// Stop retrying if the allocation context was
+			// cancelled (user cancel, parent shutdown). Continuing
+			// would just produce more cancelled-context errors.
+			if allocCtx.Err() != nil {
+				break
+			}
 		}
 		if deploy == nil {
+			// Distinguish user-initiated cancellation from
+			// genuine allocation failure. Cancellation gets the
+			// match_failed reason=cancelled fan-out so other
+			// matched players see a recoverable "peer cancelled"
+			// prompt instead of "allocation failed". Use the
+			// parent ctx for notifications (allocCtx is cancelled
+			// in this branch by definition).
+			if allocCtx.Err() != nil {
+				logger.Info(
+					"edgegap allocation aborted by user cancel" +
+						" (no deploy created)")
+				sendMatchCancelled(ctx, logger, nk, entries)
+				return "", nil
+			}
 			sendAllocationFailed(
 				ctx, logger, nk, entries,
 				maxAllocationAttempts, lastErr)
@@ -758,6 +897,24 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				"edgegap allocation failed after %d attempts: %w",
 				maxAllocationAttempts, lastErr)
 		}
+	}
+
+	// Check whether a cancel arrived between the successful
+	// allocation and now. If so, tear down the freshly-allocated
+	// deploy + fan out match_failed reason=cancelled and bail
+	// before writing storage rows or sending match_ready. Mock
+	// mode skips the deploy-stop branch (synthesizeMockDeploy
+	// didn't allocate anything real).
+	if allocCtx.Err() != nil {
+		logger.Info(
+			"edgegap allocation aborted by user cancel after"+
+				" successful deploy (request_id=%s); tearing down",
+			deploy.RequestID)
+		a.stopDeploy(
+			ctx, logger, deploy.RequestID,
+			"user cancelled post-allocation")
+		sendMatchCancelled(ctx, logger, nk, entries)
+		return "", nil
 	}
 
 	// Persist the synthetic flag so match_end / match_cancel can
@@ -955,6 +1112,105 @@ func (a *fleetAllocator) stopDeploy(
 	} else {
 		logger.Info(
 			"stopped orphaned deploy %s (%s)", requestID, reason)
+	}
+}
+
+// sendMatchCancelled sends a `match_failed` notification to every
+// matched player after a user-initiated cancel aborted the
+// allocation (Stage 7.2 of MULTI_GAME_ROADMAP.md). The reason tag
+// is `cancelled` so the game-side
+// `_classify_matchmaking_failure` classifier routes it to
+// `LOADING.PEER_CANCELLED` (recoverable + retry button on the
+// loading screen).
+//
+// The cancelling user receives this notification too — their
+// client side has already cleared `_is_searching` in
+// `cancel_matchmaking()`, so their addon-side
+// `_handle_match_failed` no-ops on receipt. The notification
+// matters for the OTHER matched players, who learn that the match
+// was aborted by a peer and can re-queue.
+//
+// Distinct from `sendAllocationFailed`: that path's "we tried 3
+// times, every attempt failed" is a recoverable platform failure
+// the user might want to retry against; this path's "another
+// player bailed" is intrinsically a peer-level event.
+func sendMatchCancelled(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	entries []runtime.MatchmakerEntry,
+) {
+	subject := "match_failed"
+	content := map[string]any{
+		"reason":  "cancelled",
+		"message": "Match cancelled by another player.",
+	}
+	for _, e := range entries {
+		userID := e.GetPresence().GetUserId()
+		if err := nk.NotificationSend(
+			ctx, userID, subject, content, 100, "", true,
+		); err != nil {
+			logger.Warn(
+				"notify match_failed (cancelled) to %s: %v",
+				userID, err)
+		}
+	}
+}
+
+// cancelAllocationRpcFactory returns the client-session RPC matched
+// players use to abort an in-flight Edgegap allocation mid-poll.
+// Stage 7.2 of MULTI_GAME_ROADMAP.md.
+//
+// Lookup is keyed by the caller's user_id (extracted from
+// RUNTIME_CTX_USER_ID via requireClientSession). game_id scoping
+// is enforced via requireGameID — a misconfigured client without
+// game_id can't fire this RPC.
+//
+// Returns {ok: true, cancelled: bool}. `cancelled=false` means no
+// in-flight allocation existed for the caller (the cancel arrived
+// before OnMatchmakerMatched fired, or after the deploy completed
+// past the point of no return). Treated as a silent success so the
+// client doesn't need a "was this too late?" UI branch.
+//
+// The teardown (stopDeploy + match_failed fan-out) happens in the
+// matchmaker hook goroutine when it observes allocCtx.Err() — this
+// RPC only signals.
+func cancelAllocationRpcFactory(
+	alloc *fleetAllocator,
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		_ runtime.NakamaModule,
+		_ string,
+	) (string, error) {
+		userID, err := requireClientSession(ctx)
+		if err != nil {
+			return "", err
+		}
+		if _, err := requireGameID(ctx, games); err != nil {
+			return "", err
+		}
+		cancelled := false
+		if alloc != nil {
+			cancelled = alloc.cancelInflightForUser(userID)
+		}
+		if cancelled {
+			logger.Info(
+				"cancel_matchmaking_allocation: cancelled in-flight"+
+					" allocation for user=%s",
+				userID)
+		}
+		resp, _ := json.Marshal(map[string]any{
+			"ok":        true,
+			"cancelled": cancelled,
+		})
+		return string(resp), nil
 	}
 }
 
