@@ -53,6 +53,7 @@ The suite runs in one of two modes, controlled by
 | Auth (refresh)  | `test_token_refresh.gd`    | `/v2/account/session/refresh` returns a fresh access+refresh token pair; refresh-derived token unlocks `/v2/account`; garbage tokens rejected without 5xx'ing. |
 | Account         | `test_account.gd`          | `/v2/account` GET returns the user block; `display_name` update round-trips. |
 | Account delete  | `test_account_delete.gd`   | `DELETE /v2/account` removes a one-shot account end-to-end (re-auth fails post-delete). Custom `delete_account` RPC documented but not yet implemented. |
+| Account delete cascade | `test_friends_account_delete_cascade.gd` | Two-user: A↔B mutual, A invokes `delete_account` RPC → B's friend list loses A, A's friend list is empty, A's display_name is `[deleted]`, `get_account_deletion_status` reports `pending=true`. Guards Stage 1.4 friends cascade + Stage 1.5 sign-in-during-grace. |
 | Friends         | `test_friends.gd`          | `/v2/friend` GET returns a well-formed list; add-with-bogus-id rejects without 5xx'ing. |
 | Friends (2-user) | `test_friends_multiuser.gd` | Two real anon accounts: A → request → B accepts → both see each other as FRIEND. Canaries the `multi_session_anon` helper. |
 | Party           | `test_party.gd`            | Group create → leave roundtrip via `/v2/group`. |
