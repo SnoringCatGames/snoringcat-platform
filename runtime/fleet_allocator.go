@@ -723,6 +723,41 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
+	// Stage 7.4: blocked-pair check. Walk each matched user's
+	// BANNED list; if any pair has blocked the other, abort the
+	// match before burning an Edgegap deploy. Skipped for 1-player
+	// matches (synthetic probes, debug allocations) since blocking
+	// is intrinsically a multi-player concern.
+	//
+	// One FriendsList round trip per matched user. For a 4-player
+	// match that's 4 reads, each capped at blockListPageCap pages.
+	// Cheap relative to the Edgegap allocation we're protecting
+	// (which takes seconds).
+	if len(matchedUserIDs) >= 2 {
+		blockedBy := map[string]map[string]struct{}{}
+		for _, uid := range matchedUserIDs {
+			set, err := blockedUserIDSet(ctx, nk, uid)
+			if err != nil {
+				logger.Warn(
+					"blocked-pair check FriendsList failed for"+
+						" user=%s: %v; allowing match through",
+					uid, err)
+				continue
+			}
+			blockedBy[uid] = set
+		}
+		blockedPairs := findBlockedPairs(matchedUserIDs, blockedBy)
+		if len(blockedPairs) > 0 {
+			logger.Warn(
+				"blocked pair in match: users=%v;"+
+					" aborting before edgegap allocation",
+				blockedPairs)
+			abortBlockedPair(
+				ctx, logger, nk, entries, blockedPairs)
+			return "", nil
+		}
+	}
+
 	// Stage 3.7: resolve the Edgegap app coordinates per match
 	// from the games table when we know the match's game_id, so
 	// the runtime no longer needs the EDGEGAP_APP_NAME /
@@ -1305,6 +1340,98 @@ func abortProtocolMismatch(
 		); err != nil {
 			logger.Warn(
 				"notify match_failed to %s: %v", userID, err)
+		}
+	}
+}
+
+// findBlockedPairs scans the per-user BANNED sets for any
+// directed (A → B) relationship where both A and B appear in
+// matchedUserIDs. Symmetric: returns each pair once with the
+// lower user_id first so the order is stable across re-runs.
+// Empty result means no blocked pair was found.
+//
+// `blockedBy[X]` is the set of user_ids X has blocked. If A is in
+// blockedBy[B], B has blocked A. We treat either direction as
+// "should not match" — a blocked relationship cuts both ways
+// regardless of who initiated.
+func findBlockedPairs(
+	matchedUserIDs []string,
+	blockedBy map[string]map[string]struct{},
+) [][2]string {
+	seen := map[[2]string]bool{}
+	pairs := [][2]string{}
+	for _, a := range matchedUserIDs {
+		bannedByA := blockedBy[a]
+		if len(bannedByA) == 0 {
+			continue
+		}
+		for _, b := range matchedUserIDs {
+			if a == b {
+				continue
+			}
+			if _, ok := bannedByA[b]; !ok {
+				continue
+			}
+			pair := [2]string{a, b}
+			if pair[0] > pair[1] {
+				pair[0], pair[1] = pair[1], pair[0]
+			}
+			if seen[pair] {
+				continue
+			}
+			seen[pair] = true
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+}
+
+// abortBlockedPair sends `match_failed reason=blocked_pair` to
+// every matched user. Per-player tailoring: users named in any
+// blocked pair get the "you and another player have blocked
+// each other" framing; bystanders see the generic "match aborted
+// because two players have a block relationship" copy. Both
+// classify as recoverable on the game side (LOADING.BLOCKED_PAIR)
+// — the retry button re-queues and the matchmaker should pair
+// them with different players this time.
+//
+// Mirror of abortProtocolMismatch: same notification subject,
+// same notification persistence flag, same best-effort error
+// handling. The game-side `_classify_matchmaking_failure`
+// matches `"blocked"` substring to route to the right
+// LOADING.* code path.
+func abortBlockedPair(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	entries []runtime.MatchmakerEntry,
+	pairs [][2]string,
+) {
+	involved := map[string]bool{}
+	for _, p := range pairs {
+		involved[p[0]] = true
+		involved[p[1]] = true
+	}
+	subject := "match_failed"
+	for _, e := range entries {
+		userID := e.GetPresence().GetUserId()
+		content := map[string]any{
+			"reason": "blocked_pair",
+		}
+		if involved[userID] {
+			content["message"] = "Match cancelled: you and" +
+				" another matched player have blocked each" +
+				" other."
+		} else {
+			content["message"] = "Match cancelled: two" +
+				" matched players have blocked each other."
+		}
+		if err := nk.NotificationSend(
+			ctx, userID, subject, content, 100, "", true,
+		); err != nil {
+			logger.Warn(
+				"notify match_failed (blocked_pair) to %s: %v",
+				userID, err)
 		}
 	}
 }

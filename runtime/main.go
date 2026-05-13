@@ -69,6 +69,16 @@
 //                            fans out match_failed
 //                            reason=cancelled to all matched
 //                            users (Stage 7.2).
+//   - block_user:          add a user to the caller's BANNED
+//                            list (Nakama state=3). Removes any
+//                            existing friendship in either
+//                            direction; future friend-add calls
+//                            in either direction are rejected by
+//                            Nakama (Stage 7.4).
+//   - unblock_user:        remove a state=3 row from the caller's
+//                            friends table (Stage 7.4).
+//   - list_blocked_users:  list the caller's BANNED entries with
+//                            display name + username (Stage 7.4).
 //   - get_game_config:     read a game's public per_game_config.
 package main
 
@@ -412,6 +422,25 @@ func InitModule(
 	if err := addRpc(
 		"cancel_account_deletion",
 		cancelAccountDeletionRpcFactory(games)); err != nil {
+		return err
+	}
+
+	// Stage 7.4: friend block list. Uses Nakama's native state=3
+	// (BANNED) friend state for storage, so add-friend rejection
+	// is bidirectional out of the box.
+	if err := addRpc(
+		"block_user",
+		blockUserRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"unblock_user",
+		unblockUserRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"list_blocked_users",
+		listBlockedUsersRpcFactory(games)); err != nil {
 		return err
 	}
 

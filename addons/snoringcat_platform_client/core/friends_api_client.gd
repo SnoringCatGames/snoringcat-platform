@@ -23,6 +23,9 @@ signal friend_search_result(data: Dictionary)
 signal notifications_received(data: Dictionary)
 signal friends_marked_seen(data: Dictionary)
 signal request_failed(error: String)
+signal user_blocked(data: Dictionary)
+signal user_unblocked(data: Dictionary)
+signal blocked_users_received(data: Dictionary)
 
 
 # Nakama Friend states (from the SDK API):
@@ -44,9 +47,17 @@ const _FRIENDS_PAGE_CAP := 10
 var cached_friends: Array[Dictionary] = []
 var cached_sent_requests: Array[Dictionary] = []
 var cached_incoming_requests: Array[Dictionary] = []
+# Stage 7.4: state=3 (BANNED) entries. Populated by
+# fetch_blocked_users via the list_blocked_users RPC. Nakama
+# rejects friend-add calls in either direction when the target
+# is in the caller's BANNED list (or vice versa), so the field
+# also acts as a local "should I show the Block button as
+# Unblock?" cache for FriendDetailsPanel.
+var cached_blocked_users: Array[Dictionary] = []
 
 var _is_busy := false
 var _is_poll_busy := false
+var _is_blocked_users_busy := false
 
 
 func fetch_friends() -> void:
@@ -230,11 +241,118 @@ func fetch_notifications(
 
 
 # --------------------------------------------------------------
+# Block list (Stage 7.4)
+# --------------------------------------------------------------
+# Nakama stores blocked relationships as state=3 (BANNED) entries
+# in the friends table. The runtime's block_user / unblock_user /
+# list_blocked_users RPCs wrap the underlying nk.FriendsBlock /
+# nk.FriendsDelete / nk.FriendsList(state=3) calls; we go through
+# the RPCs (not the SDK's direct list_friends_async with a state
+# filter) so the runtime can layer a consistent response shape
+# and capture display names server-side.
+
+
+func block_user(player_id: String, username: String = "") -> void:
+	var session := _ensure_session()
+	if session == null:
+		return
+	var payload := {}
+	if not player_id.is_empty():
+		payload["user_id"] = player_id
+	if not username.is_empty():
+		payload["username"] = username
+	if payload.is_empty():
+		request_failed.emit("block_user requires player_id or username")
+		return
+	var result = await Platform.nakama_client.rpc_async(
+		session, "block_user", JSON.stringify(payload))
+	if result.is_exception():
+		request_failed.emit(_describe(result.get_exception()))
+		return
+	var data: Dictionary = JSON.parse_string(result.payload)
+	# Drop any cached friend / pending rows for this user — the
+	# server-side FriendsBlock deleted the relationship.
+	if data.has("user_id") and not data["user_id"].is_empty():
+		var blocked_id: String = data["user_id"]
+		cached_friends = cached_friends.filter(
+			func(f): return f.get("player_id", "") != blocked_id)
+		cached_sent_requests = cached_sent_requests.filter(
+			func(f): return f.get("player_id", "") != blocked_id)
+		cached_incoming_requests = cached_incoming_requests.filter(
+			func(f): return f.get("player_id", "") != blocked_id)
+		# Insert into the cached blocked list if not already
+		# present, so the UI updates without a round trip.
+		var already := false
+		for b in cached_blocked_users:
+			if b.get("player_id", "") == blocked_id:
+				already = true
+				break
+		if not already:
+			cached_blocked_users.append({
+				"player_id": blocked_id,
+				"username": data.get("username", ""),
+				"display_name": data.get("display_name", ""),
+				"avatar_url": "",
+			})
+	user_blocked.emit(data)
+
+
+func unblock_user(player_id: String) -> void:
+	if player_id.is_empty():
+		request_failed.emit("unblock_user requires player_id")
+		return
+	var session := _ensure_session()
+	if session == null:
+		return
+	var result = await Platform.nakama_client.rpc_async(
+		session, "unblock_user",
+		JSON.stringify({"user_id": player_id}))
+	if result.is_exception():
+		request_failed.emit(_describe(result.get_exception()))
+		return
+	cached_blocked_users = cached_blocked_users.filter(
+		func(b): return b.get("player_id", "") != player_id)
+	user_unblocked.emit({"player_id": player_id})
+
+
+func fetch_blocked_users() -> void:
+	if _is_blocked_users_busy:
+		return
+	_is_blocked_users_busy = true
+	var session := _ensure_session()
+	if session == null:
+		_is_blocked_users_busy = false
+		return
+	var result = await Platform.nakama_client.rpc_async(
+		session, "list_blocked_users", "")
+	_is_blocked_users_busy = false
+	if result.is_exception():
+		request_failed.emit(_describe(result.get_exception()))
+		return
+	var data: Dictionary = JSON.parse_string(result.payload)
+	var raw: Array = data.get("blocked_users", [])
+	var next: Array[Dictionary] = []
+	for entry in raw:
+		next.append({
+			"player_id": entry.get("user_id", ""),
+			"username": entry.get("username", ""),
+			"display_name": entry.get("display_name", ""),
+			"avatar_url": entry.get("avatar_url", ""),
+		})
+	cached_blocked_users = next
+	blocked_users_received.emit({
+		"blocked_users": cached_blocked_users,
+		"truncated": data.get("truncated", false),
+	})
+
+
+# --------------------------------------------------------------
 # Status
 # --------------------------------------------------------------
 
 func is_busy() -> bool: return _is_busy
 func is_poll_busy() -> bool: return _is_poll_busy
+func is_blocked_users_busy() -> bool: return _is_blocked_users_busy
 
 
 func is_friend(player_id: String) -> bool:
@@ -254,6 +372,13 @@ func has_sent_request(player_id: String) -> bool:
 func has_incoming_request(player_id: String) -> bool:
 	for f in cached_incoming_requests:
 		if f.get("player_id", "") == player_id:
+			return true
+	return false
+
+
+func is_blocked(player_id: String) -> bool:
+	for b in cached_blocked_users:
+		if b.get("player_id", "") == player_id:
 			return true
 	return false
 
