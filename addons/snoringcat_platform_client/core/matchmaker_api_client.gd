@@ -48,6 +48,19 @@ signal progress_updated(
 
 const _MATCH_TIMEOUT_SEC := 120.0
 const _MATCH_READY_SUBJECT := "match_ready"
+## Stage 3.9: pushed by fleet_allocator.go when it aborts a
+## match before allocation (currently fired on a
+## client_protocol_version mismatch). Payload shape (flat
+## JSON, single-encoded):
+##   reason: String   — short tag ("protocol_mismatch")
+##   message: String  — human-readable description
+##   expected: int    — game's registered protocol_version
+##   got: int         — this client's declared version, or 0
+##                      when the abort was triggered by a
+##                      different matched player's mismatch
+## Distinct from `match_ready`'s double-encoded shape because
+## there's no nested `connection` payload to carry.
+const _MATCH_FAILED_SUBJECT := "match_failed"
 const _PROGRESS_TICK_SEC := 1.0
 
 
@@ -273,6 +286,9 @@ func _on_matchmaker_matched(matched) -> void:
 
 
 func _on_notification(p_notification) -> void:
+	if p_notification.subject == _MATCH_FAILED_SUBJECT:
+		_handle_match_failed(p_notification)
+		return
 	if p_notification.subject != _MATCH_READY_SUBJECT:
 		return
 	if not _is_searching:
@@ -373,6 +389,29 @@ func _on_notification(p_notification) -> void:
 		"session_ids": session_ids,
 		"level_id": level_id,
 	})
+
+
+func _handle_match_failed(p_notification) -> void:
+	if not _is_searching:
+		return
+	_is_searching = false
+	_elapsed_timer.stop()
+
+	var parsed: Variant = JSON.parse_string(
+		p_notification.content)
+	var message := ""
+	if parsed is Dictionary:
+		message = str(parsed.get("message", ""))
+	if message.is_empty():
+		# Defensive fallback: an unparseable payload still has
+		# to clear the matchmaker state and surface *some*
+		# error so the client doesn't sit on the 120s timeout.
+		message = (
+			"Matchmaking aborted by server"
+			+ " (unrecognized match_failed payload)")
+	push_warning(
+		"[PlatformMatchmaking] match_failed: %s" % message)
+	matchmaking_failed.emit(message)
 
 
 func _pick_port(
