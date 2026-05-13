@@ -54,6 +54,7 @@ const (
 	partyEventKicked        partyEvent = "kicked"
 	partyEventReadyChanged  partyEvent = "ready_changed"
 	partyEventLeaderChanged partyEvent = "leader_changed"
+	partyEventModeChanged   partyEvent = "mode_changed"
 )
 
 // partyLeaderCollection holds the optional "current leader"
@@ -83,6 +84,19 @@ const partyLeaderCollection = "party_leader"
 // leave / kick) so a member rejoining doesn't carry forward a
 // stale ready flag from a previous session.
 const partyReadyCollection = "party_ready"
+
+// partyModeCollection holds the optional "current matchmaker
+// game mode" override for a party (Stage 5.7). Server-owned
+// (UserID="") with PermissionRead=2 / PermissionWrite=0; the
+// `party_set_mode` RPC is the sole way to mutate the row. Schema:
+//
+//	(partyModeCollection, partyID, "") → {mode_id, set_by, set_at}
+//
+// The mode propagates to followers via party_state_changed
+// fan-out (event=mode_changed) and is folded into the response of
+// fetch_party_status. partyStartMatchmaking reads it as the
+// game_mode default when the caller doesn't override on the RPC.
+const partyModeCollection = "party_mode"
 
 // partyInviteCodeCollection holds the bidirectional mapping
 // between a 6-character invite code and the party group it
@@ -205,6 +219,15 @@ func partyStartMatchmakingRpc(
 	}
 	if args.PartyID == "" {
 		return "", runtime.NewError("party_id required", 3)
+	}
+	if args.GameMode == "" {
+		// Stage 5.7: prefer the leader-persisted mode for the
+		// party. Empty (no party_set_mode yet) falls back to the
+		// hard-coded ffa default below.
+		if persistedMode, ok, modeErr := loadPartyMode(
+			ctx, nk, args.PartyID); modeErr == nil && ok {
+			args.GameMode = persistedMode
+		}
 	}
 	if args.GameMode == "" {
 		args.GameMode = "ffa"
@@ -1118,6 +1141,194 @@ func partySetReadyRpc(
 		PartyID: args.PartyID,
 		UserID:  userID,
 		Ready:   args.Ready,
+	}
+	out, _ := json.Marshal(resp)
+	return string(out), nil
+}
+
+// loadPartyMode reads the (partyModeCollection, partyID, "")
+// storage row. Returns ("", false, nil) when the party has no
+// mode override yet — callers fall back to the matchmaker's top-
+// level default (`ffa` for hopnbop). Errors propagate so a
+// transient Postgres blip doesn't silently swap modes mid-flight.
+// Stage 5.7.
+func loadPartyMode(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	partyID string,
+) (string, bool, error) {
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyModeCollection,
+			Key:        partyID,
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		return "", false, err
+	}
+	if len(reads) == 0 {
+		return "", false, nil
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &parsed); err != nil {
+		return "", false, nil
+	}
+	mode, _ := parsed["mode_id"].(string)
+	if mode == "" {
+		return "", false, nil
+	}
+	return mode, true, nil
+}
+
+// partySetModeArgs is the client → runtime payload for the
+// leader's mode-selection.
+type partySetModeArgs struct {
+	PartyID string `json:"party_id"`
+	ModeID  string `json:"mode_id"`
+}
+
+// partySetModeResp echoes the resolved {party, mode} pair so the
+// caller's UI can skip waiting for the next fetch_party_status
+// round-trip.
+type partySetModeResp struct {
+	OK      bool   `json:"ok"`
+	PartyID string `json:"party_id"`
+	ModeID  string `json:"mode_id"`
+}
+
+func partySetModeRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partySetModeRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partySetModeRpc lets the party leader pick a matchmaker mode
+// for the whole party. The runtime persists it as a server-owned
+// storage row and fans out a `party_state_changed` notification
+// with event=mode_changed so followers' UIs update without
+// waiting on the catch-up poll. Stage 5.7.
+//
+// Authorization: caller must be the current leader (resolved via
+// partyLeaderCollection override, falling back to group's
+// creator_id). PermissionRead=2 on the row keeps the data
+// readable by any party member; PermissionWrite=0 keeps this RPC
+// as the sole mutation entry point.
+//
+// The new mode_id is not validated against `game.yaml.matchmaker_
+// rules.modes` here — the runtime intentionally trusts the
+// caller's pick and validates at allocation time when the
+// matched ticket's `game_mode` property reaches fleet_allocator.
+// Validation here would double-bind the runtime to the games
+// table at write time and reject in the (briefly possible)
+// rollout window where a new mode was deployed in game.yaml but
+// not yet synced to the games table.
+func partySetModeRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partySetModeArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+	if args.ModeID == "" {
+		return "", runtime.NewError("mode_id required", 3)
+	}
+
+	// Confirm the group is a party (name prefix) and the caller
+	// is the current leader. resolvePartyLeader honors an existing
+	// transfer override so the post-transfer leader can still
+	// pick the mode.
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error(
+			"GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	if !strings.HasPrefix(
+		groups[0].Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, args.PartyID, groups[0].CreatorId)
+	if err != nil {
+		logger.Error(
+			"resolvePartyLeader(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if leaderID != userID {
+		return "", runtime.NewError(
+			"only the party leader can change the game mode", 7)
+	}
+
+	value, _ := json.Marshal(map[string]any{
+		"mode_id": args.ModeID,
+		"set_by":  userID,
+		"set_at":  nowUnix(),
+	})
+	if _, err := nk.StorageWrite(
+		ctx,
+		[]*runtime.StorageWrite{{
+			Collection:      partyModeCollection,
+			Key:             args.PartyID,
+			UserID:          "",
+			Value:           string(value),
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}},
+	); err != nil {
+		logger.Error(
+			"party_set_mode write party=%s mode=%s: %v",
+			args.PartyID, args.ModeID, err)
+		return "", err
+	}
+
+	// Followers refetch on any party_state_changed event, so the
+	// new mode propagates without inlining it in the payload.
+	// Matches the partyEventReadyChanged shape (no extras).
+	notifyPartyMembers(
+		ctx, logger, nk,
+		args.PartyID,
+		partyEventModeChanged,
+		nil,
+	)
+
+	resp := partySetModeResp{
+		OK:      true,
+		PartyID: args.PartyID,
+		ModeID:  args.ModeID,
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil

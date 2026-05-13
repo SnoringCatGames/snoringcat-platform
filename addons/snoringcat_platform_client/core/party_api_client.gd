@@ -40,6 +40,16 @@ const _PARTY_READY_COLLECTION := "party_ready"
 ## payload — clients never read this row directly.
 const _PARTY_LEADER_COLLECTION := "party_leader"
 
+## Storage collection name for the party's matchmaker game-mode
+## override (Stage 5.7). Each party can have one row at
+## (collection, party_id, "") owned by the server; the runtime
+## writes it via `party_set_mode` (leader-only) and reads it in
+## `party_start_matchmaking` to default the game_mode when the
+## caller doesn't override.
+## See: third_party/snoringcat-platform/runtime/party.go
+## :partyModeCollection.
+const _PARTY_MODE_COLLECTION := "party_mode"
+
 
 var _is_busy := false
 
@@ -210,6 +220,17 @@ func fetch_party_status() -> void:
 			"",
 		)
 		storage_ids.append(leader_override_id)
+		# Stage 5.7: party game-mode override (server-owned;
+		# leader-only writes via party_set_mode). Folded into the
+		# emitted party dict as `game_mode` so the lobby panel can
+		# render the current mode and so PartyManager can pass it
+		# through the matchmaker on start.
+		var mode_override_id := NakamaStorageObjectId.new(
+			_PARTY_MODE_COLLECTION,
+			party["party_id"],
+			"",
+		)
+		storage_ids.append(mode_override_id)
 		if not storage_ids.is_empty():
 			var storage_result = (
 				await Platform.get_nakama_client()
@@ -237,6 +258,15 @@ func fetch_party_status() -> void:
 							if not override_id.is_empty():
 								party["leader_id"] = (
 									override_id)
+						continue
+					if obj.collection == _PARTY_MODE_COLLECTION:
+						var mode_parsed: Variant = (
+							JSON.parse_string(obj.value))
+						if mode_parsed is Dictionary:
+							var mode_value: String = (
+								mode_parsed.get("mode_id", ""))
+							if not mode_value.is_empty():
+								party["game_mode"] = mode_value
 						continue
 					if ready_user_ids.has(obj.user_id):
 						var parsed: Variant = JSON.parse_string(
@@ -332,6 +362,37 @@ func set_ready(party_id: String, ready: bool) -> void:
 	party_ready_updated.emit(
 		data if data is Dictionary else
 		{"party_id": party_id, "ready": ready})
+
+
+## Set the party's matchmaker game mode (leader-only). The
+## server persists the choice on a server-owned storage row and
+## fans out a party_state_changed notification with
+## event=mode_changed so other members refresh and see the
+## change. Stage 5.7.
+##
+## Emits `party_mode_set({party_id, mode_id})` on success and
+## `request_failed(error)` on failure (e.g. caller is not the
+## leader).
+signal party_mode_set(data: Dictionary)
+
+
+func set_mode(party_id: String, mode_id: String) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_set_mode",
+		JSON.stringify({
+			"party_id": party_id,
+			"mode_id": mode_id,
+		}))
+	if rpc_result.is_exception():
+		request_failed.emit(_describe(rpc_result.get_exception()))
+		return
+	var data: Variant = JSON.parse_string(rpc_result.payload)
+	party_mode_set.emit(
+		data if data is Dictionary else
+		{"party_id": party_id, "mode_id": mode_id})
 
 
 ## Fetch (or generate) the shareable 6-char invite code for the

@@ -46,7 +46,31 @@ type versionCheckResponse struct {
 	MatchmakerMinPlayers int    `json:"matchmaker_min_players,omitempty"`
 	MatchmakerMaxPlayers int    `json:"matchmaker_max_players,omitempty"`
 	MatchmakerQuery      string `json:"matchmaker_query,omitempty"`
-	IsCompatible         bool   `json:"is_compatible"`
+	// MatchmakerModes is the game.yaml `matchmaker_rules.modes`
+	// list, surfaced verbatim so the client can populate a
+	// game-mode picker without authenticating first (version_check
+	// is HTTP-key gated, not session-gated). Empty slice when the
+	// game declares no modes — clients treat that as "single-mode
+	// game; hide the picker". Stage 4.7 / 5.7.
+	MatchmakerModes []gameMode `json:"matchmaker_modes,omitempty"`
+	IsCompatible    bool       `json:"is_compatible"`
+}
+
+// gameMode is one entry in `matchmaker_rules.modes`. The client
+// uses {id, display_name_key, description_key, is_default} for
+// the picker UI; the runtime uses {min_players, max_players,
+// query} to override the top-level matchmaker rules when the
+// matched players' tickets agree on a `game_mode` property. JSON
+// keys mirror the game.yaml field names so the per-game-config
+// Raw blob round-trips through register_game without translation.
+type gameMode struct {
+	ID              string `json:"id"`
+	DisplayNameKey  string `json:"display_name_key,omitempty"`
+	DescriptionKey  string `json:"description_key,omitempty"`
+	MinPlayers      int    `json:"min_players,omitempty"`
+	MaxPlayers      int    `json:"max_players,omitempty"`
+	Query           string `json:"query,omitempty"`
+	IsDefault       bool   `json:"is_default,omitempty"`
 }
 
 // versionCheckRpcFactory returns the RPC handler bound to the
@@ -85,6 +109,7 @@ func versionCheckRpcFactory(
 		mmMin := 0
 		mmMax := 0
 		mmQuery := ""
+		var modes []gameMode
 		if args.GameID != "" && games != nil {
 			if gc, ok := games.Get(args.GameID); ok {
 				protocolVersion = gc.ProtocolVersion
@@ -92,6 +117,7 @@ func versionCheckRpcFactory(
 				legalVersion = parseLegalVersionFromConfig(gc)
 				mmMin, mmMax, mmQuery =
 					parseMatchmakerRulesFromConfig(gc)
+				modes = parseModesFromConfig(gc)
 			}
 		}
 
@@ -104,6 +130,7 @@ func versionCheckRpcFactory(
 			MatchmakerMinPlayers: mmMin,
 			MatchmakerMaxPlayers: mmMax,
 			MatchmakerQuery:      mmQuery,
+			MatchmakerModes:      modes,
 			IsCompatible:         compatible,
 		})
 		if err != nil {
@@ -137,6 +164,42 @@ func parseMatchmakerRulesFromConfig(
 	return blob.MatchmakerRules.MinPlayers,
 		blob.MatchmakerRules.MaxPlayers,
 		blob.MatchmakerRules.Query
+}
+
+// parseModesFromConfig pulls the `matchmaker_rules.modes` list
+// out of a game's raw config blob. Returns nil when the game
+// declares no modes (single-mode game; client hides picker) or
+// when the blob doesn't parse. Entries with empty `id` are
+// dropped — every other field is optional and the client falls
+// back to compile-time defaults.
+//
+// Also used as the matchmaker hook's source of truth for per-mode
+// min/max/query overrides (Stage 4.7 + 5.7); kept in version.go
+// rather than per_game_config.go because the response shape is
+// already shaped against this type via versionCheckResponse.
+func parseModesFromConfig(gc *GameConfig) []gameMode {
+	if gc == nil || len(gc.Raw) == 0 {
+		return nil
+	}
+	var blob struct {
+		MatchmakerRules struct {
+			Modes []gameMode `json:"modes"`
+		} `json:"matchmaker_rules"`
+	}
+	if err := json.Unmarshal(gc.Raw, &blob); err != nil {
+		return nil
+	}
+	if len(blob.MatchmakerRules.Modes) == 0 {
+		return nil
+	}
+	out := make([]gameMode, 0, len(blob.MatchmakerRules.Modes))
+	for _, m := range blob.MatchmakerRules.Modes {
+		if m.ID == "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // parseLegalVersionFromConfig pulls `legal.legal_version` out of

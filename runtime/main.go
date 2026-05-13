@@ -39,6 +39,8 @@
 //                            enqueue with a shared party_id.
 //   - party_set_ready:     toggle the caller's per-party ready
 //                            flag (fans out party_state_changed).
+//   - party_set_mode:      leader picks the matchmaker game mode
+//                            for the whole party (Stage 5.7).
 //   - party_get_invite_code: fetch / generate a 6-char invite
 //                            code for the caller's party.
 //   - party_join_by_code:   join a party using a previously-
@@ -286,6 +288,11 @@ func InitModule(
 	if err := addRpc(
 		"party_set_ready",
 		partySetReadyRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_set_mode",
+		partySetModeRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(
