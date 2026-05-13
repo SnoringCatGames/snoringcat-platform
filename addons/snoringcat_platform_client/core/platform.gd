@@ -14,16 +14,19 @@
 ##
 ## Subsystem references (populated incrementally as Stage 6 of the
 ## multi-game extraction lands each one):
-##     Platform.auth          — sign-in, sign-out, token refresh
-##     Platform.account       — profile, link/unlink, delete
-##     Platform.friends       — list, add by code, accept/decline
-##     Platform.party         — create, invite, leave, chat
-##     Platform.presence      — set / read presence
-##     Platform.settings      — local + cloud sync (global / per-game)
-##     Platform.matchmaking   — start, poll, cancel
-##     Platform.session       — connect / disconnect (delegates to
-##                              game-side session-provider)
-##     Platform.screens       — reusable auth / consent screens
+##     Platform.auth                — sign-in, sign-out, token refresh
+##     Platform.account             — profile, link/unlink, delete
+##     Platform.friends             — list, add by code, accept/decline
+##     Platform.party               — create, invite, leave, chat
+##     Platform.presence            — set / read presence
+##     Platform.notification_socket — long-lived Nakama realtime
+##                                    socket: persistent + transient
+##                                    notifications, channel messages
+##     Platform.settings            — local + cloud sync
+##     Platform.matchmaking         — start, poll, cancel
+##     Platform.session             — connect / disconnect (delegates
+##                                    to game-side session-provider)
+##     Platform.screens             — reusable auth / consent screens
 ##
 ## Game code assigns its own implementations into these slots (or
 ## the addon does, once a subsystem is extracted). Today all
@@ -92,6 +95,7 @@ var account
 var friends
 var party
 var presence
+var notification_socket
 var settings
 var matchmaking
 var session
@@ -200,6 +204,7 @@ func register_subsystem(subsystem_name: String, value) -> void:
 		"friends": friends = value
 		"party": party = value
 		"presence": presence = value
+		"notification_socket": notification_socket = value
 		"settings": settings = value
 		"matchmaking": matchmaking = value
 		"session": session = value
