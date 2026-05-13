@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -174,6 +175,202 @@ func TestSynthesizeMockDeployUniqueRequestIDs(t *testing.T) {
 		t.Fatalf("distinct timestamps produced same request_id: %q",
 			a.RequestID)
 	}
+}
+
+// TestAllocationFallbackGeographies locks the retry rotation. The
+// first attempt (index 0) returns nil so the caller's deployReq
+// stands; subsequent attempts return single-continent slices that
+// cycle through allocationGeographyRotation. Wraps past the end
+// so a future bump to maxAllocationAttempts > rotation length
+// doesn't panic.
+func TestAllocationFallbackGeographies(t *testing.T) {
+	t.Run("attempt-0-returns-nil", func(t *testing.T) {
+		if got := allocationFallbackGeographies(0); got != nil {
+			t.Errorf("attempt 0 should leave caller's deployReq"+
+				" alone, got %v", got)
+		}
+		if got := allocationFallbackGeographies(-1); got != nil {
+			t.Errorf("negative index should be nil, got %v", got)
+		}
+	})
+
+	t.Run("first-retry-uses-rotation-head", func(t *testing.T) {
+		got := allocationFallbackGeographies(1)
+		want := []string{allocationGeographyRotation[0]}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("attempt 1 = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("walks-rotation", func(t *testing.T) {
+		for i := 1; i <= len(allocationGeographyRotation); i++ {
+			got := allocationFallbackGeographies(i)
+			want := allocationGeographyRotation[(i-1)%len(
+				allocationGeographyRotation)]
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("attempt %d = %v, want [%s]",
+					i, got, want)
+			}
+		}
+	})
+
+	t.Run("wraps-past-rotation-length", func(t *testing.T) {
+		// Attempt N where N > rotation length must not panic
+		// and must wrap to the rotation head. Locks the wrap
+		// contract so a future bump to maxAllocationAttempts
+		// beyond the rotation length is safe.
+		over := len(allocationGeographyRotation) + 1
+		got := allocationFallbackGeographies(over)
+		want := allocationGeographyRotation[0]
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("wrap to head: got %v, want [%s]",
+				got, want)
+		}
+	})
+
+	t.Run("returns-single-continent", func(t *testing.T) {
+		// Each retry pins ONE continent — multi-continent
+		// fallbacks would defeat the point of rotating away
+		// from the failing region.
+		for i := 1; i < 6; i++ {
+			got := allocationFallbackGeographies(i)
+			if len(got) != 1 {
+				t.Errorf("attempt %d should return one continent,"+
+					" got %v", i, got)
+			}
+		}
+	})
+}
+
+// TestAllocationBackoff covers the exponential-up-to-cap policy.
+// Attempt 0 = 0 (no delay before the initial attempt); attempt N
+// doubles from baseAllocationBackoff up to maxAllocationBackoff
+// regardless of how high N climbs.
+func TestAllocationBackoff(t *testing.T) {
+	t.Run("attempt-0-is-zero", func(t *testing.T) {
+		if got := allocationBackoff(0); got != 0 {
+			t.Errorf("initial attempt should not sleep, got %v",
+				got)
+		}
+		if got := allocationBackoff(-1); got != 0 {
+			t.Errorf("negative index should be zero, got %v", got)
+		}
+	})
+
+	t.Run("attempt-1-uses-base", func(t *testing.T) {
+		if got := allocationBackoff(1); got != baseAllocationBackoff {
+			t.Errorf("attempt 1 = %v, want %v", got,
+				baseAllocationBackoff)
+		}
+	})
+
+	t.Run("monotonic-up-to-cap", func(t *testing.T) {
+		prev := allocationBackoff(0)
+		// First retry is base; each subsequent retry must be
+		// >= the previous one (exponential growth or already at
+		// the cap).
+		for i := 1; i < 8; i++ {
+			cur := allocationBackoff(i)
+			if cur < prev {
+				t.Errorf("attempt %d backoff %v < attempt %d %v",
+					i, cur, i-1, prev)
+			}
+			if cur > maxAllocationBackoff {
+				t.Errorf("attempt %d backoff %v > cap %v",
+					i, cur, maxAllocationBackoff)
+			}
+			prev = cur
+		}
+	})
+
+	t.Run("hits-cap-eventually", func(t *testing.T) {
+		// At high attempt indices we should be at the cap. The
+		// exact attempt index where this lands depends on the
+		// ratio of cap to base; we just assert that a very deep
+		// retry chain saturates rather than runs away.
+		if got := allocationBackoff(20); got != maxAllocationBackoff {
+			t.Errorf("attempt 20 = %v, want cap %v",
+				got, maxAllocationBackoff)
+		}
+	})
+
+	t.Run("exponential-doubles", func(t *testing.T) {
+		// Specifically: while we're under the cap, each step
+		// doubles. Locks the policy so a future change to the
+		// formula trips the test.
+		want1 := baseAllocationBackoff
+		want2 := 2 * baseAllocationBackoff
+		want3 := 4 * baseAllocationBackoff
+		if got := allocationBackoff(1); got != want1 {
+			t.Errorf("attempt 1 = %v, want %v", got, want1)
+		}
+		if want2 <= maxAllocationBackoff {
+			if got := allocationBackoff(2); got != want2 {
+				t.Errorf("attempt 2 = %v, want %v", got, want2)
+			}
+		}
+		if want3 <= maxAllocationBackoff {
+			if got := allocationBackoff(3); got != want3 {
+				t.Errorf("attempt 3 = %v, want %v", got, want3)
+			}
+		}
+	})
+}
+
+// TestSleepOrCtxDone covers both the timer-elapsed and the ctx-
+// cancelled branches.
+func TestSleepOrCtxDone(t *testing.T) {
+	t.Run("zero-duration-returns-immediately", func(t *testing.T) {
+		ctx := context.Background()
+		start := time.Now()
+		if err := sleepOrCtxDone(ctx, 0); err != nil {
+			t.Errorf("zero duration should return nil, got %v",
+				err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
+			t.Errorf("zero duration took %v, want ~0", elapsed)
+		}
+	})
+
+	t.Run("negative-duration-returns-immediately", func(t *testing.T) {
+		ctx := context.Background()
+		if err := sleepOrCtxDone(ctx, -1*time.Second); err != nil {
+			t.Errorf("negative duration should return nil, got %v",
+				err)
+		}
+	})
+
+	t.Run("timer-elapses", func(t *testing.T) {
+		ctx := context.Background()
+		start := time.Now()
+		if err := sleepOrCtxDone(ctx, 10*time.Millisecond); err != nil {
+			t.Errorf("normal sleep should return nil, got %v",
+				err)
+		}
+		if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+			t.Errorf("returned too early: %v", elapsed)
+		}
+	})
+
+	t.Run("ctx-cancel-returns-err", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		// Cancel after a short delay; sleepOrCtxDone should
+		// observe the cancel and return before the long timer
+		// fires.
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			cancel()
+		}()
+		start := time.Now()
+		err := sleepOrCtxDone(ctx, 10*time.Second)
+		if err == nil {
+			t.Errorf("cancelled ctx should return non-nil err")
+		}
+		if elapsed := time.Since(start); elapsed > 1*time.Second {
+			t.Errorf("ctx cancel didn't short-circuit: %v",
+				elapsed)
+		}
+	})
 }
 
 func TestPickDominantGameID(t *testing.T) {

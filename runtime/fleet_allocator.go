@@ -342,6 +342,86 @@ const (
 	mockTCPPort  = 14434
 )
 
+// maxAllocationAttempts caps how many times the matchmaker hook
+// will retry an Edgegap allocation that fails to produce a usable
+// (deploy, status) pair. 3 = one initial attempt + two retries.
+// Beyond that we send `match_failed` to every matched player so
+// the client surfaces a clean error instead of sitting on its
+// 120 s timeout.
+const maxAllocationAttempts = 3
+
+// baseAllocationBackoff is the delay before the first retry. Each
+// subsequent retry doubles the previous delay up to
+// maxAllocationBackoff. Total worst-case wait across retries
+// (excluding the per-attempt 90 s polling budget) is bounded.
+const baseAllocationBackoff = 1 * time.Second
+
+// maxAllocationBackoff caps the exponential backoff so deep retry
+// chains don't blow past the client's 120 s matchmaker timeout.
+const maxAllocationBackoff = 8 * time.Second
+
+// allocationGeographyRotation is the continent fallback list used
+// on retry attempts. The first attempt uses the caller-built
+// `deployReq` (which honours per-player IP geo-routing when at
+// least one client IP was recorded). Retries drop the IP list and
+// pin a single continent so Edgegap routes to a region with
+// capacity. The rotation order is alpha by region size to bias
+// retries toward the busiest regions first.
+var allocationGeographyRotation = []string{
+	"north_america",
+	"europe",
+	"asia",
+}
+
+// allocationFallbackGeographies returns the Geographies value to
+// apply at the given retry attempt index. Index 0 returns nil —
+// the caller's existing deployReq stands for the first attempt.
+// Index 1+ returns a single-continent slice rotating through
+// allocationGeographyRotation. Wraps past the end so call sites
+// don't have to bounds-check, even though maxAllocationAttempts
+// caps the actual call count.
+func allocationFallbackGeographies(attemptIndex int) []string {
+	if attemptIndex < 1 {
+		return nil
+	}
+	geo := allocationGeographyRotation[(attemptIndex-1)%len(
+		allocationGeographyRotation)]
+	return []string{geo}
+}
+
+// allocationBackoff returns the sleep duration before the given
+// retry attempt index. Index 0 returns 0 (no delay before the
+// initial attempt). Index 1 returns baseAllocationBackoff,
+// doubling each subsequent index up to maxAllocationBackoff.
+func allocationBackoff(attemptIndex int) time.Duration {
+	if attemptIndex < 1 {
+		return 0
+	}
+	d := baseAllocationBackoff << (attemptIndex - 1)
+	if d <= 0 || d > maxAllocationBackoff {
+		d = maxAllocationBackoff
+	}
+	return d
+}
+
+// sleepOrCtxDone blocks for `d` or until ctx is cancelled. Returns
+// ctx.Err() on cancellation, nil otherwise. Used by the allocation
+// retry loop so a matchmaker context that's cancelled mid-backoff
+// doesn't waste cycles before bailing.
+func sleepOrCtxDone(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // synthesizeMockDeploy returns a canned (deploy, status) pair the
 // matchmaker hook uses in EDGEGAP_MOCK_DEPLOY mode. The request_id
 // embeds the current unix nanos so two concurrent mock matches
@@ -630,34 +710,53 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				" (no real Edgegap allocation, deployReq=%+v)",
 			deploy.RequestID, deployReq)
 	} else {
-		d, err := a.edgegap.Deploy(ctx, deployReq)
-		if err != nil {
-			logger.Error("edgegap deploy: %v", err)
-			return "", err
-		}
-		logger.Info(
-			"edgegap request_id=%s, polling for ready",
-			d.RequestID)
-		deploy = d
-	}
-
-	// Helper: terminate the deploy we just allocated when an
-	// allocation-side error makes it impossible to ship a
-	// usable match_ready. Without this, the deploy stays alive
-	// until Edgegap's 24h max_duration cap. No-op in mock mode
-	// (no real deploy to stop).
-	stopOnErr := func(reason string) {
-		if a.mockDeploy {
-			return
-		}
-		if stopErr := a.edgegap.Stop(ctx, deploy.RequestID); stopErr != nil {
+		// Retry loop with exponential backoff + region fallback.
+		// Each attempt covers Deploy + status poll + register
+		// wait; a failure at any stage tears down that attempt's
+		// deploy (best-effort Stop) before the next attempt runs.
+		// On retry, the IP list is dropped (geo-routing already
+		// failed by definition) and the Geographies field rotates
+		// through allocationGeographyRotation so a saturated
+		// region doesn't trap every attempt.
+		var lastErr error
+		for attempt := 0; attempt < maxAllocationAttempts; attempt++ {
+			if attempt > 0 {
+				backoff := allocationBackoff(attempt)
+				fallbackGeo := allocationFallbackGeographies(attempt)
+				logger.Info(
+					"edgegap allocation retry %d/%d after %s"+
+						" (geo=%v, prev err: %v)",
+					attempt+1, maxAllocationAttempts,
+					backoff, fallbackGeo, lastErr)
+				if err := sleepOrCtxDone(ctx, backoff); err != nil {
+					lastErr = err
+					break
+				}
+				deployReq.IPList = nil
+				deployReq.Geographies = fallbackGeo
+			}
+			d, s, err := a.tryAllocate(ctx, logger, nk, deployReq)
+			if err == nil {
+				deploy = d
+				status = s
+				logger.Info(
+					"edgegap allocation succeeded on attempt %d/%d:"+
+						" request_id=%s",
+					attempt+1, maxAllocationAttempts, d.RequestID)
+				break
+			}
+			lastErr = err
 			logger.Warn(
-				"failed to stop orphaned deploy %s after %s: %v",
-				deploy.RequestID, reason, stopErr)
-		} else {
-			logger.Info(
-				"stopped orphaned deploy %s (%s)",
-				deploy.RequestID, reason)
+				"edgegap allocation attempt %d/%d failed: %v",
+				attempt+1, maxAllocationAttempts, err)
+		}
+		if deploy == nil {
+			sendAllocationFailed(
+				ctx, logger, nk, entries,
+				maxAllocationAttempts, lastErr)
+			return "", fmt.Errorf(
+				"edgegap allocation failed after %d attempts: %w",
+				maxAllocationAttempts, lastErr)
 		}
 	}
 
@@ -699,69 +798,18 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			deploy.RequestID, err)
 	}
 
-	// Poll Edgegap for READY (real mode only). Mock mode already
-	// has a synthesized status with CurrentStatus="Status.READY"
-	// and the canned ports map, so it skips this loop entirely.
-	if !a.mockDeploy {
-		pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		defer cancel()
-		deadline := time.Now().Add(90 * time.Second)
-		for time.Now().Before(deadline) {
-			s, err := a.edgegap.Status(pollCtx, deploy.RequestID)
-			if err != nil {
-				logger.Warn("edgegap status check: %v", err)
-			} else if s.CurrentStatus == "Status.READY" || s.CurrentStatus == "Ready" {
-				status = s
-				break
-			}
-			time.Sleep(2 * time.Second)
-		}
-		if status == nil {
-			stopOnErr("polling timeout")
-			return "", fmt.Errorf("edgegap deployment %s did not become ready in 90s", deploy.RequestID)
-		}
-	}
-
 	// Build the signed signaling URL clients connect to.
 	// Picks the TCP host port (Edgegap's "signaling" entry
 	// in status.Ports → container 4434/TCP). Caddy +
 	// signaling-proxy on the platform host validate the
-	// HMAC token and bridge to that (ip, tcp_port).
-	if status.PublicIP == "" {
-		stopOnErr("missing PublicIP")
-		return "", fmt.Errorf(
-			"edgegap status missing PublicIP (request=%s)",
-			deploy.RequestID)
-	}
+	// HMAC token and bridge to that (ip, tcp_port). The
+	// PublicIP / TCP port validity was already enforced by
+	// tryAllocate (real mode) or synthesizeMockDeploy (mock
+	// mode), so the values are guaranteed non-empty here.
 	tcpPort := pickTCPPort(status.Ports)
-	if tcpPort == 0 {
-		stopOnErr("missing TCP port")
-		return "", fmt.Errorf(
-			"edgegap status has no TCP port (request=%s, ports=%+v)",
-			deploy.RequestID, status.Ports)
-	}
 	signalingURL := signSignalingURL(
 		a.signalingDomain, a.signalingHmacSecret,
 		status.PublicIP, tcpPort, time.Now())
-
-	// Wait for the in-container Godot to call register_server.
-	// Edgegap reports CurrentStatus=READY when the container
-	// process starts; the Godot signaling WS doesn't bind for
-	// another second or so, and clients that arrive in that
-	// window get connection-refused on every retry. The server
-	// posts to register_server immediately after binding, so
-	// the storage row's existence is the readiness signal.
-	//
-	// Mock mode skips this — no real game server is going to
-	// register, and a 30 s wait per mock match would defeat the
-	// "fast test feedback" goal.
-	if !a.mockDeploy {
-		if err := waitForServerRegistered(
-			ctx, logger, nk, deploy.RequestID); err != nil {
-			stopOnErr("server didn't register: " + err.Error())
-			return "", err
-		}
-	}
 
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server
@@ -798,6 +846,159 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
+}
+
+// tryAllocate runs one full Edgegap allocation attempt: Deploy →
+// poll Status until READY → validate the resolved IP and TCP port
+// → wait for the in-container Godot to register itself. Returns
+// the resolved (deploy, status) pair on success. On any failure
+// after a successful Deploy, attempts a best-effort Stop on the
+// allocated deploy so retries don't leak Edgegap container-hours.
+// Callers wrap this in the retry loop in OnMatchmakerMatched.
+func (a *fleetAllocator) tryAllocate(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	deployReq edgegapDeployRequest,
+) (*edgegapDeployResponse, *edgegapStatusResponse, error) {
+	deploy, err := a.edgegap.Deploy(ctx, deployReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("edgegap deploy: %w", err)
+	}
+	logger.Info(
+		"edgegap request_id=%s, polling for ready",
+		deploy.RequestID)
+
+	// Poll Edgegap for READY. Container start latency is normally
+	// 1-2 s but can spike under regional load.
+	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(90 * time.Second)
+	var status *edgegapStatusResponse
+	for time.Now().Before(deadline) {
+		s, sErr := a.edgegap.Status(pollCtx, deploy.RequestID)
+		if sErr != nil {
+			logger.Warn(
+				"edgegap status check (request=%s): %v",
+				deploy.RequestID, sErr)
+		} else if s.CurrentStatus == "Status.READY" ||
+			s.CurrentStatus == "Ready" {
+			status = s
+			break
+		}
+		if err := sleepOrCtxDone(pollCtx, 2*time.Second); err != nil {
+			break
+		}
+	}
+	if status == nil {
+		a.stopDeploy(ctx, logger, deploy.RequestID, "polling timeout")
+		return nil, nil, fmt.Errorf(
+			"edgegap deployment %s did not become ready in 90s",
+			deploy.RequestID)
+	}
+
+	// Validate the resolved status carries what downstream code
+	// needs. A "successful" deploy with missing IP/port is unusable;
+	// stop it and surface the failure so the retry loop can swap
+	// regions before trying again.
+	if status.PublicIP == "" {
+		a.stopDeploy(
+			ctx, logger, deploy.RequestID, "missing PublicIP")
+		return nil, nil, fmt.Errorf(
+			"edgegap status missing PublicIP (request=%s)",
+			deploy.RequestID)
+	}
+	if pickTCPPort(status.Ports) == 0 {
+		a.stopDeploy(
+			ctx, logger, deploy.RequestID, "missing TCP port")
+		return nil, nil, fmt.Errorf(
+			"edgegap status has no TCP port (request=%s, ports=%+v)",
+			deploy.RequestID, status.Ports)
+	}
+
+	// Wait for the in-container Godot to call register_server.
+	// Edgegap reports CurrentStatus=READY when the container
+	// process starts; the Godot signaling WS doesn't bind for
+	// another second or so, and clients that arrive in that
+	// window get connection-refused on every retry. The server
+	// posts to register_server immediately after binding, so
+	// the storage row's existence is the readiness signal.
+	if err := waitForServerRegistered(
+		ctx, logger, nk, deploy.RequestID); err != nil {
+		a.stopDeploy(
+			ctx, logger, deploy.RequestID,
+			"server didn't register: "+err.Error())
+		return nil, nil, fmt.Errorf(
+			"wait for server registered: %w", err)
+	}
+
+	return deploy, status, nil
+}
+
+// stopDeploy terminates a deploy that allocated but didn't reach a
+// usable state. Best-effort: a Stop failure is logged but doesn't
+// escalate — Edgegap's 24h max_duration cap is the safety net.
+// No-op in mock mode (no real deploy exists to stop).
+func (a *fleetAllocator) stopDeploy(
+	ctx context.Context,
+	logger runtime.Logger,
+	requestID string,
+	reason string,
+) {
+	if a.mockDeploy {
+		return
+	}
+	if err := a.edgegap.Stop(ctx, requestID); err != nil {
+		logger.Warn(
+			"failed to stop orphaned deploy %s after %s: %v",
+			requestID, reason, err)
+	} else {
+		logger.Info(
+			"stopped orphaned deploy %s (%s)", requestID, reason)
+	}
+}
+
+// sendAllocationFailed sends a `match_failed` notification to every
+// matched player after the retry loop has exhausted all attempts.
+// The `message` field includes the "allocation" substring so the
+// game-side `_classify_matchmaking_failure` classifier routes it
+// to LOADING.ALLOCATION_FAILED — recoverable + retry button on the
+// loading screen, not toast-and-bounce.
+//
+// Distinct from abortProtocolMismatch: that helper tailors per-
+// player copy by whether that player's client was the mismatched
+// one; allocation failure is uniform — every matched player saw
+// the same failure mode (no usable Edgegap deploy emerged).
+func sendAllocationFailed(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	entries []runtime.MatchmakerEntry,
+	attempts int,
+	lastErr error,
+) {
+	subject := "match_failed"
+	content := map[string]any{
+		"reason":   "allocation_failed",
+		"attempts": attempts,
+		"message": fmt.Sprintf(
+			"Edgegap allocation failed after %d attempts."+
+				" Please try again in a moment.",
+			attempts),
+	}
+	if lastErr != nil {
+		content["last_error"] = lastErr.Error()
+	}
+	for _, e := range entries {
+		userID := e.GetPresence().GetUserId()
+		if err := nk.NotificationSend(
+			ctx, userID, subject, content, 100, "", true,
+		); err != nil {
+			logger.Warn(
+				"notify match_failed (allocation) to %s: %v",
+				userID, err)
+		}
+	}
 }
 
 // abortProtocolMismatch sends a per-player `match_failed`
