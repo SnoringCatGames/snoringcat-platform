@@ -159,11 +159,11 @@ func deleteAccountRpcFactory(
 	return func(
 		ctx context.Context,
 		logger runtime.Logger,
-		_ *sql.DB,
+		db *sql.DB,
 		nk runtime.NakamaModule,
 		payload string,
 	) (string, error) {
-		return deleteAccountRpc(ctx, logger, nk, games, payload)
+		return deleteAccountRpc(ctx, logger, db, nk, games, payload)
 	}
 }
 
@@ -174,6 +174,7 @@ func deleteAccountRpcFactory(
 func deleteAccountRpc(
 	ctx context.Context,
 	logger runtime.Logger,
+	db *sql.DB,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
 	_ string,
@@ -347,38 +348,32 @@ func deleteAccountRpc(
 	// 3e. User-owned storage records across all collections.
 	// Skip the deletion-queue record so the soft-delete audit
 	// trail survives until the hard-delete cron consumes it.
-	storageCursor := ""
-	storageDeletes := []*runtime.StorageDelete{}
-	for i := 0; i < 10; i++ {
-		objects, next, sErr := nk.StorageList(
-			ctx, "", userID, "", 100, storageCursor)
-		if sErr != nil {
+	//
+	// We use a direct SQL DELETE rather than the obvious
+	// `nk.StorageList → nk.StorageDelete` pair because the
+	// underlying SQL in nk.StorageList filters with
+	// `WHERE collection = $1`, so passing collection="" matches
+	// zero rows (no record has an empty collection). The
+	// pre-Stage-7.7 loop here silently no-op'd for this reason —
+	// every user-owned game-side storage row survived the
+	// "cascade." Direct SQL also lets us scrub arbitrary game-
+	// specific collections without having to enumerate them
+	// first, which matters for compliance: a game that introduces
+	// a new collection shouldn't quietly leak data through GDPR
+	// deletes until someone remembers to update a registry.
+	if db != nil {
+		// `user_id` is a UUID column; an explicit ::uuid cast keeps
+		// the WHERE clause type-safe across PG / pgx-driver versions
+		// rather than relying on implicit text→uuid coercion.
+		if _, err := db.ExecContext(
+			ctx,
+			`DELETE FROM storage
+			 WHERE user_id = $1::uuid AND collection != $2`,
+			userID,
+			accountDeletionCollection,
+		); err != nil {
 			logger.Warn(
-				"list storage for delete %s: %v", userID, sErr)
-			break
-		}
-		for _, obj := range objects {
-			if obj.Collection == accountDeletionCollection &&
-				obj.Key == accountDeletionKey {
-				continue
-			}
-			storageDeletes = append(storageDeletes,
-				&runtime.StorageDelete{
-					Collection: obj.Collection,
-					Key:        obj.Key,
-					UserID:     userID,
-				})
-		}
-		if next == "" {
-			break
-		}
-		storageCursor = next
-	}
-	if len(storageDeletes) > 0 {
-		if err := nk.StorageDelete(
-			ctx, storageDeletes); err != nil {
-			logger.Warn(
-				"delete storage for %s: %v", userID, err)
+				"scrub user storage for %s: %v", userID, err)
 		}
 	}
 

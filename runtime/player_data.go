@@ -226,11 +226,12 @@ func exportPlayerDataRpcFactory(
 	return func(
 		ctx context.Context,
 		logger runtime.Logger,
-		_ *sql.DB,
+		db *sql.DB,
 		nk runtime.NakamaModule,
 		payload string,
 	) (string, error) {
-		return exportPlayerDataRpc(ctx, logger, nk, games, payload)
+		return exportPlayerDataRpc(
+			ctx, logger, db, nk, games, payload)
 	}
 }
 
@@ -242,6 +243,7 @@ func exportPlayerDataRpcFactory(
 func exportPlayerDataRpc(
 	ctx context.Context,
 	logger runtime.Logger,
+	db *sql.DB,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
 	_ string,
@@ -279,34 +281,67 @@ func exportPlayerDataRpc(
 	}
 
 	// All storage objects owned by this user across all
-	// collections. Pagination loop bounded at 1000 objects to
-	// stop a runaway export from blocking Nakama.
-	cursor := ""
-	for i := 0; i < 10; i++ {
-		objects, next, err := nk.StorageList(
-			ctx, "", userID, "", 100, cursor)
-		if err != nil {
-			logger.Warn("storage list for export: %v", err)
-			break
-		}
-		for _, obj := range objects {
-			var v any
-			if err := json.Unmarshal([]byte(obj.Value), &v); err != nil {
-				v = obj.Value
+	// collections. Direct SQL rather than nk.StorageList because
+	// the latter requires a non-empty collection filter (its SQL
+	// has WHERE collection = $1); passing "" silently returns
+	// zero rows. See the matching note in account.go's cascade
+	// for the longer rationale. Capped at 1000 rows so a
+	// pathological-export user can't block Nakama. Order keeps
+	// the response stable across re-runs for diffability.
+	if db != nil {
+		// `user_id` is a UUID column; explicit ::uuid cast for the
+		// same type-safety reasons as account.go's scrub.
+		rows, qErr := db.QueryContext(
+			ctx,
+			`SELECT collection, key, value, create_time, update_time
+			 FROM storage
+			 WHERE user_id = $1::uuid
+			 ORDER BY collection, key
+			 LIMIT 1000`,
+			userID,
+		)
+		if qErr != nil {
+			logger.Warn(
+				"storage list for export: %v", qErr)
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var (
+					collection string
+					key        string
+					value      string
+					createTime time.Time
+					updateTime time.Time
+				)
+				if scanErr := rows.Scan(
+					&collection, &key, &value,
+					&createTime, &updateTime); scanErr != nil {
+					logger.Warn(
+						"storage row scan for export: %v",
+						scanErr)
+					continue
+				}
+				var v any
+				if jErr := json.Unmarshal(
+					[]byte(value), &v); jErr != nil {
+					v = value
+				}
+				resp.StorageObjects = append(
+					resp.StorageObjects,
+					map[string]any{
+						"collection": collection,
+						"key":        key,
+						"value":      v,
+						"created_at": createTime.Unix(),
+						"updated_at": updateTime.Unix(),
+					})
 			}
-			resp.StorageObjects = append(resp.StorageObjects,
-				map[string]any{
-					"collection":  obj.Collection,
-					"key":         obj.Key,
-					"value":       v,
-					"created_at":  obj.CreateTime.GetSeconds(),
-					"updated_at":  obj.UpdateTime.GetSeconds(),
-				})
+			if rowsErr := rows.Err(); rowsErr != nil {
+				logger.Warn(
+					"storage rows iter for export: %v",
+					rowsErr)
+			}
 		}
-		if next == "" {
-			break
-		}
-		cursor = next
 	}
 
 	// Friends list with state for each.
