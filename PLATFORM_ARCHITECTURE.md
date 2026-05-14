@@ -84,7 +84,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 │    WebSocket (legacy)                                        │
 └──────────────────────────────────────────────────────────────┘
 
-Operations (single-host, stripped — 2026-05-06 consolidation):
+Operations (single-host, lightweight obs — 2026-05-13 Stage 7.11):
 ┌──────────────────────────────────────────────────────────────┐
 │  systemd timers on the Nakama box:                           │
 │  - cost-monitor.timer (hourly): Hetzner / Edgegap-active /   │
@@ -98,10 +98,21 @@ Operations (single-host, stripped — 2026-05-06 consolidation):
 │  - Daily Claude prod-health-check job (06:51 PT) → Discord:  │
 │    container/disk/memory/error-log/backup/Edgegap-leak       │
 │    summary.                                                  │
-│  Real-time observability stack (Prometheus/Grafana/Loki/     │
-│  Promtail) was dropped in the consolidation; logs live in    │
-│  the host's docker daemon, accessible via                    │
-│  `docker logs <container>` or `journalctl`.                  │
+│  In-box obs (re-introduced 2026-05-13):                      │
+│  - Prometheus scrapes nakama:9099 (built-in metrics +        │
+│    `snoringcat_alloc_seconds` custom timer), caddy:2019,     │
+│    node-exporter:9100, postgres-exporter:9187. 30d           │
+│    retention.                                                │
+│  - Grafana at https://grafana.snoringcat.games provisions    │
+│    Prometheus as default datasource + 5 alert rules          │
+│    (nakama-down / postgres-down / postgres-conn-saturation   │
+│    / disk-usage-high / cpu-sustained-high), Discord contact  │
+│    point.                                                    │
+│  - Loki + Promtail intentionally NOT brought back; logs      │
+│    stay on `journalctl` / `docker logs <container>`. The     │
+│    configs (`loki-config.yml`, `promtail-config.yml`) are    │
+│    preserved in `infra/remote/nakama/` for a future re-      │
+│    introduction without reconstruction.                      │
 └──────────────────────────────────────────────────────────────┘
 ```
 

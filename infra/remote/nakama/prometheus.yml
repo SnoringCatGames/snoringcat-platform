@@ -1,8 +1,16 @@
 # Prometheus scrape config for the snoringcat-platform stack.
-# Targets: Nakama metrics, both node_exporters, postgres_exporter,
-# Caddy /metrics. Loki is scraped by Prometheus too (so we can
-# alert on Loki ingestion drops, not because we serve Loki metrics
-# from Grafana directly).
+#
+# Targets after the 2026-05-13 lightweight obs re-introduction:
+# Nakama metrics, node-exporter, postgres-exporter, Caddy admin
+# /metrics. All co-tenanted on the same Hetzner CPX11
+# (nakama-prod-1) following the 2026-05-06 consolidation —
+# postgres-exporter runs alongside its postgres now, no
+# cross-host scrape over the private network.
+#
+# Loki and the postgres-prod-1 scrape jobs that lived here
+# pre-consolidation are intentionally absent: Loki isn't part
+# of the lightweight re-introduction, and the separate Postgres
+# box no longer exists.
 
 global:
   scrape_interval: 30s
@@ -27,22 +35,12 @@ scrape_configs:
       - targets: [caddy:2019]
         labels: { instance: nakama-prod-1 }
 
-  - job_name: node-nakama
+  - job_name: node
     static_configs:
       - targets: [node-exporter:9100]
         labels: { instance: nakama-prod-1 }
 
-  - job_name: node-postgres
-    static_configs:
-      - targets: ["10.0.1.20:9100"]
-        labels: { instance: postgres-prod-1 }
-
   - job_name: postgres
     static_configs:
-      - targets: ["10.0.1.20:9187"]
-        labels: { instance: postgres-prod-1 }
-
-  - job_name: loki
-    static_configs:
-      - targets: [loki:3100]
+      - targets: [postgres-exporter:9187]
         labels: { instance: nakama-prod-1 }

@@ -1,7 +1,5 @@
-# Caddy reverse proxy + automatic Let's Encrypt for Nakama. The
-# stripped-stack consolidation dropped Grafana from the box, so
-# the grafana.snoringcat.games site block and the Prometheus
-# metrics-export wiring are gone too.
+# Caddy reverse proxy + automatic Let's Encrypt for Nakama,
+# Grafana, and the WebRTC/WS signaling proxy.
 {
 	email admin@snoringcat.games
 	# Load global rate-limit zones (see github.com/mholt/caddy-ratelimit).
@@ -29,6 +27,20 @@ nakama.snoringcat.games {
 	# low-latency realtime traffic.
 	reverse_proxy nakama:7350 {
 		flush_interval -1
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+# Grafana UI fronted by Caddy TLS. Restored 2026-05-13 in
+# Stage 7.11 (lightweight obs re-introduction). Auth handled
+# by Grafana itself (admin user provisioned via env in the
+# compose; password is GRAFANA_ADMIN_PASSWORD in
+# /opt/nakama/.env).
+grafana.snoringcat.games {
+	encode gzip
+
+	reverse_proxy grafana:3000 {
 		header_up Host {host}
 		header_up X-Real-IP {remote_host}
 	}

@@ -35,9 +35,16 @@ const (
 	// tenanted alongside Nakama and the obs stack stripped to
 	// fit on 2 GB RAM. 1x CPX21 = 1x CPX11+CPX11 in this
 	// region, so the only path to actual savings was single-
-	// CPX11 + stripped stack. Visibility is now ad-hoc via
-	// the daily prod-health-check Claude job + UptimeRobot +
-	// the cost-monitor Discord summary + `journalctl`.
+	// CPX11 + stripped stack.
+	//
+	// Stage 7.11 (2026-05-13) re-introduced a lightweight obs
+	// subset (Prometheus + Grafana + node-exporter +
+	// postgres-exporter) onto the same box. Loki + Promtail
+	// stayed off — logs continue via `journalctl` /
+	// `docker logs`. Headroom check before re-enabling:
+	// 603 MB used + 1.3 GB available on the live box; the
+	// added services land in ~350 MB resident, leaving
+	// comfortable margin.
 	//
 	// Stepping back UP (cpx11→cpx21) is allowed in-place at
 	// any time if observed usage demands it. Stepping
@@ -393,6 +400,23 @@ echo "watchdog user provisioned"
 			return err
 		}
 
+		// Grafana UI. Restored 2026-05-13 in Stage 7.11 after
+		// the 2026-05-06 consolidation tore it down. Same A
+		// target as nakama-a / signaling-a (single-host
+		// deployment); Caddy multiplexes by Host header.
+		grafanaRecord, err := cloudflare.NewRecord(ctx, "grafana-a", &cloudflare.RecordArgs{
+			ZoneId:  pulumi.String(zone.Id),
+			Name:    pulumi.String("grafana"),
+			Type:    pulumi.String("A"),
+			Content: nakamaSrv.Ipv4Address,
+			Proxied: pulumi.Bool(false),
+			Ttl:     pulumi.Int(1),
+			Comment: pulumi.String("Grafana (lightweight obs)"),
+		})
+		if err != nil {
+			return err
+		}
+
 		ctx.Export("nakama_server_id", nakamaSrv.ID())
 		ctx.Export("nakama_public_ip", nakamaSrv.Ipv4Address)
 		ctx.Export("nakama_private_ip", pulumi.String(nakamaPrivateIP))
@@ -402,6 +426,8 @@ echo "watchdog user provisioned"
 		ctx.Export("nakama_url", pulumi.String("https://nakama."+sc.ZoneName))
 		ctx.Export("signaling_dns_record_id", signalingRecord.ID())
 		ctx.Export("signaling_url", pulumi.String("https://signaling."+sc.ZoneName))
+		ctx.Export("grafana_dns_record_id", grafanaRecord.ID())
+		ctx.Export("grafana_url", pulumi.String("https://grafana."+sc.ZoneName))
 
 		return nil
 	})

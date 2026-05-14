@@ -440,8 +440,13 @@ credential rotation."
   add ~$7-10/mo. The 2026-05-06 consolidation collapsed the
   original 2x CPX11 (Nakama + separate Postgres + full obs
   stack) into a single CPX11 with the obs stack stripped to
-  fit on 2 GB RAM. ARM (CAX) is EU-only; NA latency is what
-  forces us into the CPX tier in Hillsboro.
+  fit on 2 GB RAM. Stage 7.11 (2026-05-13) re-introduced a
+  lightweight obs subset (Prometheus + Grafana +
+  node-exporter + postgres-exporter; Loki + Promtail still
+  off) onto the same single-host stack &mdash; the box runs
+  with ~1.3 GB RAM headroom even with obs back on. ARM (CAX)
+  is EU-only; NA latency is what forces us into the CPX tier
+  in Hillsboro.
 - **Where to look first:** Cloud "Servers" tab.
 
 ### Cloudflare (DNS + Pages)

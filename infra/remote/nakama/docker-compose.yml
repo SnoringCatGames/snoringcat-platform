@@ -1,14 +1,14 @@
-# Single-host stack for the consolidated CPX11 deployment. Nakama
-# + Caddy + Postgres co-tenant on one box. The Prometheus / Grafana
-# / Loki / Promtail / node-exporter / postgres-exporter services
-# from the original two-box layout were dropped to free RAM on the
-# 2 GB CPX11 — operational visibility is provided ad-hoc through
-# UptimeRobot, the cost-monitor Discord pings, the daily Claude-
-# scheduled prod-health-check job, and `journalctl` / `docker logs`
-# on the host. The original observability config files
-# (prometheus.yml, loki-config.yml, etc.) are still in this
-# directory so they can be re-introduced later without
-# reconstruction.
+# Single-host stack for the consolidated CPX11 deployment.
+# Nakama + Postgres + Caddy + signaling-proxy + a lightweight
+# observability subset (Prometheus + Grafana + node-exporter +
+# postgres-exporter) all co-tenant on one box.
+#
+# Loki + Promtail (log shipping) were intentionally NOT brought
+# back in the 7.11 re-introduction (2026-05-13). Logs stay on
+# `journalctl` / `docker logs`. The Loki / Promtail configs are
+# preserved in this directory so a future game-side need for
+# queryable logs can flip them on without rebuilding from
+# scratch.
 services:
   postgres:
     image: postgres:16
@@ -55,7 +55,8 @@ services:
           --session.encryption_key "$$NAKAMA_SESSION_ENCRYPTION_KEY" \
           --session.refresh_encryption_key "$$NAKAMA_REFRESH_ENCRYPTION_KEY" \
           --runtime.http_key "$$NAKAMA_HTTP_KEY" \
-          --console.signing_key "$$NAKAMA_CONSOLE_SIGNING_KEY"
+          --console.signing_key "$$NAKAMA_CONSOLE_SIGNING_KEY" \
+          --metrics.prometheus_port 9099
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       NAKAMA_CONSOLE_PASSWORD: ${NAKAMA_CONSOLE_PASSWORD}
@@ -76,6 +77,7 @@ services:
       - "7350"
       - "7351"
       - "7349"
+      - "9099"  # Prometheus metrics endpoint.
     ports:
       - "127.0.0.1:7351:7351"
     healthcheck:
@@ -103,6 +105,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    expose:
+      - "2019"  # Caddy admin/metrics endpoint, scraped by Prometheus.
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -112,6 +116,7 @@ services:
     depends_on:
       - nakama
       - signaling-proxy
+      - grafana
 
   signaling-proxy:
     # WebSocket signaling bridge between clients and the
@@ -130,6 +135,81 @@ services:
     networks:
       - nakama-net
 
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      # 30d retention sized to the existing TSDB headroom on
+      # the 38 GB root disk. Prometheus default is 15d; 30d
+      # gives one rolling month for trend analysis without
+      # eating significant disk.
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - nakama-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://grafana.snoringcat.games
+      GF_SERVER_DOMAIN: grafana.snoringcat.games
+      GF_LOG_LEVEL: info
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    expose:
+      - "3000"
+    networks:
+      - nakama-net
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/root"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    pid: host
+    expose:
+      - "9100"
+    networks:
+      - nakama-net
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://nakama:${POSTGRES_PASSWORD}@postgres:5432/nakama?sslmode=disable"
+    expose:
+      - "9187"
+    networks:
+      - nakama-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 networks:
   nakama-net:
 
@@ -138,3 +218,5 @@ volumes:
   caddy_data:
   caddy_config:
   postgres_data:
+  prometheus_data:
+  grafana_data:

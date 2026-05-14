@@ -564,6 +564,12 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	if len(entries) == 0 {
 		return "", nil
 	}
+	// Mark the entry point so the post-allocation timer captures
+	// the full Edgegap cold-start latency (retry loop + status
+	// polling + register-server wait, all of it). Surfaces via
+	// the Nakama Prometheus endpoint as `snoringcat_alloc_seconds`;
+	// see Stage 7.11.
+	matchStart := time.Now()
 	logger.Info("matchmaker matched %d players, allocating Edgegap deployment", len(entries))
 
 	// Extract matched user_ids up-front so the inflight tracker
@@ -951,6 +957,20 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		sendMatchCancelled(ctx, logger, nk, entries)
 		return "", nil
 	}
+
+	// Record allocation cold-start latency for Prometheus
+	// scraping (Stage 7.11). Tags isolate game_id and mock-mode
+	// so a malformed mock run doesn't pollute real-mode
+	// dashboards. Recorded after the post-allocation cancel
+	// checkpoint so cancelled allocations don't skew the
+	// success-path histogram.
+	nk.MetricsTimerRecord(
+		"snoringcat_alloc_seconds",
+		map[string]string{
+			"game_id": matchGameID,
+			"mock":    strconv.FormatBool(a.mockDeploy),
+		},
+		time.Since(matchStart))
 
 	// Persist the synthetic flag so match_end / match_cancel can
 	// look it up by request_id. The Edgegap env var is also there,
