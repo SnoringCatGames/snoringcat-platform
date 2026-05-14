@@ -26,6 +26,7 @@ signal request_failed(error: String)
 signal user_blocked(data: Dictionary)
 signal user_unblocked(data: Dictionary)
 signal blocked_users_received(data: Dictionary)
+signal recent_players_received(data: Dictionary)
 
 
 # Nakama Friend states (from the SDK API):
@@ -54,10 +55,17 @@ var cached_incoming_requests: Array[Dictionary] = []
 # also acts as a local "should I show the Block button as
 # Unblock?" cache for FriendDetailsPanel.
 var cached_blocked_users: Array[Dictionary] = []
+# Stage 7.6: recent opponents from real (non-synthetic) matches.
+# Populated by fetch_recent_players via the list_recent_players
+# RPC. The "Add Friend" surface in the UI iterates this list and
+# filters out anyone already in cached_friends / pending request
+# caches.
+var cached_recent_players: Array[Dictionary] = []
 
 var _is_busy := false
 var _is_poll_busy := false
 var _is_blocked_users_busy := false
+var _is_recent_players_busy := false
 
 
 func fetch_friends() -> void:
@@ -347,12 +355,57 @@ func fetch_blocked_users() -> void:
 
 
 # --------------------------------------------------------------
+# Recent players (Stage 7.6)
+# --------------------------------------------------------------
+
+## Fetches the caller's recent-opponents list from the runtime
+## (capped at the server's `recentPlayersCap`, currently 50).
+## On success, populates `cached_recent_players` and emits
+## `recent_players_received`. Each entry has shape
+## `{player_id, username, display_name, matched_at}` where
+## `matched_at` is the unix-second timestamp of the most recent
+## match the user shared with the caller.
+##
+## Idempotent across concurrent calls — the second caller during
+## an in-flight fetch is a no-op (mirrors fetch_blocked_users).
+func fetch_recent_players() -> void:
+	if _is_recent_players_busy:
+		return
+	_is_recent_players_busy = true
+	var session := _ensure_session()
+	if session == null:
+		_is_recent_players_busy = false
+		return
+	var result = await Platform.nakama_client.rpc_async(
+		session, "list_recent_players", "")
+	_is_recent_players_busy = false
+	if result.is_exception():
+		request_failed.emit(_describe(result.get_exception()))
+		return
+	var data: Dictionary = JSON.parse_string(result.payload)
+	var raw: Array = data.get("recent_players", [])
+	var next: Array[Dictionary] = []
+	for entry in raw:
+		next.append({
+			"player_id": entry.get("user_id", ""),
+			"username": entry.get("username", ""),
+			"display_name": entry.get("display_name", ""),
+			"matched_at": int(entry.get("matched_at", 0)),
+		})
+	cached_recent_players = next
+	recent_players_received.emit({
+		"recent_players": cached_recent_players,
+	})
+
+
+# --------------------------------------------------------------
 # Status
 # --------------------------------------------------------------
 
 func is_busy() -> bool: return _is_busy
 func is_poll_busy() -> bool: return _is_poll_busy
 func is_blocked_users_busy() -> bool: return _is_blocked_users_busy
+func is_recent_players_busy() -> bool: return _is_recent_players_busy
 
 
 func is_friend(player_id: String) -> bool:

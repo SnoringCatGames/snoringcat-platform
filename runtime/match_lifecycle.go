@@ -398,6 +398,20 @@ func (m *matchLifecycle) MatchEndRpc(
 		}
 	}
 
+	// Stage 7.6 recent-players bookkeeping. Records a row for
+	// every (owner, other) pair so each matched player can
+	// surface the others in a "Recent Players" UI and add them
+	// as friends post-match. Skipped for solo matches (no pairs)
+	// inside the helper. Runs even on synthetic matches — the
+	// synthetic-probe job is single-player so the helper still
+	// short-circuits, but a future synthetic multi-player flow
+	// would record real recent-players entries. That's fine:
+	// recent-players is per-owner, opt-in via the UI, and
+	// covered by the GDPR cascade (Stage 7.7) like every other
+	// user-owned storage row.
+	writeRecentPlayersForMatch(
+		ctx, logger, nk, args.Players)
+
 	// Delete the registration record. This is also what makes
 	// match_end self-dedup: a second call for the same
 	// request_id finds the registration gone and is rejected

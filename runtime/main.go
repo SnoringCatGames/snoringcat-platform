@@ -79,6 +79,11 @@
 //                            friends table (Stage 7.4).
 //   - list_blocked_users:  list the caller's BANNED entries with
 //                            display name + username (Stage 7.4).
+//   - list_recent_players: read the caller's recent-opponents
+//                            list. match_end seeds rows for every
+//                            (owner, other) pair on a real match
+//                            so the UI can offer "add as friend"
+//                            for fellow players (Stage 7.6).
 //   - get_game_config:     read a game's public per_game_config.
 package main
 
@@ -441,6 +446,14 @@ func InitModule(
 	if err := addRpc(
 		"list_blocked_users",
 		listBlockedUsersRpcFactory(games)); err != nil {
+		return err
+	}
+
+	// Stage 7.6: recent-players list. match_end seeds rows; this
+	// RPC reads them back for the post-match "add as friend" UI.
+	if err := addRpc(
+		"list_recent_players",
+		listRecentPlayersRpcFactory(games)); err != nil {
 		return err
 	}
 
