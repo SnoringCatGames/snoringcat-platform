@@ -4,6 +4,14 @@
 	email admin@snoringcat.games
 	# Load global rate-limit zones (see github.com/mholt/caddy-ratelimit).
 	order rate_limit before basicauth
+	# Bind the admin/metrics endpoint to the container's
+	# Docker-internal interface so Prometheus (sibling
+	# container) can scrape `/metrics`. The Cloud firewall
+	# blocks 2019/tcp from the public internet; only
+	# nakama-net peers can reach it. Default `localhost:2019`
+	# is unreachable from other containers (lo isn't shared
+	# across docker-network namespaces).
+	admin 0.0.0.0:2019
 }
 
 nakama.snoringcat.games {
