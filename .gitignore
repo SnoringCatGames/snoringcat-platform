@@ -38,3 +38,9 @@ desktop.ini
 *.local
 .env
 .env.local
+
+# Plugin build artifacts (snoringcat.so already caught by *.so above,
+# but build.log + the build dir itself need to be excluded so the
+# parent repo's git status stays clean when local-smoke-test.ps1 has
+# been run against the dev docker-compose stack).
+runtime/build/
