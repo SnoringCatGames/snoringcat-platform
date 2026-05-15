@@ -48,15 +48,26 @@ func session_from_token(token: String) -> Variant:
 ## Returns null if the Nakama autoload isn't available in this
 ## project (uncommon — both hopnbop and the addon's parent
 ## project register it).
+##
+## When `host`/`port`/`scheme` are not passed, they are derived
+## from `PLATFORM_API_URL`: scheme `http` -> socket `ws`, scheme
+## `https` -> socket `wss`, default port 443. The dev stack
+## (Stage 8.29) hits `http://localhost:7350` and so produces
+## `ws://localhost:7350`.
 func create_socket(
 	host: String = "",
-	port: int = 443,
-	scheme: String = "wss",
+	port: int = -1,
+	scheme: String = "",
 ) -> Variant:
 	if not Engine.has_singleton("Nakama") and not _has_nakama_autoload():
 		return null
+	var derived: Dictionary = _derive_socket_target()
 	if host.is_empty():
-		host = _default_host()
+		host = derived.host
+	if port < 0:
+		port = derived.port
+	if scheme.is_empty():
+		scheme = derived.scheme
 	# Nakama is the autoload (see project.godot). Cast through
 	# Object.get to avoid a hard typed-property reference.
 	var nakama_autoload: Variant = (
@@ -134,24 +145,56 @@ func wait_for_signal_with_timeout(
 
 
 func _default_host() -> String:
-	# Mirrors compliance_helper's default; allow override via
-	# the same env var so both helpers point at the same stack.
+	return _derive_socket_target().host
+
+
+## Parse `PLATFORM_API_URL` into a {host, port, scheme} target
+## suitable for `NakamaClient.create_socket`. Falls back to the
+## prod `wss://nakama.snoringcat.games:443` triple when the env
+## var is unset.
+##
+## URL scheme maps to socket scheme: `http` -> `ws`, `https` ->
+## `wss`. Explicit `ws`/`wss` are passed through. Missing port
+## defaults to 443 for `wss` and 80 for `ws`.
+func _derive_socket_target() -> Dictionary:
 	var override := OS.get_environment("PLATFORM_API_URL")
 	if override.is_empty():
-		return "nakama.snoringcat.games"
-	# Strip scheme + path if present.
-	var stripped := override
-	stripped = stripped.replace("https://", "")
-	stripped = stripped.replace("http://", "")
-	stripped = stripped.replace("wss://", "")
-	stripped = stripped.replace("ws://", "")
-	var slash := stripped.find("/")
+		return {
+			"host": "nakama.snoringcat.games",
+			"port": 443,
+			"scheme": "wss",
+		}
+
+	var scheme := "wss"
+	var rest := override
+	if rest.begins_with("https://"):
+		scheme = "wss"
+		rest = rest.substr("https://".length())
+	elif rest.begins_with("http://"):
+		scheme = "ws"
+		rest = rest.substr("http://".length())
+	elif rest.begins_with("wss://"):
+		scheme = "wss"
+		rest = rest.substr("wss://".length())
+	elif rest.begins_with("ws://"):
+		scheme = "ws"
+		rest = rest.substr("ws://".length())
+
+	# Trim trailing path. `host:port/path` -> `host:port`.
+	var slash := rest.find("/")
 	if slash >= 0:
-		stripped = stripped.substr(0, slash)
-	var colon := stripped.find(":")
+		rest = rest.substr(0, slash)
+
+	var host := rest
+	var port := 443 if scheme == "wss" else 80
+	var colon := rest.find(":")
 	if colon >= 0:
-		stripped = stripped.substr(0, colon)
-	return stripped
+		host = rest.substr(0, colon)
+		var port_str := rest.substr(colon + 1)
+		var parsed := int(port_str)
+		if parsed > 0:
+			port = parsed
+	return {"host": host, "port": port, "scheme": scheme}
 
 
 func _has_nakama_autoload() -> bool:
