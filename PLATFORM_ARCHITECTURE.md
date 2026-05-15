@@ -294,9 +294,10 @@ matchmaker_rules:
   min_players: 2
   max_players: 4
   ticket_expiry_seconds: 60
-  cross_play: true
-  rules:
-    - is_web_compatible: true
+  cross_play: true                # web + native can match
+                                  # (transport falls back to WebRTC)
+  rules: []                       # reserved for future filters
+                                  # (skill bands, region pinning, etc.)
 leaderboards:
   - id: hopnbop_kills_alltime
     sort: desc
