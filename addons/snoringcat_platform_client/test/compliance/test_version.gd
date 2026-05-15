@@ -108,9 +108,17 @@ func test_runtime_status_reports_edgegap_config() -> void:
 		app_version.contains("${"),
 		"edgegap_app_version has unsubstituted placeholder: '%s'"
 			% app_version)
-	# The matchmaker hook is registered iff EDGEGAP_TOKEN is set.
-	# A live deployment should always have it set; a missing hook
-	# means matched players never get match_ready notifications.
+	# Matchmaker hook is registered when EDGEGAP_TOKEN is set
+	# (prod) OR EDGEGAP_MOCK_DEPLOY=true (compliance / dev stack;
+	# Stage 8.13). A missing hook means matched players never get
+	# match_ready notifications.
+	var hook_active: bool = (
+		bool(info.get("edgegap_token_set", false))
+		or bool(info.get("edgegap_mock_deploy", false))
+	)
 	assert_true(
-		info.get("edgegap_token_set", false),
-		"matchmaker hook is not active (EDGEGAP_TOKEN unset)")
+		hook_active,
+		(
+			"matchmaker hook is not active (EDGEGAP_TOKEN unset"
+			+ " AND EDGEGAP_MOCK_DEPLOY unset)"
+		))
