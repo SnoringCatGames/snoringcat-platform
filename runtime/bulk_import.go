@@ -6,9 +6,12 @@ package main
 // derived from the legacy primary key, so re-running the
 // migration overwrites a record with itself.
 //
-// Called from scripts/migrate_ddb_to_nakama.py via the HTTP
-// gateway with `?http_key=...`. The HTTP key is a Nakama runtime
-// config value (set in infra/remote/nakama/docker-compose.yml).
+// Originally driven by docs/archive/migrate_ddb_to_nakama.py
+// (Phase E one-shot, AWS-era) via the HTTP gateway with
+// `?http_key=...`. The HTTP key is a Nakama runtime config
+// value (set in infra/remote/nakama/docker-compose.yml). The
+// RPC remains gated behind BULK_IMPORT_ENABLED=true so a
+// future game can reuse it for its own migration.
 //
 // Payload shape:
 //   { "type": "<players|friends|...>",

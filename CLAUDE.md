@@ -148,9 +148,6 @@ repo root (or the consuming game's submodule path).
   layers on observability (Prometheus/Grafana/Loki/Promtail)
   + UptimeRobot + cost-monitor. Both idempotent with
   `-StartAt`/`-StopAt` step gates.
-- `migrate_ddb_to_nakama.py` — one-shot migration script
-  (Phase E) that copies DynamoDB rows into Nakama Storage.
-  Idempotent (`if_not_exists` semantics).
 - `test-google-auth.py`, `platform_smoke_test.gd` — live
   smoke tests for the auth flow and the addon's API client.
 - `probe-runtime-status.ps1` — calls the `runtime_status`
