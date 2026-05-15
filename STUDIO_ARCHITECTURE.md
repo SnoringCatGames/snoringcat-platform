@@ -305,10 +305,14 @@ with rollback netcode.
     Cloudflare Pages.
   - Native exports: Windows / macOS / Linux + Steam (TBD
     distribution).
-- **Key docs:** `CLAUDE.md`, `MIGRATION_PLAN.md`,
-  `platform-pivot-discussion.md`, `BUILD.md`, plus
+- **Key docs:** `CLAUDE.md`, `MULTI_GAME_ROADMAP.md`, plus
   `third_party/snoringcat-platform/PLATFORM_ARCHITECTURE.md`
-  (loaded on demand).
+  (loaded on demand). Historical / archived in
+  `hopnbop_private/docs/archive/`: `MIGRATION_PLAN.md`,
+  `platform-pivot-discussion.md`, `BUILD.md`,
+  `DISTRIBUTED_SYSTEMS_PLAN.md`,
+  `FRIENDS_PARTY_MATCHMAKING_AUDIT.md`, and
+  `test-architecture-plan.md`.
 
 #### `SnoringCatGames/ggj26` (private)
 
