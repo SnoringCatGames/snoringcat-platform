@@ -1,0 +1,187 @@
+[gd_scene load_steps=4 format=3 uid="uid://b9pccnsnt0scrn"]
+
+[ext_resource type="Script" path="res://addons/snoringcat_platform_client/ui/screens/consent_screen.gd" id="1_script"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_unfocused"]
+bg_color = Color(0, 0, 0, 0)
+content_margin_left = 2.0
+content_margin_top = 2.0
+content_margin_right = 2.0
+content_margin_bottom = 2.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_transparent"]
+bg_color = Color(0, 0, 0, 0)
+
+[node name="PlatformConsentScreen" type="PanelContainer"]
+process_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+layout_direction = 2
+script = ExtResource("1_script")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 2
+
+[node name="TopHalf" type="CenterContainer" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 1.0
+
+[node name="Logo" type="TextureRect" parent="VBoxContainer/TopHalf"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(256, 192)
+layout_mode = 2
+expand_mode = 3
+stretch_mode = 5
+
+[node name="BottomHalf" type="CenterContainer" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 2.0
+
+[node name="ContentBox" type="VBoxContainer" parent="VBoxContainer/BottomHalf"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 300)
+theme_override_constants/separation = 8
+
+[node name="LanguageRow" type="PanelContainer" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_unfocused")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer/BottomHalf/ContentBox/LanguageRow"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="Icon" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/LanguageRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+visible = false
+
+[node name="Label" type="Label" parent="VBoxContainer/BottomHalf/ContentBox/LanguageRow/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "SETTINGS.LANGUAGE"
+
+[node name="Arrow" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/LanguageRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="TermsLinkRow" type="PanelContainer" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_unfocused")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer/BottomHalf/ContentBox/TermsLinkRow"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="Icon" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/TermsLinkRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+visible = false
+
+[node name="Label" type="Label" parent="VBoxContainer/BottomHalf/ContentBox/TermsLinkRow/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "CONSENT.TERMS_OF_SERVICE"
+
+[node name="Arrow" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/TermsLinkRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="PrivacyLinkRow" type="PanelContainer" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_unfocused")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer/BottomHalf/ContentBox/PrivacyLinkRow"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="Icon" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/PrivacyLinkRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+visible = false
+
+[node name="Label" type="Label" parent="VBoxContainer/BottomHalf/ContentBox/PrivacyLinkRow/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "CONSENT.PRIVACY_POLICY"
+
+[node name="Arrow" type="TextureRect" parent="VBoxContainer/BottomHalf/ContentBox/PrivacyLinkRow/HBoxContainer"]
+layout_mode = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="AgeRow" type="PanelContainer" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_unfocused")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer/BottomHalf/ContentBox/AgeRow"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="AgeCheckBox" type="TextureButton" parent="VBoxContainer/BottomHalf/ContentBox/AgeRow/HBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+stretch_mode = 3
+
+[node name="AgeLabel" type="Label" parent="VBoxContainer/BottomHalf/ContentBox/AgeRow/HBoxContainer"]
+layout_mode = 2
+text = "CONSENT.AGE_CONFIRM"
+
+[node name="TermsRow" type="PanelContainer" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_unfocused")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="VBoxContainer/BottomHalf/ContentBox/TermsRow"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="TermsCheckBox" type="TextureButton" parent="VBoxContainer/BottomHalf/ContentBox/TermsRow/HBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+stretch_mode = 3
+
+[node name="TermsLabel" type="Label" parent="VBoxContainer/BottomHalf/ContentBox/TermsRow/HBoxContainer"]
+layout_mode = 2
+text = "CONSENT.AGREE_TERMS"
+
+[node name="Spacer" type="Control" parent="VBoxContainer/BottomHalf/ContentBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 4)
+
+[node name="ContinueButton" type="Button" parent="VBoxContainer/BottomHalf/ContentBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+custom_minimum_size = Vector2(200, 40)
+disabled = true
+text = "CONSENT.CONTINUE"
+
+[node name="ContentBottomSpacer" type="Control" parent="VBoxContainer/BottomHalf/ContentBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 40)

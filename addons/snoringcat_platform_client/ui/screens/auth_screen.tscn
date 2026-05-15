@@ -1,0 +1,109 @@
+[gd_scene load_steps=2 format=3 uid="uid://b8scauth0scrn"]
+
+[ext_resource type="Script" path="res://addons/snoringcat_platform_client/ui/screens/auth_screen.gd" id="1_script"]
+
+[node name="PlatformAuthScreen" type="PanelContainer"]
+process_mode = 3
+layout_direction = 2
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 2
+
+[node name="TopHalf" type="CenterContainer" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="Logo" type="TextureRect" parent="VBoxContainer/TopHalf"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(256, 192)
+layout_mode = 2
+expand_mode = 3
+stretch_mode = 5
+
+[node name="BottomHalf" type="CenterContainer" parent="VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 2.0
+
+[node name="ContentVBox" type="VBoxContainer" parent="VBoxContainer/BottomHalf"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="VBoxContainer/BottomHalf/ContentVBox"]
+layout_mode = 2
+size_flags_horizontal = 4
+theme_override_font_sizes/font_size = 32
+text = "AUTH.SIGN_IN"
+horizontal_alignment = 1
+
+[node name="Spacer" type="Control" parent="VBoxContainer/BottomHalf/ContentVBox"]
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+
+[node name="ButtonsContainer" type="VBoxContainer" parent="VBoxContainer/BottomHalf/ContentVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="OAuthRow" type="VBoxContainer" parent="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="GoogleButton" type="Button" parent="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer/OAuthRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(200, 40)
+layout_mode = 2
+size_flags_horizontal = 4
+text = "AUTH.GOOGLE"
+
+[node name="FacebookButton" type="Button" parent="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer/OAuthRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(200, 40)
+layout_mode = 2
+size_flags_horizontal = 4
+text = "AUTH.FACEBOOK"
+
+[node name="Spacer2" type="Control" parent="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer"]
+custom_minimum_size = Vector2(0, 4)
+layout_mode = 2
+
+[node name="AnonButton" type="Button" parent="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(200, 40)
+layout_mode = 2
+size_flags_horizontal = 4
+text = "AUTH.PLAY_ANONYMOUSLY"
+
+[node name="LoadingContainer" type="VBoxContainer" parent="VBoxContainer/BottomHalf/ContentVBox"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StatusLabel" type="Label" parent="VBoxContainer/BottomHalf/ContentVBox/LoadingContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+theme_override_font_sizes/font_size = 18
+text = "AUTH.SIGNING_IN"
+horizontal_alignment = 1
+
+[node name="ErrorLabel" type="Label" parent="VBoxContainer/BottomHalf/ContentVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+theme_override_font_sizes/font_size = 14
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[connection signal="pressed" from="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer/OAuthRow/GoogleButton" to="." method="_on_google_pressed"]
+[connection signal="pressed" from="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer/OAuthRow/FacebookButton" to="." method="_on_facebook_pressed"]
+[connection signal="pressed" from="VBoxContainer/BottomHalf/ContentVBox/ButtonsContainer/AnonButton" to="." method="_on_anonymous_pressed"]
