@@ -285,9 +285,19 @@ func _resolve_socket_session() -> NakamaSession:
 
 func _authenticate_preview_instance() -> NakamaSession:
 	var client := Platform.get_nakama_client()
+	# Stage 3 game_id scoping requires every authenticate call to
+	# carry `game_id` in session vars so the runtime's
+	# BeforeAuthenticate* hook accepts it and downstream stateful
+	# RPCs can read it back via RUNTIME_CTX_VARS. The mainline
+	# auth path threads this through `auth_api_client._build_
+	# session_vars()`; the preview path mints its own per-instance
+	# device session outside that flow, so we inline the vars dict.
 	var session: NakamaSession = (
 		await client.authenticate_device_async(
-			_preview_device_id))
+			_preview_device_id,
+			null,
+			true,
+			{"game_id": Platform.game_id}))
 	if session.is_exception():
 		var ex: NakamaException = session.get_exception()
 		matchmaking_failed.emit(
