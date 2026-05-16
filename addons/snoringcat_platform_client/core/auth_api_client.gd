@@ -871,7 +871,33 @@ func _fetch_account_profile_dict(
 	return {
 		"display_name": u.display_name,
 		"profile_image_url": u.avatar_url,
+		# token_store.linked_providers is otherwise only populated
+		# by link/unlink/merge responses; on a fresh sign-in we have
+		# to seed it from the account model or the account panel's
+		# Link/Unlink rows render in the wrong state.
+		"linked_providers": _account_to_provider_list(account),
 	}
+
+
+# Compute the linked-providers list from a fresh Nakama
+# ApiAccount: anonymous (devices), email/password, and each
+# OAuth identity that has a non-empty *_id on account.user.
+func _account_to_provider_list(account) -> Array:
+	var out: Array = []
+	if account.devices and account.devices.size() > 0:
+		out.append("anonymous")
+	if account.email and not account.email.is_empty():
+		out.append("email")
+	var u = account.user
+	if u and not u.google_id.is_empty():
+		out.append("google")
+	if u and not u.facebook_id.is_empty():
+		out.append("facebook")
+	if u and not u.apple_id.is_empty():
+		out.append("apple")
+	if u and not u.steam_id.is_empty():
+		out.append("steam")
+	return out
 
 
 # --------------------------------------------------------------
