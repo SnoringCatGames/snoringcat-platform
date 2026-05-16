@@ -83,7 +83,20 @@ func _process(_delta: float) -> void:
 		return
 
 	if _navigator.poll(_delta):
-		_activate_focused()
+		# Right + Trigger activate the focused button; Left
+		# routes to `on_back()` which dismisses the screen
+		# (same as the "Maybe Later" button).
+		if _navigator.last_activation_direction == -1:
+			on_back()
+		else:
+			_activate_focused()
+
+
+## Dismiss the upgrade screen (same as pressing
+## "Maybe Later"). Triggered by Left input or by
+## close_menu (Escape / B-button).
+func on_back() -> void:
+	_on_maybe_later_pressed()
 
 
 func _build_focusable_list() -> void:

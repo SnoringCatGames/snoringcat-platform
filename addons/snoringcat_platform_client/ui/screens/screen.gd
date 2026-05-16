@@ -42,3 +42,15 @@ func on_open() -> void:
 ## transition out). Override in subclasses for teardown.
 func on_close() -> void:
 	pass
+
+
+## Called when the screen receives a "back" / "cancel" gesture
+## (Left input on a non-horizontal-consumer focused control, or
+## an Escape / B-button press routed through close_menu /
+## toggle_pause). Default is a no-op for screens that don't
+## have a natural back action (splash, loading, auth-as-entry-
+## point, consent-must-accept). Subclasses with a back path
+## (pause → resume, game-over → return-to-lobby, legal-doc →
+## close, etc.) override to perform their navigation.
+func on_back() -> void:
+	pass

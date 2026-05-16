@@ -147,7 +147,14 @@ func _process(_delta: float) -> void:
 		return
 
 	if _navigator.poll(_delta):
-		_activate_focused()
+		# Right + Trigger activate the focused button; Left
+		# routes to `on_back()` (no-op by default for screens
+		# without a natural back action — auth is the entry
+		# point, so Left does nothing here).
+		if _navigator.last_activation_direction == -1:
+			on_back()
+		else:
+			_activate_focused()
 
 
 func _build_focusable_list() -> void:
