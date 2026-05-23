@@ -41,14 +41,13 @@ jobs:
       - name: Verify Godot
         run: ~/godot/godot --version
 
-      - name: Run compliance suite (mock mode)
+      - name: Compliance-suite coverage notice
         env:
           PLATFORM_COMPLIANCE_MODE: mock
         run: |
           if [ -d addons/snoringcat_platform_client/test/compliance ] \
               && [ "$(find addons/snoringcat_platform_client/test/compliance -name 'test_*.gd' | head -1)" ]; then
-            echo "TODO: stand up a fixture Godot project that includes this addon and run GUT against it."
-            echo "::notice::Compliance suite scaffolding only — tests get added in Phase 2."
+            echo "::notice::Compliance tests run as part of the consuming game's Tier 4 dev-stack smoke (hopnbop/scripts/local-smoke-test.ps1 + .github/workflows/compliance-matrix.yml). No standalone fixture-Godot project planned."
           else
-            echo "::notice::No compliance tests yet — Phase 2 will populate them."
+            echo "::notice::No compliance tests in tree yet."
           fi
