@@ -195,10 +195,15 @@ docker run --rm -v "$(pwd):/backend" -w /backend \
   -o ./build/snoringcat.so .
 ```
 
-**CI:** `hopnbop/.github/workflows/nakama-runtime.yml`
-and the `nakama-runtime` job in `release.yml` build and SCP
-this plugin to the Nakama host. Both check out the platform
-repo as a submodule via `SUBMODULE_PAT`.
+**CI:** `.github/workflows/nakama-runtime.yml` (in this repo)
+builds and SCPs the plugin to the Nakama host. Auto-fires on
+pushes to `main` that touch `runtime/**` or the workflow file;
+`workflow_dispatch` also available for manual rolls.
+
+The workflow used to live in `SnoringCatGames/hopnbop` (loaded
+this repo via `submodules: recursive`); moved here 2026-05-23
+so platform changes auto-deploy without a parallel submodule-
+pointer bump in the game repo.
 
 **Naming:** the directory is `runtime/` (not
 `nakama-runtime/`) so future non-Nakama runtime modules can
