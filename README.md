@@ -98,7 +98,7 @@ platform SDK version.
 
 ## Consumed by
 
-- [hopnbop_private](https://github.com/SnoringCatGames/hopnbop_private)
+- [hopnbop](https://github.com/SnoringCatGames/hopnbop)
 
 ## Sibling repos
 

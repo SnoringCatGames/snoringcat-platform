@@ -1,5 +1,5 @@
 # Friends UI panels.
-# Phase 2: extract from hopnbop_private/src/ui/settings_panel/:
+# Phase 2: extract from hopnbop/src/ui/settings_panel/:
 #   - friends_panel.tscn
 #   - friend_details_panel.tscn
 #   - add_friend_panel.tscn

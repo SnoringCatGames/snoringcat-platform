@@ -5,7 +5,7 @@ extends RefCounted
 ## specific device config is assigned yet (auth, consent).
 ##
 ## Extracted from
-## hopnbop_private/src/ui/any_device_input_poller.gd at tag
+## hopnbop/src/ui/any_device_input_poller.gd at tag
 ## pre-platform-extraction. Renamed AnyDeviceInputPoller →
 ## PlatformAnyDeviceInputPoller. Reads keyboard partition
 ## bindings from PlatformInputDeviceManager (the renamed addon

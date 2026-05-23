@@ -6,7 +6,7 @@ extends ColorRect
 ## patterns. Add as a child of a CanvasLayer to overlay the
 ## entire screen.
 ##
-## Extracted from hopnbop_private/src/ui/screen_transition.gd
+## Extracted from hopnbop/src/ui/screen_transition.gd
 ## at the platform-extraction tag.
 ##
 ## Differences from the source:

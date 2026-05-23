@@ -44,7 +44,7 @@ via git submodules:
 
    - **xcopy bridge (recommended on Windows)**: copy the addon
      into `addons/snoringcat_platform_client/` after each
-     submodule update. See `hopnbop_private/scripts/setup-platform-addon.ps1`
+     submodule update. See `hopnbop/scripts/setup-platform-addon.ps1`
      for a reference implementation.
      This avoids a Godot 4.6 parser-cache bug that bites
      directory junctions on Windows.
@@ -84,8 +84,8 @@ via git submodules:
    into the addon as they get parameterized. Until then, your
    game can reference Hop 'n Bop's implementations as a
    blueprint:
-   - `hopnbop_private/src/core/{friends,party,backend}_api_client.gd`
-   - `hopnbop_private/src/ui/settings_panel/{friends,party,account}_panel.gd`
+   - `hopnbop/src/core/{friends,party,backend}_api_client.gd`
+   - `hopnbop/src/ui/settings_panel/{friends,party,account}_panel.gd`
 
 ## Compliance tests
 

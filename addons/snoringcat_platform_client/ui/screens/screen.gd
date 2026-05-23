@@ -3,7 +3,7 @@ extends PanelContainer
 ## Base class for full-screen UI screens (auth, consent, lobby,
 ## game over, etc.).
 ##
-## Extracted from hopnbop_private/src/ui/screens/screen.gd at
+## Extracted from hopnbop/src/ui/screens/screen.gd at
 ## the platform-extraction tag.
 ##
 ## Differences from the source:

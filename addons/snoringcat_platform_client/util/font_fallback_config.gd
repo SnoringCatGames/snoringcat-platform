@@ -5,12 +5,12 @@ extends RefCounted
 ## fallbacks on the supplied themes.
 ##
 ## Extracted from
-## hopnbop_private/src/core/font_fallback_config.gd at tag
+## hopnbop/src/core/font_fallback_config.gd at tag
 ## pre-platform-extraction.
 ##
 ## Differences from the source:
 ## - Renamed FontFallbackConfig → PlatformFontFallbackConfig so
-##   the original can stay in hopnbop_private until migrated.
+##   the original can stay in hopnbop until migrated.
 ## - Removed the hard-coded `G.settings.default_theme` and HUD
 ##   theme path. The consumer passes the themes to apply
 ##   fallbacks to (and the directory for the Noto fonts).

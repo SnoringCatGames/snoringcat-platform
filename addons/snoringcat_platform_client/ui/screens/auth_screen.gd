@@ -9,7 +9,7 @@ extends PlatformScreen
 ## slots set on the inherited scene.
 ##
 ## Extracted from
-## hopnbop_private/src/ui/screens/auth_screen.gd at the
+## hopnbop/src/ui/screens/auth_screen.gd at the
 ## Stage 6.11b platform-extraction pass.
 ##
 ## Differences from the source:

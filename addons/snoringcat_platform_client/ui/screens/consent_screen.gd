@@ -12,7 +12,7 @@ extends PlatformScreen
 ## supplied via the @export slots on the inherited scene.
 ##
 ## Extracted from
-## hopnbop_private/src/ui/screens/consent_screen.gd at the
+## hopnbop/src/ui/screens/consent_screen.gd at the
 ## Stage 6.11b platform-extraction pass.
 ##
 ## Differences from the source:

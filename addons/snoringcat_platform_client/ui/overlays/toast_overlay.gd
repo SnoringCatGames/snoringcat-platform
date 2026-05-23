@@ -3,7 +3,7 @@ extends PanelContainer
 ## Displays temporary toast notifications. Toasts fade out
 ## automatically after a short delay.
 ##
-## Extracted from hopnbop_private/src/ui/toast/toast_overlay.gd
+## Extracted from hopnbop/src/ui/toast/toast_overlay.gd
 ## at the platform-extraction tag. Differences:
 ## - Renamed ToastOverlay → PlatformToastOverlay so the
 ##   in-tree copy can stay until hopnbop wires the addon.

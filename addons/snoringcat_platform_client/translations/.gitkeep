@@ -1,4 +1,4 @@
 # Translation files for platform-only strings (AUTH.*, FRIENDS.*,
 # PARTY.*, CONSENT.*, SETTINGS.*, etc.).
 # Game-specific translation strings stay in the game project.
-# Phase 2: split out from hopnbop_private/translations/.
+# Phase 2: split out from hopnbop/translations/.

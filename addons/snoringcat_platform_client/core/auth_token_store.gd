@@ -13,7 +13,7 @@ extends RefCounted
 ## on-demand before matchmaking and held only in memory for
 ## the duration of the session.
 ##
-## Extracted from hopnbop_private/src/core/auth_token_store.gd
+## Extracted from hopnbop/src/core/auth_token_store.gd
 ## at tag pre-platform-extraction. Renamed AuthTokenStore →
 ## PlatformAuthTokenStore.
 ##

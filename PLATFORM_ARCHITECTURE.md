@@ -7,8 +7,8 @@
 > This is the **live production architecture** (Nakama +
 > Hetzner + Edgegap), as of Phase F completion (2026-05-03).
 > The previous AWS GameLift design is preserved only as
-> archeology in `hopnbop_private/docs/archive/platform-pivot-discussion.md`
-> and `hopnbop_private/docs/archive/MIGRATION_PLAN.md`.
+> archeology in `hopnbop/docs/archive/platform-pivot-discussion.md`
+> and `hopnbop/docs/archive/MIGRATION_PLAN.md`.
 
 This file is intentionally **not** loaded automatically by every
 session — it's referenced from each game's project-level
@@ -24,7 +24,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 - **Multi-game design:** every component carries a `game_id`
   label / column; one platform instance hosts N games concurrently.
 - **Source of truth for migration progress:**
-  `hopnbop_private/docs/archive/MIGRATION_PLAN.md` and the migration state
+  `hopnbop/docs/archive/MIGRATION_PLAN.md` and the migration state
   file at `~/.hopnbop-migration/state.json`.
 
 ---
@@ -279,7 +279,7 @@ Each game declares itself via `game.yaml` shipped in its
 project. Backend loads it at Nakama startup.
 
 ```yaml
-# Example: hopnbop_private/game.yaml
+# Example: hopnbop/game.yaml
 game_id: hopnbop
 display_name: Hop 'n Bop
 edgegap_app_slug: hopnbop-server
@@ -599,7 +599,7 @@ cat /var/lib/snoringcat/cost-monitor-state.json
 | Cost monitor source | `snoringcat-platform/infra/remote/cost-monitor/` |
 | Cost monitor deployed | `/opt/snoringcat/cost-monitor/` on Nakama host |
 | Cost monitor state | `/var/lib/snoringcat/cost-monitor-state.json` on Nakama host |
-| Migration plan | `hopnbop_private/docs/archive/MIGRATION_PLAN.md` |
+| Migration plan | `hopnbop/docs/archive/MIGRATION_PLAN.md` |
 | Migration state | `~/.hopnbop-migration/state.json` |
 | Migration credentials | `~/.hopnbop-migration/credentials.env` (NEVER commit) |
 | Discord webhook (Claude jobs) | `~/.claude/jobs/discord-config.json` (local-only) |
@@ -715,9 +715,9 @@ A record points at the right IP. Cert state lives in
 - Game-specific gameplay logic (lives in each game's CLAUDE.md).
 - AWS-era architecture (lives in each game's CLAUDE.md until
   migration completes; then deleted).
-- Migration phases (lives in `hopnbop_private/docs/archive/MIGRATION_PLAN.md`).
+- Migration phases (lives in `hopnbop/docs/archive/MIGRATION_PLAN.md`).
 - Pre-flight credential setup (lives in
-  `hopnbop_private/docs/archive/MIGRATION_PLAN.md`).
+  `hopnbop/docs/archive/MIGRATION_PLAN.md`).
 - Cost decision rationale (lives in
-  `hopnbop_private/docs/archive/platform-pivot-discussion.md`, archived
+  `hopnbop/docs/archive/platform-pivot-discussion.md`, archived
   post-migration).

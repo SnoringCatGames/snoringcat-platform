@@ -9,7 +9,7 @@ Snoring Cat Games multiplayer titles. One AWS stack, one Godot
 addon, consumed by N game projects via git submodule.
 
 This repo is the result of extracting reusable infrastructure out
-of `hopnbop_private`. Hop 'n Bop is currently the only consumer
+of `hopnbop`. Hop 'n Bop is currently the only consumer
 but the system is built to host multiple games.
 
 The active restructure plan lives at
@@ -77,7 +77,7 @@ Game code never reaches into addon internals; calls go through:
 - `godot-rollback-netcode` — generic rollback netcode framework.
 - `godot-gamelift-session-manager` — historical (named for the
   AWS GameLift integration that's now retired). Most of the
-  addon was deleted from `hopnbop_private` during the migration.
+  addon was deleted from `hopnbop` during the migration.
   The repo's role going forward is undecided; either archive or
   re-scope as a generic "session provider" abstraction
   (Edgegap-targeted or vendor-neutral).
@@ -87,12 +87,12 @@ are version-independent from the platform.
 
 ## Code Style
 
-Follows the same conventions as `hopnbop_private`:
+Follows the same conventions as `hopnbop`:
 - Runtime Go: standard `gofmt`, `staticcheck` clean (the
   `nakama-runtime` workflow runs both).
 - GDScript: Godot style guide + 80-char lines, tabs, `not` over `!`,
   parens for line wrapping, period-terminated comments. See the
-  hopnbop_private CLAUDE.md for full conventions.
+  hopnbop CLAUDE.md for full conventions.
 
 ## Testing
 
@@ -195,7 +195,7 @@ docker run --rm -v "$(pwd):/backend" -w /backend \
   -o ./build/snoringcat.so .
 ```
 
-**CI:** `hopnbop_private/.github/workflows/nakama-runtime.yml`
+**CI:** `hopnbop/.github/workflows/nakama-runtime.yml`
 and the `nakama-runtime` job in `release.yml` build and SCP
 this plugin to the Nakama host. Both check out the platform
 repo as a submodule via `SUBMODULE_PAT`.

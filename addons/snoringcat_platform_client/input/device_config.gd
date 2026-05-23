@@ -6,10 +6,10 @@ extends RefCounted
 ## local players. Supports both gamepad device IDs and keyboard
 ## key bindings.
 ##
-## Extracted from hopnbop_private/src/core/device_config.gd at
+## Extracted from hopnbop/src/core/device_config.gd at
 ## tag pre-platform-extraction. Renamed DeviceConfig →
 ## PlatformDeviceConfig so the original can stay in
-## hopnbop_private until the game wires in the addon copy.
+## hopnbop until the game wires in the addon copy.
 
 ## Device type enumeration.
 enum DeviceType {

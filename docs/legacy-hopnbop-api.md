@@ -1,12 +1,12 @@
 # Legacy Hop 'n Bop API snapshot
 
 This document is a frozen snapshot of the
-**current** `hopnbop_private` backend API at the time of platform
+**current** `hopnbop` backend API at the time of platform
 extraction. It is the migration baseline — every endpoint here
 must have an equivalent (or be deliberately deprecated) in the
 new platform's `/v1/` API documented in `api-spec.md`.
 
-Captured from `hopnbop_private/backend/template.yaml` at tag
+Captured from `hopnbop/backend/template.yaml` at tag
 `pre-platform-extraction`.
 
 API base: `https://<api-id>.execute-api.us-west-2.amazonaws.com/prod`.

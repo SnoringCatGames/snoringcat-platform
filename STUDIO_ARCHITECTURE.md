@@ -70,7 +70,7 @@ deeper doc that argues for it.
 ### Off AWS / onto Nakama + Hetzner + Edgegap
 
 **Decision date:** 2026-04-26. **Doc:**
-`hopnbop_private/docs/archive/platform-pivot-discussion.md`.
+`hopnbop/docs/archive/platform-pivot-discussion.md`.
 
 GameLift's idle baseline cost was 78% of the AWS bill, and the
 operational complexity (warmup machinery, port-remapping,
@@ -113,7 +113,7 @@ maintenance burden.
 ### Cloudflare Pages for static sites
 
 **Doc:** the `DEPLOYMENT.md` files in `snoringcat.games` and
-(post-Phase-F) `hopnbop_private`.
+(post-Phase-F) `hopnbop`.
 
 Both static sites (`snoringcat.games` marketing + `hopnbop.net`
 game-export) move to Cloudflare Pages. Free tier covers indie
@@ -278,12 +278,12 @@ All paths are absolute on the dev machine
 
 ### Active games
 
-#### `SnoringCatGames/hopnbop_private` (private)
+#### `SnoringCatGames/hopnbop` (private)
 
 The flagship game. Godot 4.5 multiplayer 2D platform fighter
 with rollback netcode.
 
-- **Path:** `Repositories/hopnbop_private/`
+- **Path:** `Repositories/hopnbop/`
 - **Language:** GDScript primarily; some Python for the AWS
   backend (being deleted in Phase F); Bash + PowerShell for
   deploy scripts.
@@ -308,7 +308,7 @@ with rollback netcode.
 - **Key docs:** `CLAUDE.md`, `MULTI_GAME_ROADMAP.md`, plus
   `third_party/snoringcat-platform/PLATFORM_ARCHITECTURE.md`
   (loaded on demand). Historical / archived in
-  `hopnbop_private/docs/archive/`: `MIGRATION_PLAN.md`,
+  `hopnbop/docs/archive/`: `MIGRATION_PLAN.md`,
   `platform-pivot-discussion.md`, `BUILD.md`,
   `DISTRIBUTED_SYSTEMS_PLAN.md`,
   `FRIENDS_PARTY_MATCHMAKING_AUDIT.md`, and
@@ -331,7 +331,7 @@ The shared multiplayer-platform package: Nakama runtime modules
 + Godot client SDK + compliance tests. Consumed by each game
 as a submodule under `third_party/`.
 
-- **Path:** `Repositories/hopnbop_private/third_party/snoringcat-platform`
+- **Path:** `Repositories/hopnbop/third_party/snoringcat-platform`
   (no standalone checkout outside the game's submodule today).
 - **Language:** Go (Nakama runtime modules), GDScript (client
   SDK and addon).
@@ -426,7 +426,7 @@ into `~/.claude/`. Auto-pushes via PostToolUse hook.
 
 For each service: where the dashboard lives, how to access,
 where credentials live, and how to rotate. Rotation procedure
-detail is in `hopnbop_private/MIGRATION_PLAN.md` &rarr; "Key and
+detail is in `hopnbop/docs/archive/MIGRATION_PLAN.md` &rarr; "Key and
 credential rotation."
 
 ### Hetzner Cloud (compute only — DNS is on Cloudflare)
@@ -465,7 +465,7 @@ credential rotation."
     `snoringcat.games`, `www.snoringcat.games`,
     `snoringcatgames.com`, `www.snoringcatgames.com`.
   - `hopnbop-website` &mdash; (post-Phase-F) deploys from
-    `SnoringCatGames/hopnbop_private`'s `web/` build. Custom
+    `SnoringCatGames/hopnbop`'s `web/` build. Custom
     domains: `hopnbop.net`, `www.hopnbop.net`.
 - **API token:** `CLOUDFLARE_API_TOKEN` &mdash; in
   age-encrypted credentials. Scopes: Account &rarr; Cloudflare
@@ -739,8 +739,8 @@ for the full matrix. Quick reference:
 
 | What | Where |
 |---|---|
-| Active migration plan | `hopnbop_private/MIGRATION_PLAN.md` |
-| Architecture decision context | `hopnbop_private/docs/archive/platform-pivot-discussion.md` |
+| Active migration plan | `hopnbop/docs/archive/MIGRATION_PLAN.md` |
+| Architecture decision context | `hopnbop/docs/archive/platform-pivot-discussion.md` |
 | Runtime platform reference | `snoringcat-platform/PLATFORM_ARCHITECTURE.md` |
 | **This studio overview** | `snoringcat-platform/STUDIO_ARCHITECTURE.md` |
 | Levi's user CLAUDE.md | `claude-config/CLAUDE.md` |
@@ -760,9 +760,9 @@ for the full matrix. Quick reference:
 
 ## See also
 
-- `hopnbop_private/MIGRATION_PLAN.md` &mdash; the executable
+- `hopnbop/docs/archive/MIGRATION_PLAN.md` &mdash; the executable
   plan for the off-AWS migration.
-- `hopnbop_private/docs/archive/platform-pivot-discussion.md` &mdash; the
+- `hopnbop/docs/archive/platform-pivot-discussion.md` &mdash; the
   decision-doc that motivates the migration.
 - `snoringcat-platform/PLATFORM_ARCHITECTURE.md` &mdash; the
   runtime detail of the Nakama+Edgegap platform.

@@ -9,10 +9,10 @@ extends Node
 ## coordinate mapping from game world space to root viewport
 ## screen space.
 ##
-## Extracted from hopnbop_private/src/core/pixel_viewport_manager.gd
+## Extracted from hopnbop/src/core/pixel_viewport_manager.gd
 ## at tag pre-platform-extraction. Renamed PixelViewportManager →
 ## PlatformPixelViewportManager so the original can stay in
-## hopnbop_private until the game is migrated to consume this
+## hopnbop until the game is migrated to consume this
 ## copy. Remove the prefix once the game switches over.
 ##
 ## Differences from the source:

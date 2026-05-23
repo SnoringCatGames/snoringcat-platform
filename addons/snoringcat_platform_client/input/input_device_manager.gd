@@ -7,10 +7,10 @@ extends Node
 ## local player indices. Supports both gamepad device IDs and
 ## keyboard key bindings.
 ##
-## Extracted from hopnbop_private/src/core/input_device_manager.gd
+## Extracted from hopnbop/src/core/input_device_manager.gd
 ## at tag pre-platform-extraction. Renamed InputDeviceManager →
 ## PlatformInputDeviceManager so the original can stay in
-## hopnbop_private until the game wires in the addon copy.
+## hopnbop until the game wires in the addon copy.
 ##
 ## Differences from the source:
 ## - Uses PlatformDeviceConfig instead of DeviceConfig.

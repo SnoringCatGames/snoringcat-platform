@@ -1,4 +1,4 @@
 # Account management UI.
-# Phase 2: extract from hopnbop_private/src/ui/settings_panel/:
+# Phase 2: extract from hopnbop/src/ui/settings_panel/:
 #   - account_panel.tscn
 #   - link_account_row, delete_account_row, export_data_row

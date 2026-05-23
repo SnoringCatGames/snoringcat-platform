@@ -6,7 +6,7 @@ extends RefCounted
 ## visual state.
 ##
 ## Extracted from
-## hopnbop_private/src/ui/screen_focus_navigator.gd at tag
+## hopnbop/src/ui/screen_focus_navigator.gd at tag
 ## pre-platform-extraction.
 ##
 ## Differences from the source:
