@@ -93,6 +93,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
@@ -110,6 +111,24 @@ func InitModule(
 	env, _ := ctx.Value(runtime.RUNTIME_CTX_ENV).(map[string]string)
 	if env == nil {
 		env = map[string]string{}
+	}
+	// Overlay the OS process env on top of Nakama's
+	// runtime.env. Nakama parses runtime.env entries as
+	// literal "KEY=VALUE" strings — no `${VAR}` expansion at
+	// parse time — so an entry like `EDGEGAP_TOKEN=${EDGEGAP_TOKEN}`
+	// reaches the runtime as the literal string `${EDGEGAP_TOKEN}`
+	// and silently breaks downstream auth. docker-compose's
+	// `environment:` block, by contrast, does expand `${VAR}`
+	// at compose-up time, so the process env reflects real
+	// substituted values. Letting process env win gives one
+	// reliable channel for runtime config without rewriting
+	// every reader to call os.Getenv individually.
+	for _, kv := range os.Environ() {
+		i := strings.IndexByte(kv, '=')
+		if i <= 0 {
+			continue
+		}
+		env[kv[:i]] = kv[i+1:]
 	}
 
 	edgegapToken := env["EDGEGAP_TOKEN"]
@@ -231,20 +250,9 @@ func InitModule(
 	// local-mode game at allocate time (sendAllocationFailed
 	// path). This keeps Edgegap-only deployments from needing
 	// docker-socket access just to register the runtime.
-	//
-	// Reads via os.Getenv directly rather than the Nakama
-	// RUNTIME_CTX_ENV map because Nakama's runtime.env block
-	// in config.yml passes string values through verbatim — no
-	// ${VAR} expansion — so the docker-compose `environment:`
-	// block (which DOES expand) is the only reliable channel
-	// for these. EDGEGAP_* and the other historical vars work
-	// because they're also injected as literals from CI; the
-	// LOCAL_* ones we want to control via host .env, so they
-	// have to come through the process env path.
-	localEnv := localAllocatorEnv()
 	var localAllocator *LocalDockerAllocator
-	if localEnv["LOCAL_PUBLIC_IP"] != "" {
-		la, err := newLocalDockerAllocator(localEnv)
+	if env["LOCAL_PUBLIC_IP"] != "" {
+		la, err := newLocalDockerAllocator(env)
 		if err != nil {
 			return fmt.Errorf(
 				"local allocator config: %w", err)
@@ -252,7 +260,7 @@ func InitModule(
 		localAllocator = la
 		logger.Info(
 			"local docker allocator enabled (public_ip=%s)",
-			localEnv["LOCAL_PUBLIC_IP"])
+			env["LOCAL_PUBLIC_IP"])
 	}
 
 	if !matchmakerHookEnabled {
@@ -642,15 +650,3 @@ func parseEnvInt(env map[string]string, key string, def int) int {
 	return v
 }
 
-// localAllocatorEnv builds the env map newLocalDockerAllocator
-// expects, sourced from the host process env via os.Getenv. See
-// the InitModule comment block above for why we bypass Nakama's
-// RUNTIME_CTX_ENV for these specific keys.
-func localAllocatorEnv() map[string]string {
-	return map[string]string{
-		"LOCAL_PUBLIC_IP":      os.Getenv("LOCAL_PUBLIC_IP"),
-		"LOCAL_UDP_PORT_RANGE": os.Getenv("LOCAL_UDP_PORT_RANGE"),
-		"LOCAL_TCP_PORT_RANGE": os.Getenv("LOCAL_TCP_PORT_RANGE"),
-		"LOCAL_DOCKER_SOCKET":  os.Getenv("LOCAL_DOCKER_SOCKET"),
-	}
-}

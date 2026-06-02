@@ -69,6 +69,22 @@ services:
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
       FACEBOOK_APP_ID: ${FACEBOOK_APP_ID}
       FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET}
+      # Edgegap + signaling. These used to live only in
+      # config.yml's runtime.env block but Nakama doesn't
+      # expand ${VAR} there; the runtime's main.go now overlays
+      # the process env on top, so docker-compose's environment
+      # block is the canonical source.
+      EDGEGAP_TOKEN: ${EDGEGAP_TOKEN}
+      EDGEGAP_APP_NAME: ${EDGEGAP_APP_NAME}
+      EDGEGAP_APP_VERSION: ${EDGEGAP_APP_VERSION}
+      EDGEGAP_MOCK_DEPLOY: ${EDGEGAP_MOCK_DEPLOY}
+      SIGNALING_DOMAIN: ${SIGNALING_DOMAIN}
+      SIGNALING_HMAC_SECRET: ${SIGNALING_HMAC_SECRET}
+      NAKAMA_GAME_VERSION: ${NAKAMA_GAME_VERSION}
+      NAKAMA_PROTOCOL_VERSION: ${NAKAMA_PROTOCOL_VERSION}
+      BULK_IMPORT_ENABLED: ${BULK_IMPORT_ENABLED}
+      GITHUB_ORG: ${GITHUB_ORG}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
       # Local Docker allocator config (see runtime/allocator.go).
       # LOCAL_PUBLIC_IP is the only required value; empty disables
       # the LocalDockerAllocator entirely (Edgegap-only mode).
