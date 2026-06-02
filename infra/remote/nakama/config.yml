@@ -50,3 +50,17 @@ runtime:
     # signaling-proxy systemd service reads from its own env.
     - "SIGNALING_DOMAIN=${SIGNALING_DOMAIN}"
     - "SIGNALING_HMAC_SECRET=${SIGNALING_HMAC_SECRET}"
+    # Local Docker allocator: opt-in via LOCAL_PUBLIC_IP. When
+    # set, the runtime constructs a LocalDockerAllocator that
+    # spawns game-server containers on the Hetzner host's
+    # docker daemon (mounted at /var/run/docker.sock — see
+    # docker-compose.yml's volumes block). Games with
+    # allocator_mode "local" or "hybrid" in game.yaml will use
+    # this; everything else stays on Edgegap. Public IP is the
+    # host's IPv4 (matches the Caddy A record). LOCAL_*_PORT_RANGE
+    # default to 30000-30099 (UDP) and 30100-30199 (TCP) — set
+    # explicitly only if there's a port-conflict with another
+    # service on the host.
+    - "LOCAL_PUBLIC_IP=${LOCAL_PUBLIC_IP}"
+    - "LOCAL_UDP_PORT_RANGE=${LOCAL_UDP_PORT_RANGE}"
+    - "LOCAL_TCP_PORT_RANGE=${LOCAL_TCP_PORT_RANGE}"

@@ -90,6 +90,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 
 	"github.com/heroiclabs/nakama-common/api"
@@ -221,6 +222,27 @@ func InitModule(
 		edgegap = &edgegapClient{token: edgegapToken}
 	}
 
+	// Optional LocalDockerAllocator for games with
+	// allocator_mode "local" or "hybrid". Opt-in via
+	// LOCAL_PUBLIC_IP env var (other LOCAL_* envs have
+	// sensible defaults). Stays nil when the env isn't
+	// set, in which case the matchmaker hook rejects any
+	// local-mode game at allocate time (sendAllocationFailed
+	// path). This keeps Edgegap-only deployments from needing
+	// docker-socket access just to register the runtime.
+	var localAllocator *LocalDockerAllocator
+	if env["LOCAL_PUBLIC_IP"] != "" {
+		la, err := newLocalDockerAllocator(env)
+		if err != nil {
+			return fmt.Errorf(
+				"local allocator config: %w", err)
+		}
+		localAllocator = la
+		logger.Info(
+			"local docker allocator enabled (public_ip=%s)",
+			env["LOCAL_PUBLIC_IP"])
+	}
+
 	if !matchmakerHookEnabled {
 		logger.Warn(
 			"EDGEGAP_TOKEN not set; matchmaker_matched hook is" +
@@ -286,6 +308,7 @@ func InitModule(
 		}
 		alloc := &fleetAllocator{
 			edgegap:             edgegap,
+			local:               localAllocator,
 			appName:             appName,
 			appVersion:          appVersion,
 			signalingDomain:     signalingDomain,
@@ -309,7 +332,10 @@ func InitModule(
 		}
 	}
 
-	lifecycle := &matchLifecycle{edgegap: edgegap}
+	lifecycle := &matchLifecycle{
+		edgegap: edgegap,
+		local:   localAllocator,
+	}
 	if err := addRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
 		return err
 	}

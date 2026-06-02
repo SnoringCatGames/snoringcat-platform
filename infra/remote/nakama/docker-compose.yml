@@ -69,10 +69,31 @@ services:
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
       FACEBOOK_APP_ID: ${FACEBOOK_APP_ID}
       FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET}
+      # Local Docker allocator config (see runtime/allocator.go).
+      # LOCAL_PUBLIC_IP is the only required value; empty disables
+      # the LocalDockerAllocator entirely (Edgegap-only mode).
+      # Port ranges default to 30000-30099 (UDP) / 30100-30199
+      # (TCP) inside the runtime when these envs are blank.
+      LOCAL_PUBLIC_IP: ${LOCAL_PUBLIC_IP}
+      LOCAL_UDP_PORT_RANGE: ${LOCAL_UDP_PORT_RANGE}
+      LOCAL_TCP_PORT_RANGE: ${LOCAL_TCP_PORT_RANGE}
     volumes:
       - ./config.yml:/nakama/data/config.yml:ro
       - ./modules:/nakama/data/modules:ro
       - nakama_data:/nakama/data/storage
+      # Local Docker allocator needs to spawn game-server
+      # containers on the host's daemon. Read-write because the
+      # API calls (POST /containers/create, /start, /stop) need
+      # both directions. Security tradeoff: this gives the
+      # Nakama process effective root on the host. Acceptable
+      # because Nakama is already the authoritative runtime for
+      # match state and Postgres credentials, and the bind is
+      # scoped to the snoringcat-platform stack (no third-party
+      # containers share this docker-compose project). When the
+      # local allocator is unused (no game has allocator_mode
+      # local or hybrid), the runtime never opens the socket
+      # despite the mount being present.
+      - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "7350"
       - "7351"

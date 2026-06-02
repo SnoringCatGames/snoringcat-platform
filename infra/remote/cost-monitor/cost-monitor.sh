@@ -30,10 +30,11 @@ BUDGET_WARN_HIGH="${BUDGET_WARN_HIGH:-80}"
 EDGEGAP_ACTIVE_WARN="${EDGEGAP_ACTIVE_WARN:-5}"
 EDGEGAP_ACTIVE_HARD="${EDGEGAP_ACTIVE_HARD:-15}"
 # mCPU allocated per Edgegap deployment of this app's version.
-# Read from app-version's req_cpu. Hop'n'Bop currently uses 1024
-# mCPU (1 vCPU). Set as env override if you change the app
-# version's resource request without redeploying this script.
-EDGEGAP_MCPU_PER_DEPLOY="${EDGEGAP_MCPU_PER_DEPLOY:-1024}"
+# Read from app-version's req_cpu. Hop'n'Bop's Tier 1.1 cost-
+# reduction work (2026-06-01) right-sized req_cpu from 1024 to
+# 512 mCPU after measuring per-match CPU. Set the env override
+# if a game uses a different size.
+EDGEGAP_MCPU_PER_DEPLOY="${EDGEGAP_MCPU_PER_DEPLOY:-512}"
 # USD per mCPU-minute of Deployment Compute. Verified against
 # May 2026 invoice S95TLZML-0002: $0.00115 per 1,000 mCPU-minutes
 # = $0.00000115 per mCPU-minute. Set to `0` to disable dollar

@@ -46,6 +46,12 @@ const matchMetadataCollection = "match_metadata"
 type matchMetadata struct {
 	GameID      string `json:"game_id"`
 	AllocatedAt int64  `json:"allocated_at"`
+	// AllocatorKind is one of allocatorModeEdgegap /
+	// allocatorModeLocal. Persisted so MatchEndRpc dispatches
+	// Stop to the right backend without re-running the hybrid
+	// geo decision. Empty means "edgegap" (pre-multi-backend
+	// matches and the bootstrap path both omit the field).
+	AllocatorKind string `json:"allocator_kind,omitempty"`
 }
 
 // signSignalingURL builds a "wss://<domain>/connect/<token>"
@@ -303,10 +309,17 @@ type inflightAllocation struct {
 	cancel context.CancelFunc
 }
 
-// fleetAllocator hooks into MatchmakerMatched to spin up an Edgegap
-// deployment for the matched players.
+// fleetAllocator hooks into MatchmakerMatched to spin up a
+// game-server for the matched players. Originally Edgegap-only;
+// the local + hybrid backends were added when Edgegap's per-mCPU-
+// minute pricing turned out to dominate the platform bill.
 type fleetAllocator struct {
 	edgegap    *edgegapClient
+	// local is the LocalDockerAllocator instance. Nil when no
+	// game's allocator_mode is "local" or "hybrid" — keeping
+	// the field nil-safe means a bare Edgegap deploy doesn't
+	// require docker-socket access just to register the hook.
+	local      *LocalDockerAllocator
 	appName    string
 	appVersion string
 	// games is the per-game config cache. Used by the matchmaker
@@ -849,21 +862,83 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		// different default, change this list.
 		deployReq.Geographies = []string{"north_america"}
 	}
-	// Allocate. Real mode hits Edgegap; mock mode synthesizes the
-	// deploy + status response so compliance tests don't burn paid
-	// container-hours. Both paths produce the same (deploy, status)
-	// shape so every downstream step (storage writes, signaling
-	// URL, match_ready fan-out) reads from one branch only.
+	// Resolve the allocator-mode for this match. Per-game; the
+	// default ("") and explicit "edgegap" both go to the existing
+	// Edgegap retry loop. "local" goes straight to LocalDocker
+	// without retries (a single host has no region to swap into;
+	// there's no productive retry semantic). "hybrid" picks per-
+	// match based on the matched players' IPs (NA = local,
+	// non-NA = edgegap fallback).
+	allocatorMode := ""
+	var resolvedGameConfig *GameConfig
+	if matchGameID != "" && a.games != nil {
+		if gc, ok := a.games.Get(matchGameID); ok {
+			resolvedGameConfig = gc
+			allocatorMode = gc.AllocatorMode
+		}
+	}
+	if allocatorMode == allocatorModeHybrid {
+		if hybridAllocatorChoice(logger, ipList) {
+			allocatorMode = allocatorModeLocal
+		} else {
+			allocatorMode = allocatorModeEdgegap
+		}
+	}
+	// Allocate. Real mode hits the selected backend; mock mode
+	// synthesizes the deploy + status response so compliance
+	// tests don't burn paid container-hours. Both paths produce
+	// the same (deploy, status) shape so every downstream step
+	// (storage writes, signaling URL, match_ready fan-out) reads
+	// from one branch only.
 	var (
 		deploy *edgegapDeployResponse
 		status *edgegapStatusResponse
 	)
+	// allocatorKind is the value match_metadata persists so
+	// MatchEndRpc dispatches Stop to the right backend. Captures
+	// the post-hybrid-resolution decision (i.e. concrete "local"
+	// or "edgegap", never "hybrid").
+	allocatorKind := allocatorModeEdgegap
 	if a.mockDeploy {
 		deploy, status = synthesizeMockDeploy(time.Now())
 		logger.Warn(
 			"EDGEGAP_MOCK_DEPLOY=true: synthesized request_id=%s"+
 				" (no real Edgegap allocation, deployReq=%+v)",
 			deploy.RequestID, deployReq)
+	} else if allocatorMode == allocatorModeLocal {
+		if a.local == nil {
+			sendAllocationFailed(
+				ctx, logger, nk, entries, 1,
+				fmt.Errorf(
+					"game %q requested allocator_mode=local but"+
+						" runtime has no LocalDockerAllocator"+
+						" configured (LOCAL_PUBLIC_IP unset?)",
+					matchGameID))
+			return "", fmt.Errorf(
+				"local allocator not configured for game %s",
+				matchGameID)
+		}
+		d, s, err := a.local.Allocate(
+			allocCtx, logger, nk, resolvedGameConfig, deployReq)
+		if err != nil {
+			if allocCtx.Err() != nil {
+				logger.Info(
+					"local allocation aborted by user cancel" +
+						" (no deploy created)")
+				sendMatchCancelled(ctx, logger, nk, entries)
+				return "", nil
+			}
+			sendAllocationFailed(
+				ctx, logger, nk, entries, 1, err)
+			return "", fmt.Errorf(
+				"local allocation failed: %w", err)
+		}
+		deploy = d
+		status = s
+		allocatorKind = allocatorModeLocal
+		logger.Info(
+			"local allocation succeeded: request_id=%s game=%s",
+			d.RequestID, matchGameID)
 	} else {
 		// Retry loop with exponential backoff + region fallback.
 		// Each attempt covers Deploy + status poll + register
@@ -991,12 +1066,15 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
-	// Persist per-match metadata (game_id, allocated_at) so
-	// match_end can scope leaderboard writes per game without
-	// trusting the game server to know its own game_id.
+	// Persist per-match metadata (game_id, allocated_at,
+	// allocator_kind) so match_end can scope leaderboard writes
+	// per game without trusting the game server to know its own
+	// game_id, and so MatchEndRpc dispatches Stop to the backend
+	// that allocated this match (edgegap vs local).
 	metaBytes, _ := json.Marshal(matchMetadata{
-		GameID:      matchGameID,
-		AllocatedAt: time.Now().Unix(),
+		GameID:        matchGameID,
+		AllocatedAt:   time.Now().Unix(),
+		AllocatorKind: allocatorKind,
 	})
 	if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
 		Collection:      matchMetadataCollection,

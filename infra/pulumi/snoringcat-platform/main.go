@@ -354,6 +354,29 @@ echo "watchdog user provisioned"
 					Port:      pulumi.String("443"),
 					SourceIps: worldIPv46,
 				},
+				// Local Docker allocator port ranges. Game-server
+				// containers spawned by the LocalDockerAllocator
+				// bind to host ports in these ranges (defaults in
+				// runtime/local_allocator.go) and need to be
+				// reachable directly from clients. UDP for ENet
+				// game traffic + WebRTC DataChannels; TCP for the
+				// signaling WebSocket. Edgegap-only deployments
+				// don't use these ranges (Edgegap servers are on
+				// their own hosts entirely), so leaving the rule
+				// in place when local mode is off has no security
+				// impact — there's nothing listening.
+				&hcloud.FirewallRuleArgs{
+					Direction: pulumi.String("in"),
+					Protocol:  pulumi.String("udp"),
+					Port:      pulumi.String("30000-30099"),
+					SourceIps: worldIPv46,
+				},
+				&hcloud.FirewallRuleArgs{
+					Direction: pulumi.String("in"),
+					Protocol:  pulumi.String("tcp"),
+					Port:      pulumi.String("30100-30199"),
+					SourceIps: worldIPv46,
+				},
 			},
 			ApplyTos: hcloud.FirewallApplyToArray{
 				&hcloud.FirewallApplyToArgs{

@@ -14,5 +14,13 @@ config:
   snoringcat-platform:zoneName: snoringcat.games
   snoringcat-platform:location: hil
   snoringcat-platform:networkZone: us-west
-  snoringcat-platform:serverType: cpx11
+  # 2026-06-01: upsized cpx11 -> cpx21 ahead of the 2026-06-15
+  # Hetzner price hike to lock in the pre-hike monthly cap on the
+  # existing contract (rescales price at new rates after that date).
+  # Doubles RAM (2 -> 8 GB) and vCPU (2 -> 4) to make room for
+  # cohabiting game-server containers under allocator_mode=local
+  # without contending with Nakama/Postgres. Net cost delta vs
+  # cpx11: +$5/mo; offset many times over by the Edgegap compute
+  # savings the hybrid allocator enables.
+  snoringcat-platform:serverType: cpx21
   snoringcat-platform:image: ubuntu-24.04

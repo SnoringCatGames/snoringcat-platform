@@ -69,6 +69,26 @@ type GameConfig struct {
 	ProtocolVersion   int    `json:"protocol_version"`
 	DisplayVersion    string `json:"display_version"`
 
+	// LocalImageRef is the fully-qualified container image tag
+	// the local Docker allocator pulls (e.g.
+	// "ghcr.io/snoringcatgames/hopnbop-server:v27"). Required
+	// when AllocatorMode is "local" or "hybrid"; ignored when
+	// "edgegap" or empty. Each game maintains its own image —
+	// platform-shared runtime, per-game game-server binaries.
+	LocalImageRef string `json:"local_image_ref,omitempty"`
+	// AllocatorMode picks the fleet-allocator backend for this
+	// game's matches. One of:
+	//   - "" or "edgegap": current behaviour, all matches go to
+	//     Edgegap. Default for backward compat.
+	//   - "local": every match goes to the local Docker allocator
+	//     on the Nakama host. Edgegap is bypassed entirely.
+	//   - "hybrid": local-first; Edgegap is fallback when geo
+	//     decision says some matched player is too far from the
+	//     local host's region (HybridAllocator decides per-match).
+	// Per-game so different games can be on different backends
+	// during rollout.
+	AllocatorMode string `json:"allocator_mode,omitempty"`
+
 	// Raw is the verbatim JSON of the original registration
 	// payload (i.e. the source game.yaml converted to JSON).
 	// Populated when the config is loaded from the DB or
@@ -254,6 +274,23 @@ func validateGameConfig(gc *GameConfig) error {
 	}
 	if gc.DisplayVersion == "" {
 		return fmt.Errorf("display_version required")
+	}
+	// Allocator-mode + local-image cross-validation. The
+	// Edgegap-only default keeps existing games unaffected.
+	switch gc.AllocatorMode {
+	case "", allocatorModeEdgegap, allocatorModeLocal, allocatorModeHybrid:
+		// known modes; fall through to image-required check.
+	default:
+		return fmt.Errorf(
+			"allocator_mode must be one of \"edgegap\", \"local\","+
+				" \"hybrid\", or empty (got %q)", gc.AllocatorMode)
+	}
+	if (gc.AllocatorMode == allocatorModeLocal ||
+		gc.AllocatorMode == allocatorModeHybrid) &&
+		gc.LocalImageRef == "" {
+		return fmt.Errorf(
+			"local_image_ref required when allocator_mode is" +
+				" \"local\" or \"hybrid\"")
 	}
 	return nil
 }

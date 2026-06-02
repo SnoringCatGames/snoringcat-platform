@@ -28,8 +28,40 @@ import (
 // terminate the Edgegap deployment so we stop paying for the
 // container the moment the match ends, rather than waiting for
 // Edgegap's 24h app-version-level max_duration to fire.
+//
+// `local` is optional: nil when no game's allocator_mode is
+// "local" or "hybrid". When set, MatchEndRpc / MatchCancelRpc
+// dispatch to it for matches whose match_metadata records
+// AllocatorKind = "local".
 type matchLifecycle struct {
 	edgegap *edgegapClient
+	local   *LocalDockerAllocator
+}
+
+// stopMatchByKind dispatches Stop to the right backend based on
+// the persisted AllocatorKind. Empty / unrecognised values fall
+// through to the historical edgegap path so pre-multi-backend
+// metadata (or a metadata read that failed) still tears down
+// existing Edgegap allocations the way it always has.
+func (m *matchLifecycle) stopMatchByKind(
+	ctx context.Context,
+	kind string,
+	requestID string,
+) error {
+	switch kind {
+	case allocatorModeLocal:
+		if m.local == nil {
+			return errors.New(
+				"local allocator stop called but matchLifecycle.local is nil")
+		}
+		return m.local.Stop(ctx, requestID)
+	default:
+		// "edgegap" or empty.
+		if m.edgegap == nil {
+			return nil
+		}
+		return m.edgegap.Stop(ctx, requestID)
+	}
 }
 
 // gameScopedLeaderboardID returns the leaderboard ID for a given
@@ -440,24 +472,23 @@ func (m *matchLifecycle) MatchEndRpc(
 		logger.Warn("storage delete: %v", err)
 	}
 
-	// Terminate the Edgegap deployment so the container stops
-	// billing immediately. Without this, the container lingers
-	// until Edgegap's per-app-version `max_duration` cap (24h)
-	// hits — which on a quiet day racks up tens of container-
-	// hours of idle cost. Non-fatal: 404 means Edgegap already
-	// terminated it (e.g. crash exit), other errors get logged
-	// and the cost-monitor's EDGEGAP_ACTIVE_HARD threshold is
-	// the safety net for accumulating leaks.
-	if m.edgegap != nil {
-		if err := m.edgegap.Stop(ctx, args.RequestID); err != nil {
-			logger.Warn(
-				"edgegap stop failed for %s: %v",
-				args.RequestID, err)
-		} else {
-			logger.Info(
-				"edgegap deployment %s terminated",
-				args.RequestID)
-		}
+	// Terminate the game-server so the container stops billing
+	// (Edgegap) or releases its port pair (local) immediately.
+	// Without this, Edgegap deploys linger until the per-app-
+	// version `max_duration` cap (24h) hits — quiet days rack
+	// up tens of container-hours of idle cost. Non-fatal: 404
+	// means already-stopped; other errors get logged and the
+	// cost-monitor's EDGEGAP_ACTIVE_HARD threshold + the
+	// edgegap-leak-sweep hourly job are the safety nets.
+	if err := m.stopMatchByKind(
+		ctx, metadata.AllocatorKind, args.RequestID); err != nil {
+		logger.Warn(
+			"%s stop failed for %s: %v",
+			metadata.AllocatorKind, args.RequestID, err)
+	} else if metadata.AllocatorKind != "" {
+		logger.Info(
+			"%s deployment %s terminated",
+			metadata.AllocatorKind, args.RequestID)
 	}
 
 	resp, _ := json.Marshal(map[string]any{"ok": true})
@@ -568,20 +599,25 @@ func (m *matchLifecycle) MatchCancelRpc(
 				Key:        args.RequestID,
 			})
 	}
+	// Read the metadata BEFORE the delete so we know which
+	// backend allocated this match. Missing metadata (pre-multi-
+	// backend matches, or a metadata read that failed) falls
+	// through stopMatchByKind's default to edgegap.
+	cancelMetadata := readMatchMetadata(
+		ctx, logger, nk, args.RequestID)
 	if err := nk.StorageDelete(ctx, cancelDeletes); err != nil {
 		logger.Warn("storage delete: %v", err)
 	}
 
-	if m.edgegap != nil {
-		if err := m.edgegap.Stop(ctx, args.RequestID); err != nil {
-			logger.Warn(
-				"edgegap stop failed for %s: %v",
-				args.RequestID, err)
-		} else {
-			logger.Info(
-				"edgegap deployment %s terminated (cancelled)",
-				args.RequestID)
-		}
+	if err := m.stopMatchByKind(
+		ctx, cancelMetadata.AllocatorKind, args.RequestID); err != nil {
+		logger.Warn(
+			"%s stop failed for %s: %v",
+			cancelMetadata.AllocatorKind, args.RequestID, err)
+	} else if cancelMetadata.AllocatorKind != "" {
+		logger.Info(
+			"%s deployment %s terminated (cancelled)",
+			cancelMetadata.AllocatorKind, args.RequestID)
 	}
 
 	resp, _ := json.Marshal(map[string]any{"ok": true})
