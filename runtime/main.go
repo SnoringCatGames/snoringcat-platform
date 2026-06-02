@@ -91,6 +91,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/heroiclabs/nakama-common/api"
@@ -230,9 +231,20 @@ func InitModule(
 	// local-mode game at allocate time (sendAllocationFailed
 	// path). This keeps Edgegap-only deployments from needing
 	// docker-socket access just to register the runtime.
+	//
+	// Reads via os.Getenv directly rather than the Nakama
+	// RUNTIME_CTX_ENV map because Nakama's runtime.env block
+	// in config.yml passes string values through verbatim — no
+	// ${VAR} expansion — so the docker-compose `environment:`
+	// block (which DOES expand) is the only reliable channel
+	// for these. EDGEGAP_* and the other historical vars work
+	// because they're also injected as literals from CI; the
+	// LOCAL_* ones we want to control via host .env, so they
+	// have to come through the process env path.
+	localEnv := localAllocatorEnv()
 	var localAllocator *LocalDockerAllocator
-	if env["LOCAL_PUBLIC_IP"] != "" {
-		la, err := newLocalDockerAllocator(env)
+	if localEnv["LOCAL_PUBLIC_IP"] != "" {
+		la, err := newLocalDockerAllocator(localEnv)
 		if err != nil {
 			return fmt.Errorf(
 				"local allocator config: %w", err)
@@ -240,7 +252,7 @@ func InitModule(
 		localAllocator = la
 		logger.Info(
 			"local docker allocator enabled (public_ip=%s)",
-			env["LOCAL_PUBLIC_IP"])
+			localEnv["LOCAL_PUBLIC_IP"])
 	}
 
 	if !matchmakerHookEnabled {
@@ -628,4 +640,17 @@ func parseEnvInt(env map[string]string, key string, def int) int {
 		return def
 	}
 	return v
+}
+
+// localAllocatorEnv builds the env map newLocalDockerAllocator
+// expects, sourced from the host process env via os.Getenv. See
+// the InitModule comment block above for why we bypass Nakama's
+// RUNTIME_CTX_ENV for these specific keys.
+func localAllocatorEnv() map[string]string {
+	return map[string]string{
+		"LOCAL_PUBLIC_IP":      os.Getenv("LOCAL_PUBLIC_IP"),
+		"LOCAL_UDP_PORT_RANGE": os.Getenv("LOCAL_UDP_PORT_RANGE"),
+		"LOCAL_TCP_PORT_RANGE": os.Getenv("LOCAL_TCP_PORT_RANGE"),
+		"LOCAL_DOCKER_SOCKET":  os.Getenv("LOCAL_DOCKER_SOCKET"),
+	}
 }
