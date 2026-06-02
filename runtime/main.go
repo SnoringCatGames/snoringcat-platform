@@ -145,13 +145,6 @@ func InitModule(
 		return err
 	}
 
-	// Load the GeoIP MMDB into the process-global activeGeoIP so
-	// hybridAllocatorChoice can do real country lookups instead
-	// of the coarse static CIDR fallback. Missing / unreadable
-	// file = silent skip; the static map covers the boot window
-	// before the host's monthly refresh systemd timer has run.
-	initGeoIPFromEnv(logger, env)
-
 	// Register the status probe first so the runtime is
 	// diagnosable even if a downstream init step fails or is
 	// skipped because of missing config. The status RPC reads
