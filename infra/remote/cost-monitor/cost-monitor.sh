@@ -29,13 +29,16 @@ BUDGET_WARN_MID="${BUDGET_WARN_MID:-40}"
 BUDGET_WARN_HIGH="${BUDGET_WARN_HIGH:-80}"
 EDGEGAP_ACTIVE_WARN="${EDGEGAP_ACTIVE_WARN:-5}"
 EDGEGAP_ACTIVE_HARD="${EDGEGAP_ACTIVE_HARD:-15}"
-# Hourly USD rate for one Edgegap deployment of the configured
-# tier. hopnbop-server is currently 1 vCPU / 1 GB RAM
-# (`req_cpu=1024`, `req_memory=1024` in the app version), which
-# corresponds to Edgegap's "Small CPU" tier; check the Edgegap
-# billing page for the exact figure and tune. Set to `0` to
-# disable dollar estimation entirely.
-EDGEGAP_RATE_USD_PER_HOUR="${EDGEGAP_RATE_USD_PER_HOUR:-0.04}"
+# mCPU allocated per Edgegap deployment of this app's version.
+# Read from app-version's req_cpu. Hop'n'Bop currently uses 1024
+# mCPU (1 vCPU). Set as env override if you change the app
+# version's resource request without redeploying this script.
+EDGEGAP_MCPU_PER_DEPLOY="${EDGEGAP_MCPU_PER_DEPLOY:-1024}"
+# USD per mCPU-minute of Deployment Compute. Verified against
+# May 2026 invoice S95TLZML-0002: $0.00115 per 1,000 mCPU-minutes
+# = $0.00000115 per mCPU-minute. Set to `0` to disable dollar
+# estimation entirely.
+EDGEGAP_RATE_USD_PER_MCPU_MIN="${EDGEGAP_RATE_USD_PER_MCPU_MIN:-0.00000115}"
 DAILY_SUMMARY_HOUR_UTC="${DAILY_SUMMARY_HOUR_UTC:-9}"
 DISCORD_USER_ID="${DISCORD_USER_ID:-}"
 STATE_FILE="${STATE_FILE:-$STATE_FILE_DEFAULT}"
@@ -97,6 +100,8 @@ if [[ "$state_month" != "$CURRENT_MONTH" ]]; then
 			last_summary_gh_paid_usd: "",
 			edgegap_tracked: {},
 			edgegap_completed_minutes: 0,
+			hetzner_servers_active: {},
+			hetzner_servers_settled: [],
 			prev_month_total_usd: $pmt,
 			prev_month_label: $pml
 		}')
@@ -117,6 +122,14 @@ carry_prev_month_label=$(echo "$state" | jq -r '.prev_month_label // ""')
 # Real model: Hetzner caps at the monthly rate. Pro-rata up to the
 # cap, per server, since the later of (server creation, start of
 # month). Use net price (no VAT for US accounts).
+#
+# Why the per-server ledger: `/v1/servers` only returns currently-
+# existing servers. Servers created and deleted within the month
+# (Phase migrations, dev experiments, transient Pulumi resizes) are
+# invisible by the time of any later poll. May 2026 invoice
+# undercounted by ~$4 because of this. The ledger settles each
+# server's eur cost on first disappearance so transient resources
+# survive in `hetzner_servers_settled`.
 # ---------------------------------------------------------------------
 hetzner_eur="0.00"
 servers_json=$(curl -fsS \
@@ -126,34 +139,97 @@ pricing_json=$(curl -fsS \
 	-H "Authorization: Bearer $HCLOUD_TOKEN" \
 	"https://api.hetzner.cloud/v1/pricing")
 
-hetzner_eur=$(echo "$servers_json" | jq -r --arg now "$NOW_EPOCH" \
-	--arg month_start "$MONTH_START_EPOCH" \
-	--argjson pricing "$pricing_json" '
-	def hourly_net($srv_type; $loc):
-		($pricing.pricing.server_types[]
-			| select(.name == $srv_type) | .prices[]
-			| select(.location == $loc) | .price_hourly.net | tonumber);
-	def monthly_net($srv_type; $loc):
-		($pricing.pricing.server_types[]
-			| select(.name == $srv_type) | .prices[]
-			| select(.location == $loc) | .price_monthly.net | tonumber);
+# Step 1: snapshot the current server set in a normalized form.
+current_servers=$(echo "$servers_json" | jq --arg ms "$MONTH_START_EPOCH" '
 	[.servers[] | {
-		name: .name,
+		id: (.id | tostring),
 		type: .server_type.name,
 		loc: .datacenter.location.name,
 		created_epoch: (.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
-	} | . + {
-		hours_this_month: (
-			((($now | tonumber)
-				- ([.created_epoch, ($month_start | tonumber)] | max))
-				/ 3600) | floor
-		),
-		hourly: hourly_net(.type; .loc),
-		monthly_cap: monthly_net(.type; .loc),
-	} | . + {
-		eur: ([.hours_this_month * .hourly, .monthly_cap] | min)
-	}] | map(.eur) | add // 0' 2>/dev/null || echo "0")
+		start: ([(.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
+			($ms | tonumber)] | max)
+	}] | INDEX(.id)
+')
+
+# Step 2: ledger update.
+# - Servers in active but not in current: settle into hetzner_servers_settled.
+# - Servers in current but not in active: add to active.
+# - Servers in both: bump last_seen.
+# Eur cost for a settled entry is captured at settle time so a
+# later pricing-API change doesn't retroactively shift bills.
+hetzner_active_in=$(echo "$state" | jq -c '.hetzner_servers_active // {}')
+hetzner_settled_in=$(echo "$state" | jq -c '.hetzner_servers_settled // []')
+ledger=$(jq -n \
+	--argjson active "$hetzner_active_in" \
+	--argjson settled "$hetzner_settled_in" \
+	--argjson current "$current_servers" \
+	--argjson pricing "$pricing_json" \
+	--arg now "$NOW_EPOCH" '
+	def hourly($t; $l):
+		($pricing.pricing.server_types[]
+			| select(.name == $t) | .prices[]
+			| select(.location == $l) | .price_hourly.net | tonumber);
+	def monthly($t; $l):
+		($pricing.pricing.server_types[]
+			| select(.name == $t) | .prices[]
+			| select(.location == $l) | .price_monthly.net | tonumber);
+	def eur(hours; t; l): ([hours * hourly(t; l), monthly(t; l)] | min);
+	# Settle disappeared servers.
+	reduce ($active | to_entries[]) as $e (
+		{active: $active, settled: $settled};
+		if ($current | has($e.key)) then .
+		else
+			(($e.value.last_seen - $e.value.start) / 3600) as $h |
+			.settled += [{
+				id: $e.key, type: $e.value.type, loc: $e.value.loc,
+				start: $e.value.start, end: $e.value.last_seen,
+				hours: $h, eur: eur($h; $e.value.type; $e.value.loc)
+			}] |
+			.active = (.active | del(.[$e.key]))
+		end
+	)
+	# Add new + bump existing.
+	| reduce ($current | to_entries[]) as $c (.;
+		if (.active | has($c.key)) then
+			.active[$c.key].last_seen = ($now | tonumber)
+		else
+			.active[$c.key] = {
+				type: $c.value.type,
+				loc: $c.value.loc,
+				start: $c.value.start,
+				last_seen: ($now | tonumber)
+			}
+		end
+	)')
+hetzner_active_out=$(echo "$ledger" | jq -c '.active')
+hetzner_settled_out=$(echo "$ledger" | jq -c '.settled')
+
+# Step 3: total eur = settled-eur + active-running-cost.
+hetzner_eur=$(jq -n \
+	--argjson active "$hetzner_active_out" \
+	--argjson settled "$hetzner_settled_out" \
+	--argjson pricing "$pricing_json" \
+	--arg now "$NOW_EPOCH" -r '
+	def hourly($t; $l):
+		($pricing.pricing.server_types[]
+			| select(.name == $t) | .prices[]
+			| select(.location == $l) | .price_hourly.net | tonumber);
+	def monthly($t; $l):
+		($pricing.pricing.server_types[]
+			| select(.name == $t) | .prices[]
+			| select(.location == $l) | .price_monthly.net | tonumber);
+	def eur(hours; t; l): ([hours * hourly(t; l), monthly(t; l)] | min);
+	([$active[] | eur((($now | tonumber) - .start) / 3600; .type; .loc)]
+		| add // 0)
+	+ ([$settled[] | .eur] | add // 0)' 2>/dev/null || echo "0")
 hetzner_usd=$(awk -v e="$hetzner_eur" 'BEGIN { printf "%.2f", e * 1.08 }')
+
+# Persist ledger.
+state=$(echo "$state" | jq \
+	--argjson active "$hetzner_active_out" \
+	--argjson settled "$hetzner_settled_out" \
+	'.hetzner_servers_active = $active
+	| .hetzner_servers_settled = $settled')
 
 # ---------------------------------------------------------------------
 # Edgegap MTD usage + cost estimate.
@@ -184,9 +260,20 @@ hetzner_usd=$(awk -v e="$hetzner_eur" 'BEGIN { printf "%.2f", e * 1.08 }')
 #      tracked), each entry's start clamped at month_start so
 #      cross-month deployments don't backfill prior months.
 #
-# Dollar estimate uses EDGEGAP_RATE_USD_PER_HOUR (set from the
-# Edgegap dashboard's billing page; defaults to a rough small-
-# CPU-tier figure).
+# Dollar estimate uses EDGEGAP_MCPU_PER_DEPLOY (default 1024 =
+# 1 vCPU; matches hopnbop-server) and EDGEGAP_RATE_USD_PER_MCPU_MIN
+# (default $0.00000115, verified against May 2026 invoice
+# S95TLZML-0002 line "Deployment Compute" at $0.00115/1000 mCPU-min).
+#
+# Known limitation: this poller misses matches that start AND end
+# between two timer firings. With 5-min cadence we catch matches >5
+# min, but Hop'n'Bop's median match length is likely 3-8 min so
+# the floor of uncounted minutes is real. A definitive fix is to
+# have the Nakama runtime ledger each deployment lifecycle event
+# (start in fleet_allocator.go, end in match_lifecycle.go) into a
+# JSONL the cost-monitor reads instead of polling. May 2026 invoice
+# was ~3.5x the cost-monitor estimate after this fix, almost
+# entirely attributable to the polling gap.
 # ---------------------------------------------------------------------
 edgegap_active_count=0
 edgegap_completed_minutes=$(echo "$state" | jq -r \
@@ -284,12 +371,13 @@ edgegap_mtd_hours=$(awk -v m="$edgegap_mtd_minutes" \
 	'BEGIN { printf "%.1f", m / 60 }')
 
 edgegap_usd="0.00"
-if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+if awk -v r="$EDGEGAP_RATE_USD_PER_MCPU_MIN" \
 		'BEGIN { exit !(r > 0) }'; then
 	edgegap_usd=$(awk \
-		-v h="$edgegap_mtd_hours" \
-		-v r="$EDGEGAP_RATE_USD_PER_HOUR" \
-		'BEGIN { printf "%.2f", h * r }')
+		-v m="$edgegap_mtd_minutes" \
+		-v c="$EDGEGAP_MCPU_PER_DEPLOY" \
+		-v r="$EDGEGAP_RATE_USD_PER_MCPU_MIN" \
+		'BEGIN { printf "%.2f", m * c * r }')
 fi
 
 # Persist Edgegap tracking state. Threshold checks below run
@@ -302,7 +390,7 @@ state=$(echo "$state" | jq \
 	'.edgegap_tracked = $tracked
 	| .edgegap_completed_minutes = ($completed | tonumber)')
 
-if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+if awk -v r="$EDGEGAP_RATE_USD_PER_MCPU_MIN" \
 		'BEGIN { exit !(r > 0) }'; then
 	total_usd=$(awk -v a="$hetzner_usd" -v b="$edgegap_usd" \
 		'BEGIN { printf "%.2f", a + b }')
@@ -664,9 +752,9 @@ fmt_pair() {
 fmt_edgegap_line() {
 	local line="- Edgegap: ${edgegap_active_count} active"
 	line+=", ${edgegap_mtd_hours}h MTD"
-	if awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+	if awk -v r="$EDGEGAP_RATE_USD_PER_MCPU_MIN" \
 			'BEGIN { exit !(r > 0) }'; then
-		line+=" (~\$${edgegap_usd} @ \$${EDGEGAP_RATE_USD_PER_HOUR}/h)"
+		line+=" (~\$${edgegap_usd} @ ${EDGEGAP_MCPU_PER_DEPLOY} mCPU/deploy)"
 	fi
 	echo "$line"
 }
@@ -744,7 +832,7 @@ if (( should_summarize )); then
 	# threshold pings.
 	fmt_edgegap_daily_line() {
 		local has_rate=0
-		awk -v r="$EDGEGAP_RATE_USD_PER_HOUR" \
+		awk -v r="$EDGEGAP_RATE_USD_PER_MCPU_MIN" \
 			'BEGIN { exit !(r > 0) }' && has_rate=1
 		if (( has_rate )) && [[ -n "$edgegap_day_usd" ]]; then
 			echo "- Edgegap: ${edgegap_active_count} active, ${edgegap_mtd_hours}h MTD ($(fmt_pair "$edgegap_day_usd" "$edgegap_usd"))"

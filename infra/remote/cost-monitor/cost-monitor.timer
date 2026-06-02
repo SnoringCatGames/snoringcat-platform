@@ -1,14 +1,22 @@
 [Unit]
-Description=snoringcat-platform cost monitor (hourly)
+Description=snoringcat-platform cost monitor (every 5 min)
 # Threshold crossings ping immediately. Routine daily summary
-# is sent only by the run that lands on $DAILY_SUMMARY_HOUR_UTC
+# is sent only by the run nearest to $DAILY_SUMMARY_HOUR_UTC
 # (default 09:00 UTC). Other runs are silent.
+#
+# Cadence: every 5 min. Tightened from hourly on 2026-06-01 after
+# May 2026 invoice showed cost-monitor's Edgegap MTD undercounted
+# by ~3.5x due to short matches starting and ending between hourly
+# polls. 5 min still misses sub-5-min matches; the definitive fix
+# is a runtime-side deployment ledger (see cost-monitor.sh Edgegap
+# section). 12 polls/hour stays well under Hetzner's 3600 req/h and
+# Edgegap's published API rate limits.
 
 [Timer]
-OnCalendar=*-*-* *:00:00 UTC
+OnCalendar=*-*-* *:00,05,10,15,20,25,30,35,40,45,50,55:00 UTC
 Persistent=true
 Unit=cost-monitor.service
-RandomizedDelaySec=60
+RandomizedDelaySec=30
 
 [Install]
 WantedBy=timers.target
