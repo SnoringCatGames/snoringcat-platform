@@ -77,6 +77,11 @@ services:
       LOCAL_PUBLIC_IP: ${LOCAL_PUBLIC_IP}
       LOCAL_UDP_PORT_RANGE: ${LOCAL_UDP_PORT_RANGE}
       LOCAL_TCP_PORT_RANGE: ${LOCAL_TCP_PORT_RANGE}
+      # GeoIP MMDB path inside the container. Defaults are wired
+      # so an unset env still finds the file at the host-bind
+      # location. Refreshed monthly by the geoip-refresh
+      # systemd timer.
+      GEOIP_MMDB_PATH: /var/lib/snoringcat/geoip/dbip-country-lite.mmdb
     volumes:
       - ./config.yml:/nakama/data/config.yml:ro
       - ./modules:/nakama/data/modules:ro
@@ -94,6 +99,10 @@ services:
       # local or hybrid), the runtime never opens the socket
       # despite the mount being present.
       - /var/run/docker.sock:/var/run/docker.sock
+      # GeoIP MMDB used by hybridAllocatorChoice. Bind-mount
+      # so the systemd timer's monthly atomic-replace is visible
+      # to the runtime without rebuilding the image.
+      - /var/lib/snoringcat/geoip:/var/lib/snoringcat/geoip:ro
     expose:
       - "7350"
       - "7351"
@@ -197,6 +206,30 @@ services:
       - nakama-net
     depends_on:
       - prometheus
+
+  # cAdvisor exports per-container resource metrics for every
+  # container running under the host's docker daemon, including
+  # the on-demand match containers spawned by the
+  # LocalDockerAllocator. The prometheus container scrapes it
+  # on the internal docker network. Mounts mirror the upstream
+  # README recommendation for full visibility.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    expose:
+      - "8080"
+    networks:
+      - nakama-net
 
   node-exporter:
     image: prom/node-exporter:v1.8.2

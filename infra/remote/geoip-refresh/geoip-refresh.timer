@@ -1,0 +1,17 @@
+[Unit]
+Description=Monthly refresh of the GeoIP MMDB
+# DB-IP publishes the new month's free MMDB on the 1st; firing
+# on the 5th gives a generous buffer for upstream propagation
+# and avoids contention with month-rollover work elsewhere on
+# the host.
+
+[Timer]
+OnCalendar=*-*-05 03:30:00 UTC
+Persistent=true
+Unit=geoip-refresh.service
+# Spread firing within the hour so multiple stacks (if we ever
+# run more than one) don't hammer DB-IP simultaneously.
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

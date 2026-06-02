@@ -64,3 +64,8 @@ runtime:
     - "LOCAL_PUBLIC_IP=${LOCAL_PUBLIC_IP}"
     - "LOCAL_UDP_PORT_RANGE=${LOCAL_UDP_PORT_RANGE}"
     - "LOCAL_TCP_PORT_RANGE=${LOCAL_TCP_PORT_RANGE}"
+    # GeoIP MMDB path inside the container. The default in
+    # runtime/allocator.go matches this value so unset is fine
+    # in dev; in prod the docker-compose env block (above)
+    # explicitly sets it.
+    - "GEOIP_MMDB_PATH=${GEOIP_MMDB_PATH}"

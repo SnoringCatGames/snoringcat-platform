@@ -1046,6 +1046,12 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			"mock":    strconv.FormatBool(a.mockDeploy),
 		},
 		time.Since(matchStart))
+	// Active-match gauge + per-backend allocation counter.
+	// Mock-mode allocations skip metrics so compliance test
+	// runs don't pollute prod dashboards.
+	if !a.mockDeploy {
+		recordAllocationStart(nk, allocatorKind)
+	}
 
 	// Persist the synthetic flag so match_end / match_cancel can
 	// look it up by request_id. The Edgegap env var is also there,

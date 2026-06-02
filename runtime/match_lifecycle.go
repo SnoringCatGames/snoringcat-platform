@@ -490,6 +490,7 @@ func (m *matchLifecycle) MatchEndRpc(
 			"%s deployment %s terminated",
 			metadata.AllocatorKind, args.RequestID)
 	}
+	recordAllocationEnd(nk, metadata.AllocatorKind)
 
 	resp, _ := json.Marshal(map[string]any{"ok": true})
 	return string(resp), nil
@@ -619,6 +620,7 @@ func (m *matchLifecycle) MatchCancelRpc(
 			"%s deployment %s terminated (cancelled)",
 			cancelMetadata.AllocatorKind, args.RequestID)
 	}
+	recordAllocationEnd(nk, cancelMetadata.AllocatorKind)
 
 	resp, _ := json.Marshal(map[string]any{"ok": true})
 	return string(resp), nil

@@ -44,3 +44,18 @@ scrape_configs:
     static_configs:
       - targets: [postgres-exporter:9187]
         labels: { instance: nakama-prod-1 }
+
+  # cAdvisor exports per-container CPU / memory / network /
+  # filesystem metrics for everything running on the docker
+  # daemon. Surfaces game-server (LocalDockerAllocator) container
+  # resource usage so a Grafana panel can validate the 512 mCPU
+  # right-size from the cost-reduction Tier 1.1 work, and so
+  # we can see per-match peaks once hybrid traffic flows.
+  #
+  # cAdvisor has its own service-discovery (one Prometheus
+  # target = one /metrics endpoint covering every container);
+  # no per-container target list needed here.
+  - job_name: cadvisor
+    static_configs:
+      - targets: [cadvisor:8080]
+        labels: { instance: nakama-prod-1 }

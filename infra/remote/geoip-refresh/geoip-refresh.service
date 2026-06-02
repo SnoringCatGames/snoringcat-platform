@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh GeoIP MMDB used by hybrid allocator
+Documentation=https://github.com/SnoringCatGames/snoringcat-platform/tree/main/infra/remote/geoip-refresh
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/snoringcat/geoip-refresh/geoip-refresh.sh
+# Long timeout because the download + restart can take a couple
+# minutes if the runtime is mid-handling-a-match. systemd will
+# fail-loud at 5 min.
+TimeoutStartSec=300
