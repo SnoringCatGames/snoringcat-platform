@@ -22,6 +22,7 @@
 //          alpha-2 code; "" when the address is unrecognized)
 //     400: {"error":"..."}  (unparseable IP)
 //   GET /healthz  → 200 "ok" once the MMDB is open.
+//   GET /metrics  → Prometheus text format.
 package main
 
 import (
@@ -35,7 +36,43 @@ import (
 	"time"
 
 	"github.com/oschwald/maxminddb-golang"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var (
+	lookupsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "geoip_lookups_total",
+			Help: "Total /lookup calls partitioned by outcome.",
+		},
+		// result is one of:
+		//   hit         — MMDB returned a country code
+		//   miss        — MMDB ran, no country (private/unknown IP)
+		//   bad_request — unparseable / missing IP param
+		//   error       — mmdb lookup itself errored
+		[]string{"result"},
+	)
+	lookupSeconds = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name: "geoip_lookup_seconds",
+			Help: "Wall-clock latency of /lookup handler.",
+			// Tight bucket layout: in-process mmap MMDB lookups
+			// land in the tens-of-microseconds range; anything
+			// past ~10ms is the smoking-gun for HTTP/network
+			// overhead so the runtime's 250ms client timeout
+			// fires before saturation.
+			Buckets: []float64{
+				0.0001, 0.0005, 0.001, 0.005, 0.01,
+				0.025, 0.05, 0.1, 0.25, 0.5,
+			},
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(lookupsTotal, lookupSeconds)
+}
 
 type lookupResponse struct {
 	Country string `json:"country"`
@@ -57,21 +94,34 @@ type server struct {
 }
 
 func (s *server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() {
+		lookupSeconds.Observe(time.Since(start).Seconds())
+	}()
+
 	ipStr := r.URL.Query().Get("ip")
 	if ipStr == "" {
+		lookupsTotal.WithLabelValues("bad_request").Inc()
 		writeError(w, http.StatusBadRequest, "missing ip param")
 		return
 	}
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
+		lookupsTotal.WithLabelValues("bad_request").Inc()
 		writeError(w, http.StatusBadRequest, "unparseable ip")
 		return
 	}
 	rec := countryRecord{}
 	if err := s.db.Lookup(ip, &rec); err != nil {
+		lookupsTotal.WithLabelValues("error").Inc()
 		writeError(w, http.StatusInternalServerError,
 			fmt.Sprintf("mmdb lookup: %v", err))
 		return
+	}
+	if rec.Country.ISOCode == "" {
+		lookupsTotal.WithLabelValues("miss").Inc()
+	} else {
+		lookupsTotal.WithLabelValues("hit").Inc()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(lookupResponse{
@@ -114,6 +164,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/lookup", srv.handleLookup)
 	mux.HandleFunc("/healthz", srv.handleHealth)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	httpServer := &http.Server{
 		Addr:              listenAddr,

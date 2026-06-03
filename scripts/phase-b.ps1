@@ -134,7 +134,7 @@ function Scp-Up {
 # --------------------------------------------------------------------
 $StepOrder = @(
 	"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-	"Verify", "UptimeRobot", "CostMonitor",
+	"Verify", "UptimeRobot", "CostMonitor", "GeoipRefresh",
 	"AlertTest", "Reencrypt", "Complete"
 )
 $StartIdx = $StepOrder.IndexOf($StartAt)
@@ -467,6 +467,49 @@ systemctl list-timers cost-monitor.timer
 	Note "Cost monitor installed and ran successfully"
 }
 
+function Step-GeoipRefresh {
+	if (-not (Should-Run "GeoipRefresh")) { return }
+	Note "Step: geoip-refresh systemd timer (monthly MMDB rollover)"
+	$s = Read-State
+	$ip = $s.infrastructure.hetzner_nakama_ip
+	# The geoip-sidecar container bind-mounts
+	# /var/lib/snoringcat/geoip read-only; create the directory
+	# eagerly so the first compose-up doesn't fail on a missing
+	# bind source if the timer hasn't run yet.
+	Invoke-Checked "mkdir /var/lib/snoringcat/geoip" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /var/lib/snoringcat/geoip"
+	}
+	Invoke-Checked "mkdir geoip-refresh" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /opt/snoringcat/geoip-refresh"
+	}
+	Invoke-Checked "scp geoip-refresh.sh" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\geoip-refresh\geoip-refresh.sh" "/opt/snoringcat/geoip-refresh/"
+	}
+	Invoke-Checked "scp geoip-refresh.service" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\geoip-refresh\geoip-refresh.service" "/opt/snoringcat/geoip-refresh/"
+	}
+	Invoke-Checked "scp geoip-refresh.timer" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\geoip-refresh\geoip-refresh.timer" "/opt/snoringcat/geoip-refresh/"
+	}
+	Invoke-Checked "install + enable geoip-refresh timer" {
+		Ssh-Run $ip $NakamaKey @"
+chmod +x /opt/snoringcat/geoip-refresh/geoip-refresh.sh &&
+cp /opt/snoringcat/geoip-refresh/geoip-refresh.service /etc/systemd/system/geoip-refresh.service &&
+cp /opt/snoringcat/geoip-refresh/geoip-refresh.timer /etc/systemd/system/geoip-refresh.timer &&
+systemctl daemon-reload &&
+systemctl enable --now geoip-refresh.timer &&
+systemctl list-timers geoip-refresh.timer
+"@
+	}
+	# Run once immediately so the bind-mount source isn't empty
+	# when the geoip-sidecar starts (the sidecar fail-fasts at
+	# boot on a missing MMDB). Idempotent on repeat phase-b runs.
+	Invoke-Checked "test run geoip-refresh" {
+		Ssh-Run $ip $NakamaKey "systemctl start geoip-refresh.service && journalctl -u geoip-refresh.service -n 15 --no-pager"
+	}
+	Note "geoip-refresh installed and ran successfully"
+}
+
 function Step-PgBackup {
 	if (-not (Should-Run "PgBackup")) { return }
 	Note "Step: pg-backup systemd timer (nightly Postgres dump → R2)"
@@ -621,6 +664,7 @@ try {
 	Step-Verify
 	Step-UptimeRobot
 	Step-CostMonitor
+	Step-GeoipRefresh
 	Step-PgBackup
 	Step-AlertTest
 	Step-Reencrypt

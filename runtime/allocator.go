@@ -194,15 +194,18 @@ func (c *geoIPHTTPClient) Lookup(ip net.IP) (string, error) {
 }
 
 
-// naCIDRs is a coarse first-pass list of CIDR blocks that cover
-// the bulk of US/Canada residential ISPs. Far from exhaustive —
-// the proper fix is MaxMind GeoLite2-Country lookup (free,
-// updated weekly). This list catches the common case so the
-// rollout can validate the hybrid path with real traffic before
-// the geo integration lands.
+// naCIDRs is the geoip-sidecar's safety-net classifier — used by
+// ipLooksLikeNorthAmericaStatic when the sidecar lookup errors or
+// times out. Coarse `/8`-block list scraped from public
+// ARIN/CAIDA allocation tables; correct for the bulk of US/CA
+// residential ISPs but blind to fine-grained country boundaries,
+// non-ARIN NA blocks, and IPv6.
 //
-// Sourced from public ARIN/CAIDA allocation tables; the
-// follow-up GeoIP work replaces this entirely.
+// The primary geo source is now the geoip-sidecar (DB-IP
+// IP-to-Country Lite over maxminddb-golang); see geoIPHTTPClient
+// above and infra/remote/geoip-sidecar/ for the service. Don't
+// chase the gaps in this list — fix the sidecar's reliability
+// instead.
 var naCIDRs = []string{
 	// ARIN-allocated /8 blocks (most US/Canada residential):
 	"3.0.0.0/8", "4.0.0.0/8", "6.0.0.0/8", "7.0.0.0/8",

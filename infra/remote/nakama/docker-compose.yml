@@ -93,11 +93,10 @@ services:
       LOCAL_PUBLIC_IP: ${LOCAL_PUBLIC_IP}
       LOCAL_UDP_PORT_RANGE: ${LOCAL_UDP_PORT_RANGE}
       LOCAL_TCP_PORT_RANGE: ${LOCAL_TCP_PORT_RANGE}
-      # GeoIP MMDB path inside the container. Defaults are wired
-      # so an unset env still finds the file at the host-bind
-      # location. Refreshed monthly by the geoip-refresh
-      # systemd timer.
-      GEOIP_MMDB_PATH: /var/lib/snoringcat/geoip/dbip-country-lite.mmdb
+      # geoip lookup is over HTTP to the sidecar (see the
+      # geoip-sidecar service below). Default URL points at the
+      # docker DNS hostname; override with GEOIP_SIDECAR_URL=off
+      # to force the static-CIDR fallback (compliance tests).
     volumes:
       - ./config.yml:/nakama/data/config.yml:ro
       - ./modules:/nakama/data/modules:ro

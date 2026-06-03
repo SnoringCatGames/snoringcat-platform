@@ -596,7 +596,11 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// the Nakama Prometheus endpoint as `snoringcat_alloc_seconds`;
 	// see Stage 7.11.
 	matchStart := time.Now()
-	logger.Info("matchmaker matched %d players, allocating Edgegap deployment", len(entries))
+	// Backend-neutral log line: the actual choice (Edgegap vs
+	// LocalDockerAllocator vs mock) is made below after the
+	// per-game config + hybrid policy resolve. Each backend then
+	// emits its own "X allocation succeeded" line.
+	logger.Info("matchmaker matched %d players, allocating game-server", len(entries))
 
 	// Extract matched user_ids up-front so the inflight tracker
 	// can register them before any I/O kicks off. The same list
@@ -721,6 +725,21 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// (no votes) leave matchGameID empty, in which case match_end
 	// falls back to the legacy bare leaderboard ID.
 	matchGameID := pickDominantGameID(gameIDVotes, a.games, logger)
+	// Visibility canary for "client dropped game_id" regressions.
+	// An empty matchGameID skips per-game allocator routing (=>
+	// silent Edgegap fallback) and per-game protocol-version
+	// gating. Pre-3.10 clients legitimately don't vote, so we
+	// only warn once the games cache is populated AND we got
+	// real player votes (someone is voting just not consistently).
+	if matchGameID == "" && a.games != nil &&
+		len(a.games.GameIDs()) > 0 && len(gameIDVotes) == 0 {
+		logger.Warn(
+			"matched %d players carried no game_id property;"+
+				" per-game allocator routing skipped, falling"+
+				" back to default backend. Check the client SDK"+
+				" matchmaker_add call for a regression.",
+			len(entries))
+	}
 
 	// Stage 3.9: pre-allocate protocol_version check. Each
 	// post-3.9 client declares its compile-time protocol_version

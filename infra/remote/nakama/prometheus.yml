@@ -59,3 +59,13 @@ scrape_configs:
     static_configs:
       - targets: [cadvisor:8080]
         labels: { instance: nakama-prod-1 }
+
+  # geoip-sidecar exports `geoip_lookups_total{result=...}` and a
+  # `geoip_lookup_seconds` histogram so a degraded sidecar (high
+  # error rate, latency creeping toward the runtime's 250ms client
+  # timeout) is visible in Grafana before it starts forcing the
+  # hybrid policy onto the static-CIDR fallback.
+  - job_name: geoip-sidecar
+    static_configs:
+      - targets: [geoip-sidecar:8080]
+        labels: { instance: nakama-prod-1 }
