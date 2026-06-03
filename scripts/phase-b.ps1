@@ -213,6 +213,16 @@ function Step-ObsConfigs {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\grafana\provisioning" "/opt/nakama/grafana/" -Recurse
 	}
 
+	# Grafana file-provisioned dashboards (recursive). The
+	# provisioner at dashboards/providers.yml picks them up from
+	# /var/lib/grafana/dashboards. UI-created dashboards remain
+	# in the grafana_data sqlite DB and aren't touched.
+	if (Test-Path "$RemoteSrc\nakama\grafana\dashboards") {
+		Invoke-Checked "scp grafana dashboards" {
+			Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\grafana\dashboards" "/opt/nakama/grafana/" -Recurse
+		}
+	}
+
 	# Render contactpoints.yml with Discord webhook URL.
 	$cp = Get-Content "$RemoteSrc\nakama\grafana\provisioning\alerting\contactpoints.yml" -Raw
 	$cp = $cp.Replace('${DISCORD_WEBHOOK_URL}', $env:DISCORD_WEBHOOK_URL)

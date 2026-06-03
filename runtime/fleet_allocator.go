@@ -729,16 +729,21 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// An empty matchGameID skips per-game allocator routing (=>
 	// silent Edgegap fallback) and per-game protocol-version
 	// gating. Pre-3.10 clients legitimately don't vote, so we
-	// only warn once the games cache is populated AND we got
-	// real player votes (someone is voting just not consistently).
+	// only warn once the games cache is populated AND someone
+	// in the match did vote — that means it's not a pure pre-
+	// 3.10 match but the votes still failed to resolve, most
+	// likely because every vote was for an unknown game_id
+	// (pickDominantGameID logs per dropped vote, but the match-
+	// level outcome warrants its own line).
 	if matchGameID == "" && a.games != nil &&
-		len(a.games.GameIDs()) > 0 && len(gameIDVotes) == 0 {
+		len(a.games.GameIDs()) > 0 && len(gameIDVotes) > 0 {
 		logger.Warn(
-			"matched %d players carried no game_id property;"+
-				" per-game allocator routing skipped, falling"+
-				" back to default backend. Check the client SDK"+
-				" matchmaker_add call for a regression.",
-			len(entries))
+			"matched %d players voted but no game_id resolved"+
+				" (votes=%v); per-game allocator routing skipped,"+
+				" falling back to default app=%s version=%s."+
+				" Check that voted game_ids are registered in"+
+				" the games cache.",
+			len(entries), gameIDVotes, a.appName, a.appVersion)
 	}
 
 	// Stage 3.9: pre-allocate protocol_version check. Each
