@@ -329,6 +329,10 @@ type fleetAllocator struct {
 	// the field nil-safe means a bare Edgegap deploy doesn't
 	// require docker-socket access just to register the hook.
 	local      *LocalDockerAllocator
+	// geo is the GeoIP lookup used by hybridAllocatorChoice.
+	// Nil when the sidecar URL is "off" — hybrid then falls back
+	// entirely to the static CIDR map.
+	geo geoIPLookup
 	appName    string
 	appVersion string
 	// games is the per-game config cache. Used by the matchmaker
@@ -887,7 +891,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 	if allocatorMode == allocatorModeHybrid {
-		if hybridAllocatorChoice(logger, ipList) {
+		if hybridAllocatorChoice(logger, a.geo, ipList) {
 			allocatorMode = allocatorModeLocal
 		} else {
 			allocatorMode = allocatorModeEdgegap

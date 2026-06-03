@@ -50,17 +50,27 @@ fi
 mv -f "$TMP" "$DEST"
 echo "[geoip-refresh] wrote $DEST ($SIZE bytes)"
 
-# Best-effort: tell the Nakama container to reload so it
-# picks up the new file without waiting for the next deploy.
-# The runtime's initGeoIPFromEnv only runs at boot, so until
-# a hot-reload RPC lands we need a process restart. This is
-# safe: Nakama is HA-friendly internally (graceful shutdown +
-# state in Postgres). Skipped silently if docker is missing
-# (e.g. running this script outside the production host for
-# a dry-run test).
+# Best-effort: restart the geoip-sidecar so it mmaps the new
+# file. The sidecar reads the MMDB once at boot, so until a
+# SIGHUP-style reload lands a restart is the rollover. Cheap
+# (~50ms) and at-most-once-monthly. Falls back to a Nakama
+# restart only if the sidecar doesn't exist on this host (e.g.
+# legacy install before the sidecar landed) — the historical
+# code path used to read MMDB directly from the Nakama plugin.
 if command -v docker >/dev/null 2>&1; then
-	docker compose -f /opt/nakama/docker-compose.yml \
-		restart nakama 2>/dev/null \
-		|| docker restart nakama 2>/dev/null \
-		|| true
+	if docker compose -f /opt/nakama/docker-compose.yml \
+			ps geoip-sidecar 2>/dev/null \
+			| grep -q geoip-sidecar; then
+		docker compose -f /opt/nakama/docker-compose.yml \
+			restart geoip-sidecar 2>/dev/null \
+			|| docker restart geoip-sidecar 2>/dev/null \
+			|| true
+	else
+		echo "[geoip-refresh] geoip-sidecar not running;" \
+			"falling back to nakama restart"
+		docker compose -f /opt/nakama/docker-compose.yml \
+			restart nakama 2>/dev/null \
+			|| docker restart nakama 2>/dev/null \
+			|| true
+	fi
 fi

@@ -444,6 +444,14 @@ function Step-Nakama {
 	Invoke-Checked "scp signaling-proxy/ build context" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\signaling-proxy" "/opt/nakama/" -Recurse | Out-Null
 	}
+	# geoip-sidecar/ build context. Same pattern as
+	# signaling-proxy. Bind-mounts /var/lib/snoringcat/geoip
+	# (populated by the geoip-refresh systemd timer) into the
+	# container at /data so the matchmaker hook's HTTP calls
+	# get a fresh MMDB.
+	Invoke-Checked "scp geoip-sidecar/ build context" {
+		Scp-Up $ip $NakamaKey "$RemoteSrc\geoip-sidecar" "/opt/nakama/" -Recurse | Out-Null
+	}
 	# Render .env for compose. Docker-compose substitutes
 	# ${VAR} in docker-compose.yml from this file. The
 	# entrypoint references NAKAMA_HTTP_KEY,

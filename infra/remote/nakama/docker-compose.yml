@@ -181,6 +181,25 @@ services:
     networks:
       - nakama-net
 
+  geoip-sidecar:
+    # Tiny MMDB lookup service the Nakama runtime calls at
+    # matchmaker-allocate time to classify player IPs by ISO
+    # country. The plugin can't link maxminddb-golang directly
+    # without breaking the Nakama Go-plugin x/sys ABI, so the
+    # lookup lives here. Reads /data/dbip-country-lite.mmdb,
+    # refreshed monthly by the geoip-refresh systemd timer.
+    build:
+      context: ./geoip-sidecar
+    image: snoringcat-geoip-sidecar:local
+    container_name: geoip-sidecar
+    restart: unless-stopped
+    volumes:
+      - /var/lib/snoringcat/geoip:/data:ro
+    expose:
+      - "8080"
+    networks:
+      - nakama-net
+
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: prometheus

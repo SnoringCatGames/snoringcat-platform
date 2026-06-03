@@ -329,6 +329,7 @@ func InitModule(
 		alloc := &fleetAllocator{
 			edgegap:             edgegap,
 			local:               localAllocator,
+			geo:                 newGeoIPClient(env),
 			appName:             appName,
 			appVersion:          appVersion,
 			signalingDomain:     signalingDomain,

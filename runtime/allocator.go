@@ -1,7 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
@@ -36,31 +44,20 @@ const (
 // local. Called per-match from OnMatchmakerMatched when the
 // resolved game config's AllocatorMode is "hybrid".
 //
-// Routing rule: every matched player IP must be classified as NA
-// by ipLooksLikeNorthAmerica below. Any missing IP, unparseable
-// IP, or non-NA player routes the whole match to Edgegap.
+// Routing rule: every matched player IP must classify as North
+// America. The geoip sidecar (run as a docker-compose service on
+// the Nakama host, mmap'd over the DB-IP IP-to-Country Lite MMDB)
+// is the primary source. If the sidecar errors or times out, we
+// fall back to the static `/8` CIDR map below — a safety net that
+// keeps the matchmaker latency budget bounded if the sidecar is
+// degraded.
 //
-// **GeoIP follow-up status (2026-06-02)**: An earlier attempt to
-// replace the static CIDR map with a maxminddb-golang lookup
-// (DB-IP IP-to-Country Lite) ran into Go-plugin compatibility:
-// maxminddb-golang depends on golang.org/x/sys, and the version
-// it pulls in is incompatible with the version
-// heroiclabs/nakama:3.25.0 was built against, causing the plugin
-// to fail to load with "plugin was built with a different
-// version of package golang.org/x/sys/unix". The MMDB refresh
-// systemd timer + bind-mount are still wired (the file is on
-// disk, refreshed monthly), waiting on a no-x/sys-dep GeoIP
-// path. Options to revisit:
-//   - Parse DB-IP's CSV download with stdlib only (no MMDB
-//     parser dep).
-//   - Wait for Nakama to upgrade x/sys, then re-add the
-//     maxminddb-golang dep.
-//   - Move the GeoIP lookup out of the Go plugin entirely —
-//     run a sidecar that the runtime calls via HTTP.
-// Until that lands, the static CIDR map below is the only
-// GeoIP signal — coarse but stable.
+// Any missing IP, unparseable IP, or non-NA player routes the
+// whole match to Edgegap (safe default — Edgegap will geo-route
+// it via its own provider).
 func hybridAllocatorChoice(
 	logger runtime.Logger,
+	geo geoIPLookup,
 	matchedIPs []string,
 ) bool {
 	if len(matchedIPs) == 0 {
@@ -79,16 +76,123 @@ func hybridAllocatorChoice(
 				raw)
 			return false
 		}
-		if !ipLooksLikeNorthAmerica(ip) {
+		if !ipIsNorthAmerica(logger, geo, ip) {
 			logger.Info(
-				"hybrid allocator: IP %s not classified as NA"+
-					" by static CIDR map; routing match to Edgegap",
+				"hybrid allocator: IP %s not classified as NA;"+
+					" routing match to Edgegap",
 				raw)
 			return false
 		}
 	}
 	return true
 }
+
+// ipIsNorthAmerica is the policy gate: tries the geoip sidecar
+// first, falls back to the static CIDR map on sidecar
+// errors/timeouts so a degraded sidecar doesn't black-hole the
+// matchmaker. "North America" today means ISO US/CA; we treat
+// MX/PR as Edgegap-routed because the local host is in
+// us-west and the latency budget for MX clients is worse than
+// Edgegap's regional placement would deliver.
+//
+// The two NA codes match what production Hetzner-hosted Nakama
+// can sensibly serve; widen this when the local fleet grows
+// beyond a single us-west host.
+func ipIsNorthAmerica(
+	logger runtime.Logger,
+	geo geoIPLookup,
+	ip net.IP,
+) bool {
+	if geo != nil {
+		country, err := geo.Lookup(ip)
+		if err == nil {
+			switch country {
+			case "US", "CA":
+				return true
+			default:
+				return false
+			}
+		}
+		logger.Warn(
+			"geoip sidecar lookup for %s failed (%v);"+
+				" falling back to static CIDR map",
+			ip, err)
+	}
+	return ipLooksLikeNorthAmericaStatic(ip)
+}
+
+// geoIPLookup is implemented by the geoip sidecar HTTP client.
+// Defined as an interface so the matchmaker hook can run with
+// a stub in tests and so a future in-process implementation
+// (once nakama and maxminddb agree on x/sys) can drop in.
+type geoIPLookup interface {
+	Lookup(ip net.IP) (country string, err error)
+}
+
+// geoIPHTTPClient calls the sidecar's /lookup endpoint and
+// extracts the country field. Per-lookup timeout is tight so the
+// matchmaker hook stays responsive even when the sidecar is down.
+type geoIPHTTPClient struct {
+	baseURL string
+	http    *http.Client
+}
+
+// newGeoIPClient reads GEOIP_SIDECAR_URL from env (default
+// http://geoip-sidecar:8080). Returns nil when set to the literal
+// "off", which disables the sidecar path entirely and forces the
+// static-CIDR fallback. Useful for the compliance test runner
+// where the sidecar isn't deployed.
+func newGeoIPClient(env map[string]string) geoIPLookup {
+	rawURL := env["GEOIP_SIDECAR_URL"]
+	if rawURL == "" {
+		rawURL = "http://geoip-sidecar:8080"
+	}
+	if strings.EqualFold(rawURL, "off") {
+		return nil
+	}
+	return &geoIPHTTPClient{
+		baseURL: strings.TrimRight(rawURL, "/"),
+		http: &http.Client{
+			Timeout: 250 * time.Millisecond,
+		},
+	}
+}
+
+type geoIPLookupResponse struct {
+	Country string `json:"country"`
+	IP      string `json:"ip"`
+}
+
+func (c *geoIPHTTPClient) Lookup(ip net.IP) (string, error) {
+	if c == nil || c.http == nil {
+		return "", fmt.Errorf("geoip client not initialised")
+	}
+	u := c.baseURL + "/lookup?ip=" +
+		url.QueryEscape(ip.String())
+	ctx, cancel := context.WithTimeout(
+		context.Background(), c.http.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf(
+			"geoip status %d: %s", resp.StatusCode, string(body))
+	}
+	out := geoIPLookupResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	return out.Country, nil
+}
+
 
 // naCIDRs is a coarse first-pass list of CIDR blocks that cover
 // the bulk of US/Canada residential ISPs. Far from exhaustive —
@@ -134,10 +238,14 @@ var parsedNACIDRs = func() []*net.IPNet {
 	return out
 }()
 
-func ipLooksLikeNorthAmerica(ip net.IP) bool {
-	// IPv6: conservative — bail to Edgegap unless we add real
-	// geo lookup. The IPv6 deployment surface here is small
-	// (most clients still v4-only); revisit when GeoLite lands.
+// ipLooksLikeNorthAmericaStatic is the safety-net classifier used
+// when the geoip sidecar is unavailable. Coarse first-pass walk
+// over the ARIN /8 list above.
+func ipLooksLikeNorthAmericaStatic(ip net.IP) bool {
+	// IPv6: conservative — bail to Edgegap. The IPv6 surface is
+	// small (most clients still v4-only); the sidecar handles v6
+	// when it's up, so the fallback only matters when geoip is
+	// degraded AND a v6 player matches.
 	if ip.To4() == nil {
 		return false
 	}
