@@ -58,6 +58,23 @@ type LocalDockerAllocator struct {
 	// in the synthesized status response so the signaling URL +
 	// match_ready payload point at the right address.
 	publicIP string
+	// httpKey is the Nakama runtime HTTP key. Injected into each
+	// spawned container's env so the in-container game-server can
+	// authenticate the `register_server` callback. On the Edgegap
+	// path this value is supplied per-app in the Edgegap dashboard;
+	// for local matches the runtime is the only source.
+	httpKey string
+	// dockerNetwork is the docker network name the spawned
+	// containers attach to. Pinned so the in-container game-server
+	// can resolve `nakama` for register_server without hairpinning
+	// out through Caddy. Default "nakama_nakama-net" matches the
+	// stock compose project name; override via LOCAL_DOCKER_NETWORK.
+	dockerNetwork string
+	// nakamaURL is what we inject as NAKAMA_URL in the container
+	// env so the game-server's register_with_runtime targets the
+	// internal docker DNS name instead of the public hostname.
+	// Default "http://nakama:7350"; override via LOCAL_NAKAMA_URL.
+	nakamaURL string
 	// ports allocates host-side UDP+TCP pairs from the configured
 	// ranges. Locking is per-allocator so concurrent matchmaker
 	// hooks can't race on the same port.
@@ -82,6 +99,21 @@ func newLocalDockerAllocator(env map[string]string) (*LocalDockerAllocator, erro
 			"LOCAL_PUBLIC_IP must be set when allocator_mode" +
 				" includes local")
 	}
+	httpKey := env["NAKAMA_HTTP_KEY"]
+	if httpKey == "" {
+		return nil, fmt.Errorf(
+			"NAKAMA_HTTP_KEY must be set when allocator_mode" +
+				" includes local (in-container game-server needs" +
+				" it to call register_server)")
+	}
+	dockerNetwork := env["LOCAL_DOCKER_NETWORK"]
+	if dockerNetwork == "" {
+		dockerNetwork = "nakama_nakama-net"
+	}
+	nakamaURL := env["LOCAL_NAKAMA_URL"]
+	if nakamaURL == "" {
+		nakamaURL = "http://nakama:7350"
+	}
 	udpRange := env["LOCAL_UDP_PORT_RANGE"]
 	if udpRange == "" {
 		udpRange = "30000-30099"
@@ -99,9 +131,12 @@ func newLocalDockerAllocator(env map[string]string) (*LocalDockerAllocator, erro
 		return nil, fmt.Errorf("LOCAL_TCP_PORT_RANGE: %w", err)
 	}
 	return &LocalDockerAllocator{
-		dockerSocket: socket,
-		publicIP:     publicIP,
-		ports:        newLocalPortPool(udpLo, udpHi, tcpLo, tcpHi),
+		dockerSocket:  socket,
+		publicIP:      publicIP,
+		httpKey:       httpKey,
+		dockerNetwork: dockerNetwork,
+		nakamaURL:     nakamaURL,
+		ports:         newLocalPortPool(udpLo, udpHi, tcpLo, tcpHi),
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -152,7 +187,7 @@ func (l *LocalDockerAllocator) Allocate(
 	// shape (slice of "KEY=VALUE" strings) and inject the
 	// per-deploy externals the game server reads to advertise
 	// its real host-port to clients.
-	envs := make([]string, 0, len(deployReq.EnvVars)+2)
+	envs := make([]string, 0, len(deployReq.EnvVars)+6)
 	for _, kv := range deployReq.EnvVars {
 		envs = append(envs, kv.Key+"="+kv.Value)
 	}
@@ -160,6 +195,17 @@ func (l *LocalDockerAllocator) Allocate(
 		"ARBITRIUM_PUBLIC_IP="+l.publicIP,
 		"ARBITRIUM_PORT_GAME_EXTERNAL="+strconv.Itoa(udpPort),
 		"ARBITRIUM_PORT_SIGNALING_EXTERNAL="+strconv.Itoa(tcpPort),
+		// Edgegap auto-injects ARBITRIUM_REQUEST_ID; the runtime
+		// has to fill it in for the local path. The game-server
+		// reads it to scope its register_server / match_end RPCs.
+		"ARBITRIUM_REQUEST_ID="+requestID,
+		// The game-server's register_server call needs the runtime
+		// HTTP key. Edgegap supplies this via the per-app env in
+		// the dashboard; locally the runtime is the only source.
+		"NAKAMA_HTTP_KEY="+l.httpKey,
+		// Point at Nakama via the internal docker network so the
+		// container doesn't have to hairpin through Caddy.
+		"NAKAMA_URL="+l.nakamaURL,
 	)
 
 	createPayload := dockerCreateContainerRequest{
@@ -170,7 +216,8 @@ func (l *LocalDockerAllocator) Allocate(
 			"4434/tcp": {},
 		},
 		HostConfig: dockerHostConfig{
-			AutoRemove: true,
+			AutoRemove:  true,
+			NetworkMode: l.dockerNetwork,
 			PortBindings: map[string][]dockerPortBinding{
 				"4433/udp": {{
 					HostIP:   "0.0.0.0",
@@ -374,6 +421,12 @@ type dockerCreateContainerRequest struct {
 type dockerHostConfig struct {
 	AutoRemove   bool                            `json:"AutoRemove"`
 	PortBindings map[string][]dockerPortBinding  `json:"PortBindings"`
+	// NetworkMode picks the docker network the container attaches
+	// to. Set to a named network (e.g. "nakama_nakama-net") so the
+	// in-container game-server can resolve `nakama` and reach
+	// register_server without depending on hairpin NAT through the
+	// host's public IP. Port publishing still works regardless.
+	NetworkMode string `json:"NetworkMode,omitempty"`
 	// Memory is bytes; NanoCPUs is 10^9 ns of CPU time per
 	// second (1e9 == 1 vCPU). Bounded cohabit with Nakama.
 	Memory   int64 `json:"Memory,omitempty"`
