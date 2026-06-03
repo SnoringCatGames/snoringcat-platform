@@ -255,6 +255,21 @@ func (l *LocalDockerAllocator) Allocate(
 		containerName, containerID,
 		gameConfig.GameID, udpPort, tcpPort)
 
+	// Inspect for the container's IP on l.dockerNetwork so the
+	// SignalingTarget below carries a literal IP (the proxy's token
+	// validation rejects hostnames). Best-effort: on inspect error
+	// we fall back to the host's public IP + host TCP port, which
+	// works only if hairpin NAT is available — better than failing
+	// the match outright.
+	containerIP, ipErr := l.dockerInspectIP(
+		ctx, containerID, l.dockerNetwork)
+	if ipErr != nil {
+		logger.Warn(
+			"local allocator: dockerInspectIP failed (%v); falling"+
+				" back to host public IP for signaling target",
+			ipErr)
+	}
+
 	// Synthesize the (deploy, status) pair callers expect.
 	deploy := &edgegapDeployResponse{
 		RequestID: requestID,
@@ -278,11 +293,15 @@ func (l *LocalDockerAllocator) Allocate(
 				Protocol: "TCP",
 			},
 		},
-		// Signaling-proxy lives on the same docker network as the
-		// match container; have it bridge to the container by name
-		// + internal port instead of hairpinning to the host's
-		// public IP + host-published port.
-		SignalingTarget: containerName + ":4434",
+	}
+	// Signaling-proxy lives on the same docker network as the match
+	// container; bridge it to the container's nakama-net IP +
+	// internal port instead of hairpinning to the host's public IP +
+	// host-published port. Falls back to (PublicIP, host tcp port)
+	// if inspect failed above (relies on hairpin NAT, lossy on some
+	// hosts but better than aborting the match).
+	if containerIP != "" {
+		status.SignalingTarget = containerIP + ":4434"
 	}
 
 	// Wait for the in-container Godot to call register_server so
@@ -507,6 +526,59 @@ func (l *LocalDockerAllocator) dockerStartContainer(
 	}
 	return fmt.Errorf(
 		"docker start %d: %s", resp.StatusCode, string(respBody))
+}
+
+// dockerInspectIP returns the container's IPv4 address on the
+// named docker network. Used to populate SignalingTarget so the
+// signaling-proxy (a sibling on the same docker network) bridges
+// to a literal IP — keeps the proxy's strict net.ParseIP token
+// validation usable.
+type dockerInspectResponse struct {
+	NetworkSettings struct {
+		Networks map[string]struct {
+			IPAddress string `json:"IPAddress"`
+		} `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+func (l *LocalDockerAllocator) dockerInspectIP(
+	ctx context.Context,
+	containerID string,
+	network string,
+) (string, error) {
+	url := "http://docker/v1.45/containers/" + containerID + "/json"
+	httpReq, err := http.NewRequestWithContext(
+		ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := l.http.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf(
+			"docker inspect %d: %s",
+			resp.StatusCode, string(respBody))
+	}
+	out := dockerInspectResponse{}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", fmt.Errorf("decode inspect response: %w", err)
+	}
+	netInfo, ok := out.NetworkSettings.Networks[network]
+	if !ok {
+		return "", fmt.Errorf(
+			"container %s not attached to network %q",
+			containerID, network)
+	}
+	if netInfo.IPAddress == "" {
+		return "", fmt.Errorf(
+			"container %s has empty IPAddress on network %q",
+			containerID, network)
+	}
+	return netInfo.IPAddress, nil
 }
 
 func (l *LocalDockerAllocator) dockerStopContainer(
