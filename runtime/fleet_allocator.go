@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -193,6 +194,14 @@ type edgegapStatusResponse struct {
 	PublicIP      string                 `json:"public_ip"`
 	Ports         map[string]edgegapPort `json:"ports"`
 	Fqdn          string                 `json:"fqdn"`
+	// SignalingTarget overrides (PublicIP, pickTCPPort(Ports)) for
+	// the signaling-URL signing path only. Format "host:port".
+	// Edgegap leaves it empty (signaling-proxy hits the deploy via
+	// its public IP+host port over the internet). The local allocator
+	// sets it to "<container_name>:4434" so the signaling-proxy
+	// reaches the in-network container via Docker DNS instead of
+	// hairpinning out through Caddy / the host's public IP.
+	SignalingTarget string `json:"signaling_target,omitempty"`
 }
 
 type edgegapPort struct {
@@ -1102,10 +1111,32 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// PublicIP / TCP port validity was already enforced by
 	// tryAllocate (real mode) or synthesizeMockDeploy (mock
 	// mode), so the values are guaranteed non-empty here.
-	tcpPort := pickTCPPort(status.Ports)
+	//
+	// SignalingTarget overrides this for backends (like the local
+	// docker allocator) where the signaling-proxy can reach the
+	// game-server over an internal docker network instead of
+	// hairpinning out through the host's public IP.
+	signalingHost := status.PublicIP
+	signalingPort := pickTCPPort(status.Ports)
+	if status.SignalingTarget != "" {
+		if h, p, err := net.SplitHostPort(status.SignalingTarget); err == nil {
+			if pn, perr := strconv.Atoi(p); perr == nil && pn > 0 {
+				signalingHost = h
+				signalingPort = pn
+			} else {
+				logger.Warn(
+					"ignoring SignalingTarget %q: unparseable port",
+					status.SignalingTarget)
+			}
+		} else {
+			logger.Warn(
+				"ignoring SignalingTarget %q: %v",
+				status.SignalingTarget, err)
+		}
+	}
 	signalingURL := signSignalingURL(
 		a.signalingDomain, a.signalingHmacSecret,
-		status.PublicIP, tcpPort, time.Now())
+		signalingHost, signalingPort, time.Now())
 
 	// Notify each matched player with connection info. Each
 	// player gets only their own session_ids — the server

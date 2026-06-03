@@ -278,6 +278,11 @@ func (l *LocalDockerAllocator) Allocate(
 				Protocol: "TCP",
 			},
 		},
+		// Signaling-proxy lives on the same docker network as the
+		// match container; have it bridge to the container by name
+		// + internal port instead of hairpinning to the host's
+		// public IP + host-published port.
+		SignalingTarget: containerName + ":4434",
 	}
 
 	// Wait for the in-container Godot to call register_server so
