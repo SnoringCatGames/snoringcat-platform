@@ -168,13 +168,13 @@ func (c *edgegapClient) httpClient() *http.Client {
 }
 
 type edgegapDeployRequest struct {
-	AppName     string             `json:"app_name"`
-	VersionName string             `json:"version_name"`
-	IPList      []string           `json:"ip_list,omitempty"`
-	EnvVars     []edgegapEnvKV     `json:"env_vars,omitempty"`
-	IsPublicApp bool               `json:"is_public_app,omitempty"`
-	Geographies []string           `json:"geographies,omitempty"`
-	Filters     []map[string]any   `json:"filters,omitempty"`
+	AppName     string           `json:"app_name"`
+	VersionName string           `json:"version_name"`
+	IPList      []string         `json:"ip_list,omitempty"`
+	EnvVars     []edgegapEnvKV   `json:"env_vars,omitempty"`
+	IsPublicApp bool             `json:"is_public_app,omitempty"`
+	Geographies []string         `json:"geographies,omitempty"`
+	Filters     []map[string]any `json:"filters,omitempty"`
 }
 
 type edgegapEnvKV struct {
@@ -202,12 +202,29 @@ type edgegapStatusResponse struct {
 	// reaches the in-network container via Docker DNS instead of
 	// hairpinning out through Caddy / the host's public IP.
 	SignalingTarget string `json:"signaling_target,omitempty"`
+	// Location is Edgegap's placement metadata (which city/country/
+	// continent the deploy landed in), from the /v1/status response.
+	// Used only for the post-allocation "deploy placed" log line that
+	// makes regional-outage triage greppable; empty fields degrade
+	// gracefully if Edgegap omits location for a deploy.
+	Location edgegapLocation `json:"location"`
 }
 
 type edgegapPort struct {
 	External int    `json:"external"`
 	Internal int    `json:"internal"`
 	Protocol string `json:"protocol"`
+}
+
+// edgegapLocation captures the geographic placement Edgegap reports
+// for a deploy in its /v1/status response. Fields mirror the Edgegap
+// "location" object; we decode only the human-readable region
+// identifiers used in the deploy-placed log line. Unknown/omitted
+// fields stay empty (placement logging is best-effort).
+type edgegapLocation struct {
+	City      string `json:"city"`
+	Country   string `json:"country"`
+	Continent string `json:"continent"`
 }
 
 func (c *edgegapClient) Deploy(ctx context.Context, req edgegapDeployRequest) (*edgegapDeployResponse, error) {
@@ -323,16 +340,16 @@ type inflightAllocation struct {
 // the local + hybrid backends were added when Edgegap's per-mCPU-
 // minute pricing turned out to dominate the platform bill.
 type fleetAllocator struct {
-	edgegap    *edgegapClient
+	edgegap *edgegapClient
 	// local is the LocalDockerAllocator instance. Nil when no
 	// game's allocator_mode is "local" or "hybrid" — keeping
 	// the field nil-safe means a bare Edgegap deploy doesn't
 	// require docker-socket access just to register the hook.
-	local      *LocalDockerAllocator
+	local *LocalDockerAllocator
 	// geo is the GeoIP lookup used by hybridAllocatorChoice.
 	// Nil when the sidecar URL is "off" — hybrid then falls back
 	// entirely to the static CIDR map.
-	geo geoIPLookup
+	geo        geoIPLookup
 	appName    string
 	appVersion string
 	// games is the per-game config cache. Used by the matchmaker
@@ -1270,6 +1287,17 @@ func (a *fleetAllocator) tryAllocate(
 			"edgegap status has no TCP port (request=%s, ports=%+v)",
 			deploy.RequestID, status.Ports)
 	}
+
+	// Per-deploy placement line for regional-outage triage: grep
+	// `edgegap deploy placed` in the Nakama logs to see which regions
+	// deploys are landing in (or, by their absence, failing to). The
+	// location fields are best-effort — empty when Edgegap omits them.
+	logger.Info(
+		"edgegap deploy placed: request_id=%s"+
+			" continent=%q country=%q city=%q public_ip=%s",
+		deploy.RequestID, status.Location.Continent,
+		status.Location.Country, status.Location.City,
+		status.PublicIP)
 
 	// Wait for the in-container Godot to call register_server.
 	// Edgegap reports CurrentStatus=READY when the container
