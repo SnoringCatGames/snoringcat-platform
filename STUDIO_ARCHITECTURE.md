@@ -50,7 +50,7 @@
 | `snoringcatgames.com` | alias for `snoringcat.games` | Heroku | Cloudflare Pages |
 | `www.snoringcatgames.com` | alias | Heroku | Cloudflare Pages |
 | `hopnbop.net` | Hop 'n Bop web build + legal | AWS S3 + CloudFront | Cloudflare Pages (Phase F of migration) |
-| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CPX11, Caddy + Nakama + Postgres co-tenant |
+| `nakama.snoringcat.games` | Multiplayer backend | (does not exist yet) | Hetzner CPX21, Caddy + Nakama + Postgres co-tenant |
 | `nakama-staging.snoringcat.games` | Staging Nakama | (does not exist yet) | Hetzner CX21 (Phase G) |
 | `levi.dev`, `levilindsey.com` | Levi's personal portfolio | Heroku | (unchanged) |
 | `devlog.levi.dev` | Devlog | Blogger / Google | (unchanged) |
@@ -100,8 +100,8 @@ Nakama maps almost 1:1 onto what we'd otherwise build from
 scratch (auth, friends, parties, matchmaker, leaderboards,
 tournaments, presence, storage, real-time sockets). Apache 2.0
 OSS, fork-able, battle-tested by Zynga, Paradox, Gram Games.
-We self-host on a Hetzner CPX11 (~$8/mo cap, AMD shared in
-Hillsboro) rather than paying $600/mo for Heroic Cloud's entry
+We self-host on a Hetzner CPX21 (~$8/mo cap, AMD shared in
+Hillsboro; upsized in-place from CPX11 on 2026-06-01) rather than paying $600/mo for Heroic Cloud's entry
 tier &mdash; managed Nakama is priced for studios with
 employees.
 
@@ -221,7 +221,7 @@ doesn't affect us since we're not using Hetzner DNS.)
                         ├──wss────────────► Caddy (TLS termination)
                         │                   │
                         │                   ▼
-                        │                   Nakama (Hetzner CPX11, Hillsboro)
+                        │                   Nakama (Hetzner CPX21, Hillsboro)
                         │                   │  - REST + gRPC + realtime
                         │                   │  - Go runtime modules:
                         │                   │    - fleet_allocator.go
@@ -229,7 +229,7 @@ doesn't affect us since we're not using Hetzner DNS.)
                         │                   │    - per_game_config.go
                         │                   │    - protocol_version.go
                         │                   ▼
-                        │                   Postgres 16 (same Hetzner CPX11,
+                        │                   Postgres 16 (same Hetzner CPX21,
                         │                                docker-compose
                         │                                co-tenant)
                         │                   - Nakama schema
@@ -434,12 +434,12 @@ credential rotation."
 - **Dashboard:** https://console.hetzner.com
 - **Account:** `admin@snoringcat.games`
 - **Project:** `snoringcat-platform`
-- **What's hosted:** Single Nakama box (CPX11) running Nakama
+- **What's hosted:** Single Nakama box (CPX21, upsized from CPX11 on 2026-06-01) running Nakama
   + Postgres + Caddy in one docker-compose stack; staging box
   (CX21, after Phase G), private network, firewall.
 - **API token:** `HCLOUD_TOKEN` &mdash; in age-encrypted
   credentials. Permissions: Read &amp; Write at project level.
-- **Cost:** ~$8/mo (CPX11 capped + minor bandwidth + cents
+- **Cost:** ~$8/mo (CPX21 capped + minor bandwidth + cents
   for R2 backups). Staging box (CX21, after Phase G) would
   add ~$7-10/mo. The 2026-05-06 consolidation collapsed the
   original 2x CPX11 (Nakama + separate Postgres + full obs

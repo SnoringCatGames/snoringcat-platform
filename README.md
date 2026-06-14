@@ -69,7 +69,8 @@ The platform sits between game clients and game-server
 containers, on three vendors:
 
 - **Hetzner** — Nakama + Postgres (co-tenanted) + Caddy/TLS
-  on a single CPX11 box in Hillsboro. The 2026-05-06
+  on a single CPX21 box in Hillsboro (upsized from CPX11
+  on 2026-06-01). The 2026-05-06
   consolidation collapsed the original two-box layout (with
   full Prometheus/Grafana/Loki/Promtail stack) into one box
   with the obs stack stripped; visibility is now ad-hoc via

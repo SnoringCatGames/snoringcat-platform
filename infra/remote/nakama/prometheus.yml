@@ -2,7 +2,7 @@
 #
 # Targets after the 2026-05-13 lightweight obs re-introduction:
 # Nakama metrics, node-exporter, postgres-exporter, Caddy admin
-# /metrics. All co-tenanted on the same Hetzner CPX11
+# /metrics. All co-tenanted on the same Hetzner CPX21
 # (nakama-prod-1) following the 2026-05-06 consolidation —
 # postgres-exporter runs alongside its postgres now, no
 # cross-host scrape over the private network.

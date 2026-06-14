@@ -46,7 +46,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 └────────────────┬─────────────────────────────────────────────┘
                  │
 ┌────────────────▼─────────────────────────────────────────────┐
-│  Nakama (Hetzner CPX11, Hillsboro)                           │
+│  Nakama (Hetzner CPX21, Hillsboro)                           │
 │  - REST/gRPC/realtime endpoints                              │
 │  - Go runtime modules:                                       │
 │    - fleet_allocator.go (Edgegap allocator hook)             │
@@ -58,7 +58,7 @@ contents into game-level CLAUDE.md; cross-reference instead.
 └────────────────┬─────────────────────────────────────────────┘
                  │ docker bridge (172.18.0.0/16)
 ┌────────────────▼─────────────────────────────────────────────┐
-│  Postgres 16 (same Hetzner CPX11, docker-compose co-tenant)  │
+│  Postgres 16 (same Hetzner CPX21, docker-compose co-tenant)  │
 │  - Nakama schema (users, friends, leaderboards, etc.)        │
 │  - games config table (per-game settings + protocol_version) │
 │  - Nightly pg_dumpall → Cloudflare R2 (pg-backups/ prefix    │

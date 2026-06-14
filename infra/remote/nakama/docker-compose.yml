@@ -1,4 +1,5 @@
-# Single-host stack for the consolidated CPX11 deployment.
+# Single-host stack for the consolidated CPX21 deployment
+# (upsized in-place from CPX11 on 2026-06-01).
 # Nakama + Postgres + Caddy + signaling-proxy + a lightweight
 # observability subset (Prometheus + Grafana + node-exporter +
 # postgres-exporter) all co-tenant on one box.
