@@ -36,7 +36,7 @@
 # Idempotent: re-running on the same day just overwrites the
 # day's object.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 ENV_FILE="/opt/snoringcat/pg-backup/.env"
 [[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE"; exit 1; }
@@ -49,13 +49,6 @@ DATE_CUTOFF="$(date -u -d "${PG_BACKUP_RETENTION_DAYS} days ago" +%Y-%m-%d)"
 OBJECT_KEY="pg-backups/postgres-${DATE_TODAY}.sql.gz"
 TMP_FILE="$(mktemp --suffix=.sql.gz)"
 trap 'rm -f "$TMP_FILE"' EXIT
-
-# Dump using pg_dumpall to capture roles + ACLs along with the
-# `nakama` database. Run from the postgres container so we
-# don't need a postgres-client install on the host.
-PGPASSWORD="$POSTGRES_PASSWORD" docker exec -e PGPASSWORD postgres \
-	pg_dumpall --no-password -h 127.0.0.1 -U nakama \
-	| gzip -9 > "$TMP_FILE"
 
 # Append an entry to SERVICE_STATUS_LOG (JSONL) for the daily LLM
 # consolidator to pick up via SSH-drain. Silent no-op when the env
@@ -76,6 +69,33 @@ post_status() {
 			summary: $summary, details: $details}' \
 		>> "$SERVICE_STATUS_LOG"
 }
+
+# Any unhandled failure below (dump, R2 upload, or retention) lands
+# here: post a 'red' status entry AND ping Discord directly, so an R2
+# key rotation / auth break can't fail silently for up to 7 days (DR
+# drill Gap 3). set -E (errtrace) propagates this trap into the
+# retention while-subshell and post_status().
+alert_failure() {
+	local lineno="$1"
+	local msg="pg-backup FAILED at line ${lineno} on $(hostname -s) ($(date -u +%FT%TZ))"
+	echo "$msg" >&2
+	if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
+		curl -fsS -X POST -H "Content-Type: application/json" \
+			-d "$(jq -n --arg c "$msg" '{content: $c}')" \
+			"$DISCORD_WEBHOOK_URL" >/dev/null 2>&1 || true
+	fi
+	post_status "red" "backup failed (line ${lineno})" \
+		"$(jq -nc --arg line "$lineno" '{line: $line}')" || true
+}
+trap 'alert_failure "$LINENO"' ERR
+
+# Dump using pg_dumpall to capture roles + ACLs along with the
+# `nakama` database. Run from the postgres container so we don't
+# need a postgres-client install on the host. Sits under the ERR
+# trap above, so a dump failure alerts too (not just uploads).
+PGPASSWORD="$POSTGRES_PASSWORD" docker exec -e PGPASSWORD postgres \
+	pg_dumpall --no-password -h 127.0.0.1 -U nakama \
+	| gzip -9 > "$TMP_FILE"
 
 DUMP_SIZE_BYTES=$(stat -c%s "$TMP_FILE")
 if [[ "$DUMP_SIZE_BYTES" -lt 1024 ]]; then
