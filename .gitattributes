@@ -1,0 +1,5 @@
+# Deployed to Linux hosts: force LF so Windows autocrlf checkouts / scp do not
+# ship CRLF and 203/EXEC the shebang (see 2026-06 pg-backup incident).
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
