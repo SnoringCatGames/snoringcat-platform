@@ -139,6 +139,27 @@ servers_json=$(curl -fsS \
 pricing_json=$(curl -fsS \
 	-H "Authorization: Bearer $HCLOUD_TOKEN" \
 	"https://api.hetzner.cloud/v1/pricing")
+# Primary IPv4 addresses bill per-IP (~$0.60/mo) whether or not
+# attached to a running server. The server pricing model below
+# doesn't cover them, so fetch them for a separate line.
+primary_ips_json=$(curl -fsS \
+	-H "Authorization: Bearer $HCLOUD_TOKEN" \
+	"https://api.hetzner.cloud/v1/primary_ips" \
+	2>/dev/null || echo '{"primary_ips":[]}')
+
+# Grandfathered price overrides. /v1/pricing only reports the
+# CURRENT list price, so a server created or resized before the
+# 2026-06-15 Hetzner hike is invoiced BELOW list. Without these
+# overrides the estimate tracks list, not the invoice (June 2026:
+# cpx21 listed $37.49 but invoiced $13.99). Keyed "<type>@<loc>"
+# with optional hourly/monthly; anything unset falls back to the
+# API. Override or extend via HETZNER_PRICE_OVERRIDES_JSON in .env.
+# hopnbop's hil rates come from the June 2026 Hetzner invoice
+# (cpx11 $0.0112/h, $6.99/mo; cpx21 $13.99/mo); cpx21 hourly is the
+# grandfathered monthly divided by the list hour:month ratio.
+HETZNER_DEFAULT_PRICE_OVERRIDES='{"cpx21@hil":{"monthly":13.99,"hourly":0.0224},"cpx11@hil":{"monthly":6.99,"hourly":0.0112}}'
+price_overrides=$(echo "${HETZNER_PRICE_OVERRIDES_JSON:-$HETZNER_DEFAULT_PRICE_OVERRIDES}" \
+	| jq -c '.' 2>/dev/null || echo '{}')
 
 # Step 1: snapshot the current server set in a normalized form.
 current_servers=$(echo "$servers_json" | jq --arg ms "$MONTH_START_EPOCH" '
@@ -165,13 +186,16 @@ ledger=$(jq -n \
 	--argjson settled "$hetzner_settled_in" \
 	--argjson current "$current_servers" \
 	--argjson pricing "$pricing_json" \
+	--argjson overrides "$price_overrides" \
 	--arg now "$NOW_EPOCH" '
 	def hourly($t; $l):
-		($pricing.pricing.server_types[]
+		($overrides["\($t)@\($l)"].hourly)
+		// ($pricing.pricing.server_types[]
 			| select(.name == $t) | .prices[]
 			| select(.location == $l) | .price_hourly.net | tonumber);
 	def monthly($t; $l):
-		($pricing.pricing.server_types[]
+		($overrides["\($t)@\($l)"].monthly)
+		// ($pricing.pricing.server_types[]
 			| select(.name == $t) | .prices[]
 			| select(.location == $l) | .price_monthly.net | tonumber);
 	def eur(hours; t; l): ([hours * hourly(t; l), monthly(t; l)] | min);
@@ -189,10 +213,32 @@ ledger=$(jq -n \
 			.active = (.active | del(.[$e.key]))
 		end
 	)
-	# Add new + bump existing.
+	# Add new + bump existing. An in-place resize keeps the same
+	# server id but changes type (e.g. cpx11 -> cpx21). Detect that
+	# via a type/loc mismatch: settle the pre-resize segment at its
+	# own rate, then open a fresh segment for the new type starting
+	# now, so the month splits across both rates instead of pricing
+	# the whole month at the stale pre-resize type.
 	| reduce ($current | to_entries[]) as $c (.;
 		if (.active | has($c.key)) then
-			.active[$c.key].last_seen = ($now | tonumber)
+			(.active[$c.key]) as $a
+			| if ($a.type != $c.value.type or $a.loc != $c.value.loc)
+			then
+				((($now | tonumber) - $a.start) / 3600) as $h
+				| .settled += [{
+					id: $c.key, type: $a.type, loc: $a.loc,
+					start: $a.start, end: ($now | tonumber),
+					hours: $h, eur: eur($h; $a.type; $a.loc)
+				}]
+				| .active[$c.key] = {
+					type: $c.value.type,
+					loc: $c.value.loc,
+					start: ($now | tonumber),
+					last_seen: ($now | tonumber)
+				}
+			else
+				.active[$c.key].last_seen = ($now | tonumber)
+			end
 		else
 			.active[$c.key] = {
 				type: $c.value.type,
@@ -210,20 +256,58 @@ hetzner_eur=$(jq -n \
 	--argjson active "$hetzner_active_out" \
 	--argjson settled "$hetzner_settled_out" \
 	--argjson pricing "$pricing_json" \
+	--argjson overrides "$price_overrides" \
 	--arg now "$NOW_EPOCH" -r '
 	def hourly($t; $l):
-		($pricing.pricing.server_types[]
+		($overrides["\($t)@\($l)"].hourly)
+		// ($pricing.pricing.server_types[]
 			| select(.name == $t) | .prices[]
 			| select(.location == $l) | .price_hourly.net | tonumber);
 	def monthly($t; $l):
-		($pricing.pricing.server_types[]
+		($overrides["\($t)@\($l)"].monthly)
+		// ($pricing.pricing.server_types[]
 			| select(.name == $t) | .prices[]
 			| select(.location == $l) | .price_monthly.net | tonumber);
 	def eur(hours; t; l): ([hours * hourly(t; l), monthly(t; l)] | min);
 	([$active[] | eur((($now | tonumber) - .start) / 3600; .type; .loc)]
 		| add // 0)
 	+ ([$settled[] | .eur] | add // 0)' 2>/dev/null || echo "0")
-hetzner_usd=$(awk -v e="$hetzner_eur" 'BEGIN { printf "%.2f", e * 1.08 }')
+
+# Primary IPv4 cost, in the same pricing currency as servers.
+# Prorate each ipv4 primary IP from the later of (creation, month
+# start), capped at the monthly rate. ipv4 monthly is uniform
+# across locations, so the IP's own datacenter (often null in the
+# API) doesn't matter; take any location's price. A missing
+# `created` falls back to epoch 0, i.e. full-month proration.
+hetzner_ip_native=$(jq -n \
+	--argjson ips "$primary_ips_json" \
+	--argjson pricing "$pricing_json" \
+	--arg ms "$MONTH_START_EPOCH" \
+	--arg now "$NOW_EPOCH" -r '
+	([$pricing.pricing.primary_ips[]?
+		| select(.type == "ipv4") | .prices[0]] | first) as $p
+	| (($p.price_hourly.net // "0") | tonumber) as $hr
+	| (($p.price_monthly.net // "0") | tonumber) as $mo
+	| [$ips.primary_ips[]? | select(.type == "ipv4")
+		| ((.created // "1970-01-01T00:00:00+00:00")
+			| sub("\\.[0-9]+\\+"; "+") | fromdate) as $c
+		| ((($now | tonumber) - ([$c, ($ms | tonumber)] | max)) / 3600) as $h
+		| ([$h * $hr, $mo] | min)]
+	| add // 0' 2>/dev/null || echo "0")
+
+# The /v1/pricing API reports amounts in the account currency
+# (`pricing.currency`), which is USD for this account. The old
+# unconditional *1.08 EUR->USD fudge therefore inflated every
+# figure by 8%. Only convert when the currency isn't already USD.
+pricing_currency=$(echo "$pricing_json" | jq -r '.pricing.currency // "EUR"')
+if [[ "$pricing_currency" == "USD" ]]; then
+	usd_rate=1
+else
+	usd_rate="${HETZNER_USD_PER_UNIT:-1.08}"
+fi
+hetzner_usd=$(awk \
+	-v s="$hetzner_eur" -v i="$hetzner_ip_native" -v r="$usd_rate" \
+	'BEGIN { printf "%.2f", (s + i) * r }')
 
 # Persist ledger.
 state=$(echo "$state" | jq \
