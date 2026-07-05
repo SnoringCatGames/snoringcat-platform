@@ -14,7 +14,24 @@
 	admin 0.0.0.0:2019
 }
 
+# Structured JSON access log shared by every site block. Written to
+# a host-bind-mounted path (see docker-compose caddy volumes) so the
+# caddy-access-analytics job can read it over SSH. Caddy's json
+# encoder emits ts (epoch float), duration, status, and request.uri,
+# which is exactly what that job parses. Rolled to keep disk bounded.
+(accesslog) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_keep 5
+			roll_keep_for 336h
+		}
+		format json
+	}
+}
+
 nakama.snoringcat.games {
+	import accesslog
 	encode gzip
 
 	# Per-IP rate limit on the unauthenticated authentication
@@ -46,6 +63,7 @@ nakama.snoringcat.games {
 # compose; password is GRAFANA_ADMIN_PASSWORD in
 # /opt/nakama/.env).
 grafana.snoringcat.games {
+	import accesslog
 	encode gzip
 
 	reverse_proxy grafana:3000 {
@@ -62,6 +80,7 @@ grafana.snoringcat.games {
 # upstream is a sibling docker-compose service on the same
 # nakama-net network; reachable via the service's DNS name.
 signaling.snoringcat.games {
+	import accesslog
 	encode gzip
 
 	reverse_proxy signaling-proxy:4435 {

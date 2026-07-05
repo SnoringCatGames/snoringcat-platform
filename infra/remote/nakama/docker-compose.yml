@@ -157,6 +157,11 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Access logs land on the host so caddy-access-analytics can
+      # read /var/log/caddy/access.log over SSH (see the `log`
+      # directive / accesslog snippet in the Caddyfile). Docker
+      # creates the host dir on first up if it's absent.
+      - /var/log/caddy:/var/log/caddy
     networks:
       - nakama-net
     depends_on:
