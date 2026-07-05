@@ -161,12 +161,20 @@ HETZNER_DEFAULT_PRICE_OVERRIDES='{"cpx21@hil":{"monthly":13.99,"hourly":0.0224},
 price_overrides=$(echo "${HETZNER_PRICE_OVERRIDES_JSON:-$HETZNER_DEFAULT_PRICE_OVERRIDES}" \
 	| jq -c '.' 2>/dev/null || echo '{}')
 
+# The Hetzner API intermittently returns a null datacenter/location
+# for long-lived servers (observed 2026-07 for the nakama host). A
+# null loc breaks price lookups (and the "<type>@<loc>" overrides), so
+# normalize it to a default. Single-location assumption; override
+# per-deployment via HETZNER_DEFAULT_LOC.
+HETZNER_DEFAULT_LOC="${HETZNER_DEFAULT_LOC:-hil}"
+
 # Step 1: snapshot the current server set in a normalized form.
-current_servers=$(echo "$servers_json" | jq --arg ms "$MONTH_START_EPOCH" '
+current_servers=$(echo "$servers_json" | jq \
+	--arg ms "$MONTH_START_EPOCH" --arg defloc "$HETZNER_DEFAULT_LOC" '
 	[.servers[] | {
 		id: (.id | tostring),
 		type: .server_type.name,
-		loc: .datacenter.location.name,
+		loc: (.datacenter.location.name // $defloc),
 		created_epoch: (.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
 		start: ([(.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
 			($ms | tonumber)] | max)
@@ -214,15 +222,18 @@ ledger=$(jq -n \
 		end
 	)
 	# Add new + bump existing. An in-place resize keeps the same
-	# server id but changes type (e.g. cpx11 -> cpx21). Detect that
-	# via a type/loc mismatch: settle the pre-resize segment at its
+	# server id but changes TYPE (e.g. cpx11 -> cpx21). Detect that
+	# on a type mismatch only: settle the pre-resize segment at its
 	# own rate, then open a fresh segment for the new type starting
 	# now, so the month splits across both rates instead of pricing
-	# the whole month at the stale pre-resize type.
+	# the whole month at the stale pre-resize type. Location is NOT a
+	# resize trigger (a server cannot change location in place, and
+	# the API flaps loc to null); the bump branch just refreshes loc
+	# so a transient null does not stick and break pricing.
 	| reduce ($current | to_entries[]) as $c (.;
 		if (.active | has($c.key)) then
 			(.active[$c.key]) as $a
-			| if ($a.type != $c.value.type or $a.loc != $c.value.loc)
+			| if ($a.type != $c.value.type)
 			then
 				((($now | tonumber) - $a.start) / 3600) as $h
 				| .settled += [{
@@ -238,6 +249,7 @@ ledger=$(jq -n \
 				}
 			else
 				.active[$c.key].last_seen = ($now | tonumber)
+				| .active[$c.key].loc = $c.value.loc
 			end
 		else
 			.active[$c.key] = {
