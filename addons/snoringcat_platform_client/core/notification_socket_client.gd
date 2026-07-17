@@ -4,8 +4,9 @@ extends Node
 ## transient notifications. Opens on authentication (non-anonymous)
 ## and stays connected for the life of the session; reconnects with
 ## exponential backoff if dropped. Consumers connect to
-## `notification_received` and filter by subject — there's no
-## subscription registry to keep in sync.
+## `notification_received` and filter by `code` (Nakama built-ins)
+## or `subject` (our runtime's own) — there's no subscription
+## registry to keep in sync.
 ##
 ## Reads `Platform.auth`, `Platform.token_store`,
 ## `Platform.build_session_from_store()`, and
@@ -13,14 +14,24 @@ extends Node
 ## via `Platform.notification_socket`.
 
 
-## Fires once per notification delivered over the socket. Content is
-## the parsed JSON body; an empty dict means the payload wasn't a
-## JSON object (in which case consumers should ignore it).
-signal notification_received(
-	subject: String,
-	content: Dictionary,
-	notification_id: String,
-)
+## Fires once per notification delivered over the socket. The
+## payload is a flat dict deliberately shaped to match what
+## PlatformFriendsApiClient.fetch_notifications emits per entry, so
+## a consumer can run one handler over both the socket and the HTTP
+## catch-up path:
+##   {id, subject, code, content, sender_id, create_time,
+##    persistent}
+##
+## `content` is the parsed JSON body; an empty dict means the
+## payload wasn't a JSON object (consumers should ignore it).
+##
+## `code` is Nakama's notification code. Negative values are
+## Nakama's built-ins (friend request / accept — see
+## PlatformFriendsApiClient.CODE_FRIEND_*); non-negative values are
+## our runtime's, which pair with a stable `subject`. Filter
+## built-ins on `code` and our own on `subject`: Nakama's subjects
+## are human-readable prose and are not a stable contract.
+signal notification_received(notification: Dictionary)
 
 ## Fires when the socket transitions to connected (initial connect
 ## or successful reconnect). Consumers that maintain local state
@@ -260,8 +271,6 @@ func _on_received_channel_message(p_message) -> void:
 
 
 func _on_received_notification(p_notification) -> void:
-	var subject: String = str(p_notification.subject)
-	var raw_id: String = str(p_notification.id)
 	var content_dict: Dictionary = {}
 	# Nakama wraps the notification content as a JSON string. Empty
 	# string is legal (notifications without bodies); parse_string
@@ -271,8 +280,15 @@ func _on_received_notification(p_notification) -> void:
 		var parsed: Variant = JSON.parse_string(raw_content)
 		if parsed is Dictionary:
 			content_dict = parsed
-	notification_received.emit(
-		subject, content_dict, raw_id)
+	notification_received.emit({
+		"id": str(p_notification.id),
+		"subject": str(p_notification.subject),
+		"code": int(p_notification.code),
+		"content": content_dict,
+		"sender_id": str(p_notification.sender_id),
+		"create_time": str(p_notification.create_time),
+		"persistent": bool(p_notification.persistent),
+	})
 
 
 func _on_socket_closed() -> void:

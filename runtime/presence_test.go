@@ -2,6 +2,122 @@ package main
 
 import "testing"
 
+// TestIsPresenceVisible pins the visibility rule that decides
+// whether a friend shows up at all. The pre-fix runtime dropped
+// every record whose status wasn't literally "online", which meant
+// a player in a match — the one state with an interesting
+// rich_presence — vanished from their friends' lists.
+func TestIsPresenceVisible(t *testing.T) {
+	const now int64 = 1_000_000
+
+	cases := []struct {
+		name string
+		rec  presenceRecord
+		want bool
+	}{
+		{
+			name: "online and fresh is visible",
+			rec: presenceRecord{
+				Status:    presenceStatusOnline,
+				UpdatedAt: now,
+			},
+			want: true,
+		},
+		{
+			name: "in_match is visible, not dropped",
+			rec: presenceRecord{
+				Status:    presenceStatusInMatch,
+				UpdatedAt: now,
+			},
+			want: true,
+		},
+		{
+			name: "explicit offline is hidden",
+			rec: presenceRecord{
+				Status:    presenceStatusOffline,
+				UpdatedAt: now,
+			},
+			want: false,
+		},
+		{
+			name: "stale heartbeat is hidden",
+			rec: presenceRecord{
+				Status:    presenceStatusOnline,
+				UpdatedAt: now - presenceStaleAfterSeconds - 1,
+			},
+			want: false,
+		},
+		{
+			name: "exactly at the staleness bound is visible",
+			rec: presenceRecord{
+				Status:    presenceStatusOnline,
+				UpdatedAt: now - presenceStaleAfterSeconds,
+			},
+			want: true,
+		},
+		{
+			name: "in_match but stale is hidden",
+			rec: presenceRecord{
+				Status:    presenceStatusInMatch,
+				UpdatedAt: now - presenceStaleAfterSeconds - 1,
+			},
+			want: false,
+		},
+		{
+			name: "missing updated_at is hidden",
+			rec: presenceRecord{
+				Status:    presenceStatusOnline,
+				UpdatedAt: 0,
+			},
+			want: false,
+		},
+		{
+			name: "unknown status is visible when fresh",
+			rec: presenceRecord{
+				Status:    "spectating",
+				UpdatedAt: now,
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPresenceVisible(tc.rec, now); got != tc.want {
+				t.Errorf(
+					"isPresenceVisible(%+v) = %v, want %v",
+					tc.rec, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizePresenceStatus guards the closed-set mapping. An
+// unrecognized status must degrade to "online" (present, activity
+// unknown) rather than to "offline", which would make a
+// newer-client friend silently disappear for older peers.
+func TestNormalizePresenceStatus(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", presenceStatusOnline},
+		{presenceStatusOnline, presenceStatusOnline},
+		{presenceStatusInMatch, presenceStatusInMatch},
+		{presenceStatusOffline, presenceStatusOffline},
+		{"spectating", presenceStatusOnline},
+		{"ONLINE", presenceStatusOnline},
+	}
+
+	for _, tc := range cases {
+		if got := normalizePresenceStatus(tc.in); got != tc.want {
+			t.Errorf(
+				"normalizePresenceStatus(%q) = %q, want %q",
+				tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestPresenceKey(t *testing.T) {
 	cases := []struct {
 		gameID string

@@ -11,9 +11,20 @@ import (
 // updateAndGetPresence is the AWS-era "publish my presence, get
 // my friends' presences back" round trip, ported to Nakama. The
 // caller's presence row is written to a per-(user, game) storage
-// object; the response includes every friend whose status is
-// "online" in the same game (or in any game, when
-// include_other_games is set).
+// object; the response includes every friend who is currently
+// visible (not `offline`, heartbeat still fresh) in the same game,
+// or in any game when include_other_games is set.
+//
+// Each returned record carries both `status` (machine-readable:
+// online / in_match) and `game_id`, so a friends UI can render
+// "in a match" distinctly from "in the lobby", and "in another
+// game" distinctly from either. `rich_presence` is the localized
+// string the friend's own client authored for display.
+//
+// Note the response deliberately keeps the `online_ids` /
+// `online_friends` field names even though the set now includes
+// in-match players: renaming them would break every deployed
+// client for a cosmetic gain. Read "online" as "visible".
 //
 // Storage layout (Stage 3 scoping):
 //   collection = "presence"
@@ -35,6 +46,64 @@ const (
 	presenceKeyLegacy = "current"
 )
 
+// Presence status values. The set is closed: any status the
+// runtime doesn't recognize is treated as `presenceStatusOnline`
+// so a newer client shipping an additional state degrades to
+// "present, activity unknown" rather than vanishing from friends'
+// lists.
+//
+// `offline` is the only value that suppresses a record. It exists
+// so a client can announce a clean exit instead of waiting out the
+// staleness TTL below.
+const (
+	presenceStatusOffline = "offline"
+	presenceStatusOnline  = "online"
+	presenceStatusInMatch = "in_match"
+)
+
+// presenceStaleAfterSeconds bounds how long a presence row is
+// trusted without a refresh. Clients heartbeat every 30 s
+// (FriendsNotificationPoller._PRESENCE_POLL_INTERVAL_SEC), so this
+// tolerates three consecutive missed beats before a player drops
+// off their friends' lists.
+//
+// Without this, a crash or a force-quit leaves the last-written row
+// in storage forever and the player reads as permanently online —
+// there is no disconnect hook to write `offline` on their behalf.
+const presenceStaleAfterSeconds int64 = 90
+
+// isPresenceVisible reports whether a stored record should surface
+// to a friend. A record is visible when the player hasn't announced
+// `offline` and the row is fresh enough to believe.
+//
+// Records with UpdatedAt == 0 predate the field being written and
+// are treated as stale: there's no way to know how old they are,
+// and the next heartbeat from a live client repairs it within 30 s.
+func isPresenceVisible(rec presenceRecord, now int64) bool {
+	if rec.Status == presenceStatusOffline {
+		return false
+	}
+	if rec.UpdatedAt <= 0 {
+		return false
+	}
+	return now-rec.UpdatedAt <= presenceStaleAfterSeconds
+}
+
+// normalizePresenceStatus maps a client-supplied status onto the
+// closed set above. Empty defaults to `online` (the common case:
+// a heartbeat from a client sitting in menus). Unknown values also
+// resolve to `online` per the forward-compatibility note above.
+func normalizePresenceStatus(status string) string {
+	switch status {
+	case presenceStatusOffline:
+		return presenceStatusOffline
+	case presenceStatusInMatch:
+		return presenceStatusInMatch
+	default:
+		return presenceStatusOnline
+	}
+}
+
 // presenceKey is the storage key for a user's presence row in a
 // given game. Empty gameID falls back to the legacy
 // (pre-Stage-3) key so a runtime that's still in bootstrap mode
@@ -50,6 +119,11 @@ func presenceKey(gameID string) string {
 // describe what the player is doing ("In Lobby", "In Match", etc).
 // The client treats it as a string; we store and forward it
 // verbatim without inspecting the contents.
+//
+// `status` is the machine-readable counterpart and IS inspected:
+// it drives visibility (see isPresenceVisible) and lets a friend's
+// UI branch on activity without parsing a localized string. Clients
+// send one of presenceStatus{Offline,Online,InMatch}.
 type presenceArgs struct {
 	RichPresence string `json:"rich_presence"`
 	Status       string `json:"status"`
@@ -118,9 +192,7 @@ func updateAndGetPresenceRpc(
 				"invalid payload: "+err.Error(), 3)
 		}
 	}
-	if args.Status == "" {
-		args.Status = "online"
-	}
+	args.Status = normalizePresenceStatus(args.Status)
 
 	// Write the caller's presence row, scoped to the caller's
 	// game_id. Two games sharing one Nakama instance write to
@@ -202,12 +274,18 @@ func updateAndGetPresenceRpc(
 		logger.Error("presence batched read: %v", err)
 		return "", err
 	}
+	now := nowUnix()
 	for _, obj := range objects {
 		var rec presenceRecord
 		if err := json.Unmarshal([]byte(obj.Value), &rec); err != nil {
 			continue
 		}
-		if rec.Status != "online" {
+		// Suppress players who announced `offline` and players
+		// whose last heartbeat is too old to trust. Everything
+		// else surfaces with its status intact, so a friend in a
+		// match reads as present-and-playing rather than dropping
+		// off the list entirely.
+		if !isPresenceVisible(rec, now) {
 			continue
 		}
 		// When the stored row predates Stage 3 (no game_id
@@ -218,16 +296,21 @@ func updateAndGetPresenceRpc(
 		if rec.GameID == "" {
 			rec.GameID = gameIDFromKey(obj.Key)
 		}
-		// First write wins when a friend has rows in multiple
-		// games — for the same-game default case there's only
-		// one row per friend anyway; for include_other_games
-		// the UI gets one representative row plus the
-		// online_ids list (the caller can re-query a specific
-		// game_id if they want the full breakdown).
-		if _, seen := resp.OnlineFriends[obj.UserId]; !seen {
-			resp.OnlineIDs = append(resp.OnlineIDs, obj.UserId)
-			resp.OnlineFriends[obj.UserId] = rec
+		// Most-recent write wins when a friend has fresh rows in
+		// several games (they played two titles inside the
+		// staleness window). Picking the newest makes the answer
+		// deterministic and gives the UI the game they're
+		// actually in right now; iteration order over the batched
+		// read isn't guaranteed, so "first wins" would have
+		// flip-flopped between games across polls.
+		prev, seen := resp.OnlineFriends[obj.UserId]
+		if seen && prev.UpdatedAt >= rec.UpdatedAt {
+			continue
 		}
+		if !seen {
+			resp.OnlineIDs = append(resp.OnlineIDs, obj.UserId)
+		}
+		resp.OnlineFriends[obj.UserId] = rec
 	}
 
 	out, err := json.Marshal(resp)

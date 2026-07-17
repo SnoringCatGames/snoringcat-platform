@@ -29,6 +29,18 @@ signal blocked_users_received(data: Dictionary)
 signal recent_players_received(data: Dictionary)
 
 
+# Nakama built-in notification codes. Nakama reserves negative
+# codes for its own notifications and leaves non-negative ones to
+# the application (our runtime uses 100 for match_ready /
+# party_matchmaking_start and 101 for party_state_changed).
+#
+# These two are the entire friend surface Nakama emits. Note there
+# is deliberately no "request rejected" code: Nakama models a
+# rejection as a silent row delete, so a rejected requester is
+# never told. Don't add a REJECTED constant expecting it to fire.
+const CODE_FRIEND_REQUEST_RECEIVED := -2
+const CODE_FRIEND_REQUEST_ACCEPTED := -3
+
 # Nakama Friend states (from the SDK API):
 #   0=Friend, 1=PendingInvite, 2=PendingApproval, 3=Banned
 const _STATE_FRIEND := 0
@@ -200,15 +212,27 @@ func search_friend_code(code: String) -> void:
 	})
 
 
+## Signal that the user has looked at their friends list.
+##
+## The `mark_friends_seen` RPC this calls is NOT currently
+## registered by the runtime (main.go registers no such name), so
+## in practice this always takes the exception path and emits
+## ok=false. That is survivable because unseen-badge state is
+## computed client-side from the pending-request list; the RPC
+## exists for a future server-authoritative, cross-device
+## "last seen" timestamp.
+##
+## The emit fires on both paths precisely so consumers can treat
+## this as "user acknowledged the list" regardless of whether the
+## server half exists yet. Don't make consumers branch on `ok`
+## without also implementing the RPC.
 func mark_seen() -> void:
-	# Custom RPC on the runtime side. Bumps last_friends_seen_at.
 	var session := _ensure_session()
 	if session == null:
 		return
 	var rpc_result = await Platform.nakama_client.rpc_async(
 		session, "mark_friends_seen", "{}")
 	if rpc_result.is_exception():
-		# RPC missing on older deploys: silent fail.
 		friends_marked_seen.emit({"ok": false})
 		return
 	friends_marked_seen.emit({"ok": true})
@@ -236,6 +260,13 @@ func fetch_notifications(
 		entries.append({
 			"id": n.id,
 			"subject": n.subject,
+			# `code` is the only stable discriminator for Nakama's
+			# built-in notifications: their `subject` is a
+			# human-readable sentence ("X wants to add you as a
+			# friend") that is localized/reworded at Nakama's
+			# discretion. Negative codes are Nakama's own (see
+			# CODE_FRIEND_* below); positive codes are ours.
+			"code": int(n.code),
 			"content": JSON.parse_string(n.content) \
 				if not n.content.is_empty() else {},
 			"sender_id": n.sender_id,
