@@ -63,14 +63,37 @@ Game code never reaches into addon internals; calls go through:
 
 ## Versioning
 
-- **Runtime plugin** is built per-commit; the runtime_status
-  RPC reports `build_id` (git SHA) so a deployed plugin is
-  always traceable to the source commit.
-- **Client SDK**: semver tags on this repo (`v1.4.0`). MAJOR
-  ⇒ breaking. MINOR ⇒ additive. PATCH ⇒ fix. Each game pins
-  the SDK at a SHA via the submodule pointer.
-- **Game `protocol_version`**: per-game, governs realtime
-  client/server protocol. Independent of platform version.
+There are exactly three version concepts here. If a version is
+not in this list, it does not exist — do not invent one.
+
+- **Runtime plugin** — *not versioned, by design.* Built and
+  deployed per-commit by `nakama-runtime.yml`, which fires on
+  pushes to `main` touching `runtime/**` (**not** on a release
+  tag). The `runtime_status` RPC reports `build_id` (git SHA),
+  so a deployed plugin is always traceable to its source
+  commit. The SHA is the version. Do not add a semver to it.
+- **Client SDK** — `addons/snoringcat_platform_client/plugin.cfg`
+  `version` is the single source of truth. Games pin a
+  submodule SHA, not a version, so nothing enforces it. Bump it
+  **in the same commit** as any change to SDK behavior:
+  MAJOR ⇒ breaking change to the API games call, MINOR ⇒
+  additive, PATCH ⇒ fix. Docs/CI/test-only changes do not bump.
+  If in doubt, PATCH. Tag `vX.Y.Z` only at deliberate release
+  points, not on every bump.
+- **Game `protocol_version`** — per-game, owned by each game's
+  `project.godot`, governs the realtime client/server protocol.
+  Independent of everything above. The platform only reads it.
+
+**`schema_version`** in each game's `game.yaml` is the per-game
+config *schema* contract (currently `1`), owned by this repo:
+bump it only when `per_game_config.go` changes shape in a way
+old game.yaml files can't satisfy, and migrate every consuming
+game in the same change.
+
+**This repo has no tags and has never cut a release.** An
+earlier version of this section claimed "semver tags on this
+repo (`v1.4.0`)" — that was aspirational and never true. Do not
+treat a tag as existing until `git tag -l` says so.
 
 ## Sibling repos
 

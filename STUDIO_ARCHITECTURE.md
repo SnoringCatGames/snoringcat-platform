@@ -337,10 +337,12 @@ as a submodule under `third_party/`.
   SDK and addon).
 - **Deploy targets:**
   - Runtime modules: built and dropped into the Nakama box's
-    Docker Compose volume on release tag.
+    Docker Compose volume by `nakama-runtime.yml`, which fires
+    on pushes to `main` touching `runtime/**` (or manually).
+    This repo has no tags and cuts no releases.
   - Godot addon: ships inside each game's submodule.
 - **Key docs:** `CLAUDE.md`, `PLATFORM_ARCHITECTURE.md`, this
-  file (`STUDIO_ARCHITECTURE.md`), `CHANGELOG.md`, `README.md`.
+  file (`STUDIO_ARCHITECTURE.md`), `README.md`.
 
 #### `SnoringCatGames/snoringcat.games` (private)
 
