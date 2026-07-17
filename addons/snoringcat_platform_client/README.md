@@ -1,6 +1,6 @@
 # Snoring Cat Platform Client
 
-Godot 4.5 addon. Wraps the Snoring Cat platform backend HTTP API
+Godot 4.7 addon. Wraps the Snoring Cat platform backend HTTP API
 and ships reusable UI building blocks (auth screen, friends panel,
 party UI, side-panel framework, screen state machine, focus
 navigator, settings persistence).

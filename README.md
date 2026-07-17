@@ -17,7 +17,7 @@ This repo contains:
   (`phase-a.ps1`, `phase-b.ps1`) and live smoke helpers
   (`probe-runtime-status.ps1`, `platform_smoke_test.gd`,
   `test-google-auth.py`).
-- **`addons/snoringcat_platform_client/`** — Godot 4.5 addon
+- **`addons/snoringcat_platform_client/`** — Godot 4.7 addon
   that wraps the Nakama HTTP/realtime API, plus reusable UI
   building blocks (auth screen, friends panel, party UI,
   side-panel framework, screen state machine, focus navigator,

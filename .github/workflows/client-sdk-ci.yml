@@ -12,8 +12,11 @@ on:
       - '.github/workflows/client-sdk-ci.yml'
 
 env:
-  GODOT_VERSION: 4.5
-  GODOT_RELEASE_TAG: 4.5-stable
+  # Only GODOT_RELEASE_TAG is live: it builds the download URL and
+  # the cache key below. There used to be a GODOT_VERSION alongside
+  # it that nothing referenced, which made bumping the version look
+  # done while CI kept fetching the old build. Don't reintroduce it.
+  GODOT_RELEASE_TAG: 4.7.1-stable
 
 jobs:
   compliance-suite-mock:

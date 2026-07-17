@@ -280,7 +280,7 @@ All paths are absolute on the dev machine
 
 #### `SnoringCatGames/hopnbop` (private)
 
-The flagship game. Godot 4.5 multiplayer 2D platform fighter
+The flagship game. Godot 4.7 multiplayer 2D platform fighter
 with rollback netcode.
 
 - **Path:** `Repositories/hopnbop/`
@@ -598,7 +598,7 @@ $99/yr, Steam Direct $100/game, Epic free.
 
 1. Clone all relevant repos under `~/Repositories/`.
 2. `git submodule update --init --recursive` in each game repo.
-3. Install: Godot 4.5, Docker Desktop, Node.js, Go, Pulumi CLI,
+3. Install: Godot 4.7, Docker Desktop, Node.js, Go, Pulumi CLI,
    `wrangler` (Cloudflare CLI), `gh` CLI, `hcloud` CLI,
    `edgegap` CLI, `age`, AWS CLI v2 with SSO config.
 4. Set up the age private key per `MIGRATION_PLAN.md` &rarr;
