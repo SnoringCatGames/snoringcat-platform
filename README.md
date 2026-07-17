@@ -58,9 +58,11 @@ addons/snoringcat_platform_client/
 docs/
   api-spec.md
   client-sdk-guide.md
-  per-game-config.md
   legacy-hopnbop-api.md               # historical AWS SAM API reference
   archive/                            # Phase E/F migration archeology
+    per-game-config.md                # pre-Phase-F DynamoDB schema; superseded
+                                      #   by the Postgres `games` table
+                                      #   (runtime/per_game_config.go)
 ```
 
 ## Architecture

@@ -52,11 +52,26 @@ via git submodules:
    - **Symlink (Mac/Linux)**: `ln -s` the addon directory in.
      Faster but untested on Windows under Godot 4.6.
 
-3. **Register your game**: see
-   [per-game-config.md](per-game-config.md) for the steps to
-   insert your game's row in the `snoringcat-games` config
-   table. Until that exists the backend rejects sign-in attempts
-   with your `game_id`.
+3. **Register your game**: your game needs a row in the runtime's
+   Postgres `games` table before the backend will accept sign-in
+   attempts with your `game_id`. Upsert it via the
+   server-to-server `register_game` RPC (HTTP-key auth), passing
+   a `game.yaml`-shaped JSON payload; the accepted fields are the
+   `GameConfig` struct in `runtime/per_game_config.go`. Read the
+   current row back with `get_game_config` (client session) or
+   `runtime_status`.
+
+   `register_game` **replaces the whole config blob**, so build
+   the payload by patching what's already registered rather than
+   hand-writing one — a partial payload silently drops live
+   matchmaker modes. `hopnbop/scripts/sync-game-version.ps1` is a
+   worked example of that read-modify-write.
+
+   (The old `docs/per-game-config.md` described a DynamoDB table
+   read by Lambda handlers. That architecture was decommissioned
+   in Phase F; the doc is archived at
+   [archive/per-game-config.md](archive/per-game-config.md) and
+   should not be followed.)
 
 4. **Add `Platform` to the autoload list** in
    `project.godot`:

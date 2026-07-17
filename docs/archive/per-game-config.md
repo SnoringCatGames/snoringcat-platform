@@ -1,12 +1,39 @@
-# Per-game configuration
+# Per-game configuration (ARCHIVED 2026-07-16)
+
+> **This document is historical. Do not follow it.** It describes
+> the pre-Phase-F architecture: a DynamoDB `snoringcat-games`
+> table read by Lambda handlers, with GameLift fleets, FlexMatch
+> matchmaker configs, and Route 53 zones. All of that was
+> decommissioned on 2026-05-03; there are zero AWS resources left
+> in the account. The `aws dynamodb put-item` recipe below targets
+> a table that no longer exists.
+>
+> **Where per-game config actually lives now:** a Postgres `games`
+> table owned by the Nakama runtime plugin. The schema is
+> `GameConfig` in `runtime/per_game_config.go`; rows are upserted
+> by the server-to-server `register_game` RPC and read back by
+> `get_game_config` (client session) and `version_check`. Field
+> names differ from the table below (e.g. `latest_game_version` is
+> now `display_version`, `fleet_id`/`matchmaker_name` are gone in
+> favour of `edgegap_app_slug` / `edgegap_app_version` /
+> `allocator_mode` / a `matchmaker_rules` block).
+>
+> Note that `register_game` **replaces the entire config blob**, so
+> a partial payload silently drops live matchmaker modes. See
+> `hopnbop/scripts/sync-game-version.ps1` for the read-modify-write
+> pattern.
+>
+> Kept for archeology only: the `physics_fps`, `supported_transports`,
+> and `feature_flags` concepts carried forward in spirit, and this
+> is the only record of the original field set.
 
 Every game registered with the platform has a row in the DynamoDB
 `snoringcat-games` table, keyed by `game_id`. Lambda handlers read
 this row to route fleet operations, look up matchmaker names,
 present cross-game presence info, etc.
 
-> **Status:** schema live in production. Currently registered
-> games: `hopnbop`.
+> **Status (historical):** schema live in production. Currently
+> registered games: `hopnbop`.
 
 ## Schema
 
