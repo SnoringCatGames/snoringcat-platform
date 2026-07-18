@@ -876,6 +876,33 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
+	// Leader-authoritative match settings: when the matched players
+	// came from a party (they carry a shared party_id ticket
+	// property), forward the party's stored level + gameplay-cheat
+	// prefs to the game server so the match reflects the leader's
+	// choices regardless of who started matchmaking. Best-effort — a
+	// missing party or unset prefs simply leaves the env var off and
+	// the server falls back to its own defaults.
+	var partyPrefsEnv []edgegapEnvKV
+	if partyID := matchedPartyID(entries); partyID != "" {
+		if prefs, ok, err := loadPartyLevelPrefs(
+			ctx, nk, partyID); err != nil {
+			logger.Warn(
+				"loadPartyLevelPrefs(%s): %v", partyID, err)
+		} else if ok {
+			partyPrefsEnv = append(partyPrefsEnv, edgegapEnvKV{
+				Key: "SELECTED_LEVEL_PREFS", Value: prefs})
+		}
+		if cheats, ok, err := loadPartyCheatPrefs(
+			ctx, nk, partyID); err != nil {
+			logger.Warn(
+				"loadPartyCheatPrefs(%s): %v", partyID, err)
+		} else if ok {
+			partyPrefsEnv = append(partyPrefsEnv, edgegapEnvKV{
+				Key: "MATCH_CHEAT_PREFS", Value: cheats})
+		}
+	}
+
 	deployReq := edgegapDeployRequest{
 		AppName:     appName,
 		VersionName: appVersion,
@@ -908,6 +935,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			},
 		},
 	}
+	deployReq.EnvVars = append(deployReq.EnvVars, partyPrefsEnv...)
 	if len(ipList) == 0 {
 		// `north_america` is a published Edgegap continent tag.
 		// This keeps the deploy from 400-ing on missing region
@@ -1360,6 +1388,24 @@ func (a *fleetAllocator) stopDeploy(
 // times, every attempt failed" is a recoverable platform failure
 // the user might want to retry against; this path's "another
 // player bailed" is intrinsically a peer-level event.
+
+// matchedPartyID returns the party_id shared by matched entries that
+// came from a party (carried as a string ticket property), or "" for
+// an all-solo match. When more than one party is in a single match
+// (uncommon), the first one found wins.
+func matchedPartyID(entries []runtime.MatchmakerEntry) string {
+	for _, e := range entries {
+		props := e.GetProperties()
+		if props == nil {
+			continue
+		}
+		if v, ok := props["party_id"].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func sendMatchCancelled(
 	ctx context.Context,
 	logger runtime.Logger,

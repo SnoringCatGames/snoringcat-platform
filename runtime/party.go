@@ -115,6 +115,26 @@ const partyReadyCollection = "party_ready"
 // game_mode default when the caller doesn't override on the RPC.
 const partyModeCollection = "party_mode"
 
+// partyLevelPrefsCollection holds the leader's level preferences for
+// the party (leader-authoritative match settings). Same server-owned
+// shape as partyModeCollection. The stored `prefs` blob is the
+// client's LevelPreferences.to_dict() ({inclusion, exclusion,
+// preferred}); the runtime treats it as opaque and forwards it to the
+// game server via the SELECTED_LEVEL_PREFS deploy env var, which
+// resolves the concrete level using its own level registry.
+//
+//	(partyLevelPrefsCollection, partyID, "") → {prefs, set_by, set_at}
+const partyLevelPrefsCollection = "party_level_prefs"
+
+// partyCheatPrefsCollection holds the leader's gameplay-cheat prefs
+// for the party. Only the gameplay-affecting (networked) cheats are
+// leader-authoritative; aesthetic (local) cheats stay per-client.
+// Forwarded to the game server via MATCH_CHEAT_PREFS.
+//
+//	(partyCheatPrefsCollection, partyID, "") →
+//		{are_cheats_enabled, networked_cheats:[...], set_by, set_at}
+const partyCheatPrefsCollection = "party_cheat_prefs"
+
 // partyInviteCodeCollection holds the bidirectional mapping
 // between a 6-character invite code and the party group it
 // belongs to. Two rows per active code:
@@ -1720,6 +1740,270 @@ func partySetModeRpc(
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
+}
+
+// --- Leader-authoritative level + gameplay-cheat prefs -----------
+//
+// Both mirror party_mode: a leader-only RPC writes a server-owned
+// (party_..._prefs, partyID, "") row, and fleet_allocator reads it at
+// allocation and forwards it to the game server via a deploy env var,
+// which applies it with the game's own logic. Any active member can
+// START matchmaking, but only the leader can SET these, so the match
+// reflects the leader's choices regardless of who starts. Unlike
+// mode, these aren't shown to followers, so there's no
+// party_state_changed fan-out.
+
+// requirePartyLeader confirms the caller's client session, that the
+// group is a party, and that the caller is its current leader
+// (honoring a transfer override). Returns the caller's userID.
+func requirePartyLeader(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	partyID string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	if partyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+	groups, err := nk.GroupsGetId(ctx, []string{partyID})
+	if err != nil {
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	if !strings.HasPrefix(groups[0].Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+partyID+" is not a party", 3)
+	}
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, partyID, groups[0].CreatorId)
+	if err != nil {
+		return "", err
+	}
+	if leaderID != userID {
+		return "", runtime.NewError(
+			"only the party leader can change this setting", 7)
+	}
+	return userID, nil
+}
+
+type partySetLevelPrefsArgs struct {
+	PartyID string          `json:"party_id"`
+	Prefs   json.RawMessage `json:"prefs"`
+}
+
+func partySetLevelPrefsRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partySetLevelPrefsRpc(ctx, logger, nk, games, payload)
+	}
+}
+
+// partySetLevelPrefsRpc persists the leader's level preferences for
+// the party. The `prefs` blob is opaque to the runtime (it's the
+// client's LevelPreferences.to_dict); the game server interprets it.
+func partySetLevelPrefsRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	args := partySetLevelPrefsArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	userID, err := requirePartyLeader(ctx, nk, games, args.PartyID)
+	if err != nil {
+		return "", err
+	}
+	prefs := json.RawMessage("{}")
+	if len(args.Prefs) > 0 {
+		prefs = args.Prefs
+	}
+	value, _ := json.Marshal(map[string]any{
+		"prefs":  prefs,
+		"set_by": userID,
+		"set_at": nowUnix(),
+	})
+	if _, err := nk.StorageWrite(
+		ctx,
+		[]*runtime.StorageWrite{{
+			Collection:      partyLevelPrefsCollection,
+			Key:             args.PartyID,
+			UserID:          "",
+			Value:           string(value),
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}},
+	); err != nil {
+		logger.Error(
+			"party_set_level_prefs write party=%s: %v",
+			args.PartyID, err)
+		return "", err
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok": true, "party_id": args.PartyID})
+	return string(out), nil
+}
+
+type partySetCheatPrefsArgs struct {
+	PartyID          string   `json:"party_id"`
+	AreCheatsEnabled bool     `json:"are_cheats_enabled"`
+	NetworkedCheats  []string `json:"networked_cheats"`
+}
+
+func partySetCheatPrefsRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partySetCheatPrefsRpc(ctx, logger, nk, games, payload)
+	}
+}
+
+// partySetCheatPrefsRpc persists the leader's gameplay-cheat prefs
+// (which networked cheats are on + the master enable). Aesthetic
+// (local) cheats are never party-scoped.
+func partySetCheatPrefsRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	args := partySetCheatPrefsArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	userID, err := requirePartyLeader(ctx, nk, games, args.PartyID)
+	if err != nil {
+		return "", err
+	}
+	if args.NetworkedCheats == nil {
+		args.NetworkedCheats = []string{}
+	}
+	value, _ := json.Marshal(map[string]any{
+		"are_cheats_enabled": args.AreCheatsEnabled,
+		"networked_cheats":   args.NetworkedCheats,
+		"set_by":             userID,
+		"set_at":             nowUnix(),
+	})
+	if _, err := nk.StorageWrite(
+		ctx,
+		[]*runtime.StorageWrite{{
+			Collection:      partyCheatPrefsCollection,
+			Key:             args.PartyID,
+			UserID:          "",
+			Value:           string(value),
+			PermissionRead:  2,
+			PermissionWrite: 0,
+		}},
+	); err != nil {
+		logger.Error(
+			"party_set_cheat_prefs write party=%s: %v",
+			args.PartyID, err)
+		return "", err
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok": true, "party_id": args.PartyID})
+	return string(out), nil
+}
+
+// loadPartyLevelPrefs returns the leader's level-prefs blob (the
+// client's LevelPreferences.to_dict JSON) for the party, or
+// ("", false, nil) when none is set.
+func loadPartyLevelPrefs(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	partyID string,
+) (string, bool, error) {
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyLevelPrefsCollection,
+			Key:        partyID,
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		return "", false, err
+	}
+	if len(reads) == 0 {
+		return "", false, nil
+	}
+	parsed := map[string]json.RawMessage{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &parsed); err != nil {
+		return "", false, nil
+	}
+	prefs, ok := parsed["prefs"]
+	if !ok || len(prefs) == 0 {
+		return "", false, nil
+	}
+	return string(prefs), true, nil
+}
+
+// loadPartyCheatPrefs returns the leader's gameplay-cheat prefs blob
+// ({are_cheats_enabled, networked_cheats}) for the party, or
+// ("", false, nil) when none is set.
+func loadPartyCheatPrefs(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	partyID string,
+) (string, bool, error) {
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: partyCheatPrefsCollection,
+			Key:        partyID,
+			UserID:     "",
+		}},
+	)
+	if err != nil {
+		return "", false, err
+	}
+	if len(reads) == 0 {
+		return "", false, nil
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(
+		[]byte(reads[0].Value), &parsed); err != nil {
+		return "", false, nil
+	}
+	out, _ := json.Marshal(map[string]any{
+		"are_cheats_enabled": parsed["are_cheats_enabled"],
+		"networked_cheats":   parsed["networked_cheats"],
+	})
+	return string(out), true, nil
 }
 
 // partyGetInviteCodeArgs is the client → runtime payload for

@@ -403,6 +403,52 @@ func set_mode(party_id: String, mode_id: String) -> void:
 		{"party_id": party_id, "mode_id": mode_id})
 
 
+## Store the leader's level preferences for the party (leader-only;
+## the runtime enforces). `prefs` is the LevelPreferences.to_dict
+## shape ({inclusion, exclusion, preferred}). Fire-and-forget: this
+## keeps the party's stored prefs in sync with the leader's so any
+## member's matchmaking start reflects the leader's choices. The
+## runtime forwards it to the game server at allocation.
+func set_level_prefs(party_id: String, prefs: Dictionary) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_set_level_prefs",
+		JSON.stringify({
+			"party_id": party_id,
+			"prefs": prefs,
+		}))
+	if rpc_result.is_exception():
+		push_warning(
+			"[Party] set_level_prefs failed: %s"
+			% _describe(rpc_result.get_exception()))
+
+
+## Store the leader's gameplay-cheat prefs for the party (leader-
+## only). `networked_cheats` lists the enabled gameplay cheat names;
+## aesthetic cheats are never party-scoped. Fire-and-forget.
+func set_cheat_prefs(
+	party_id: String,
+	are_cheats_enabled: bool,
+	networked_cheats: Array,
+) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_set_cheat_prefs",
+		JSON.stringify({
+			"party_id": party_id,
+			"are_cheats_enabled": are_cheats_enabled,
+			"networked_cheats": networked_cheats,
+		}))
+	if rpc_result.is_exception():
+		push_warning(
+			"[Party] set_cheat_prefs failed: %s"
+			% _describe(rpc_result.get_exception()))
+
+
 ## Fetch (or generate) the shareable 6-char invite code for the
 ## given party. Any active member can call; pending invitees are
 ## rejected by the runtime. Emits `party_invite_code_received`
