@@ -223,36 +223,49 @@ func start_matchmaking(
 ## server-side when no in-flight allocation exists, so calling it
 ## during the searching phase (when the cancel happened before
 ## OnMatchmakerMatched fired) is cheap and safe.
+##
+## Standing the realtime party down is the third step and runs
+## whether or not a ticket was in flight: a party leader can be
+## mid-roster-wait (party created, ticket not yet submitted, so
+## `_is_searching` is still false) when the user cancels. Without
+## this, a Cancel would leave the party open — its followers never
+## receive `received_party_close` and sit searching until the 120s
+## timeout — and the stale `_rt_party_id` would make a later solo
+## cancel take the party-ticket branch against a solo ticket.
 func cancel_matchmaking() -> void:
-	if not _is_searching:
-		return
-	_is_searching = false
-	_elapsed_timer.stop()
-	if _socket != null and _socket.is_connected_to_host():
-		if not _ticket.is_empty():
-			# A party ticket has to be withdrawn through the party
-			# API; remove_matchmaker_async doesn't know about it and
-			# would leave the whole party queued.
-			if not _rt_party_id.is_empty() and _is_rt_party_leader:
-				_socket.remove_matchmaker_party_async(
-					_rt_party_id, _ticket)
-			else:
-				_socket.remove_matchmaker_async(_ticket)
-		_socket.rpc_async(
-			"cancel_matchmaking_allocation", "{}")
-	_ticket = ""
+	if _is_searching:
+		_is_searching = false
+		_elapsed_timer.stop()
+		if _socket != null and _socket.is_connected_to_host():
+			if not _ticket.is_empty():
+				# A party ticket has to be withdrawn through the party
+				# API; remove_matchmaker_async doesn't know about it
+				# and would leave the whole party queued.
+				if not _rt_party_id.is_empty() and _is_rt_party_leader:
+					_socket.remove_matchmaker_party_async(
+						_rt_party_id, _ticket)
+				else:
+					_socket.remove_matchmaker_async(_ticket)
+			_socket.rpc_async(
+				"cancel_matchmaking_allocation", "{}")
+		_ticket = ""
+	# Ordered after the ticket block, which reads the rt state that
+	# leave_rt_party clears. Fire-and-forget, matching the ticket
+	# calls above: leave_rt_party clears the local rt state
+	# synchronously and (leader) closes / (follower) leaves the party.
+	if not _rt_party_id.is_empty():
+		leave_rt_party()
 
 
 ## Cancel any active search and close the socket. Use on
 ## logout / app exit.
 func cleanup() -> void:
 	cancel_matchmaking()
-	# Drop realtime-party state without a server round trip: the
-	# socket close below evicts us anyway, and awaiting a leave on
-	# a socket we're about to destroy just risks hanging shutdown.
-	_rt_party_id = ""
-	_rt_party_member_ids.clear()
-	_is_rt_party_leader = false
+	# Defense in depth: cancel_matchmaking already stood any party
+	# down (fire-and-forget, no hang), but clear the local state
+	# again unconditionally. The socket close below evicts us
+	# server-side regardless.
+	_reset_rt_party_state()
 	if _socket != null:
 		_socket.close()
 		_socket = null
@@ -504,10 +517,8 @@ func begin_rt_party_wait(
 ## just leave.
 func leave_rt_party() -> void:
 	var party_id := _rt_party_id
-	_rt_party_id = ""
-	_rt_party_member_ids.clear()
 	var was_leader := _is_rt_party_leader
-	_is_rt_party_leader = false
+	_reset_rt_party_state()
 	if party_id.is_empty():
 		return
 	if _socket == null or not _socket.is_connected_to_host():
@@ -553,13 +564,23 @@ func _on_received_party_close(p_event) -> void:
 		return
 	if str(p_event.party_id) != _rt_party_id:
 		return
-	_rt_party_id = ""
-	_rt_party_member_ids.clear()
+	_reset_rt_party_state()
 	if not _is_searching:
 		return
 	_is_searching = false
 	_elapsed_timer.stop()
 	matchmaking_failed.emit("The party stopped matchmaking")
+
+
+## Clear the local realtime-party bookkeeping. Local only: it does
+## NOT touch the server-side party — callers that need the party left
+## or closed on the server (leave_rt_party) do that themselves. Used
+## on match_ready, where the party's job is done but a server-side
+## close would be actively harmful (see the match_ready handler).
+func _reset_rt_party_state() -> void:
+	_rt_party_id = ""
+	_is_rt_party_leader = false
+	_rt_party_member_ids.clear()
 
 
 ## The user_id this socket is authenticated as. Preview instances
@@ -653,6 +674,16 @@ func _on_notification(p_notification) -> void:
 		return
 	_is_searching = false
 	_elapsed_timer.stop()
+
+	# The match is allocated; the realtime party has done its job.
+	# Drop the local bookkeeping so the NEXT matchmaking attempt
+	# creates or joins a fresh party instead of layering onto a stale
+	# id. Local only, deliberately: each matched client is notified of
+	# match_ready independently, so a leader closing the party here
+	# would fire received_party_close on a follower that hasn't
+	# processed its own match_ready yet, aborting it out of the very
+	# match it's about to join.
+	_reset_rt_party_state()
 
 	# p_notification.content is a JSON string the runtime built
 	# from `map[string]any{"connection": <json>}`. The inner
