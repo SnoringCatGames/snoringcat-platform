@@ -42,7 +42,11 @@
 //   - export_player_data:  GDPR data export.
 //   - transport_select:    pick ENet vs WebRTC vs WebSocket.
 //   - party_start_matchmaking: leader notifies party members to
-//                            enqueue with a shared party_id.
+//                            join its realtime party, so the
+//                            leader can submit one matchmaker
+//                            ticket for the whole group.
+//   - party_abort_matchmaking: leader tells members to stand down
+//                            (e.g. someone never joined).
 //   - party_set_ready:     toggle the caller's per-party ready
 //                            flag (fans out party_state_changed).
 //   - party_set_mode:      leader picks the matchmaker game mode
@@ -85,6 +89,15 @@
 //                            so the UI can offer "add as friend"
 //                            for fellow players (Stage 7.6).
 //   - get_game_config:     read a game's public per_game_config.
+//   - get_friend_code:     fetch / generate the caller's stable
+//                            8-char friend code. Account-level (not
+//                            per-game); decoupled from the username.
+//   - add_friend_by_code:  resolve a friend code to a user and send
+//                            a friend request. Resolves server-side
+//                            (with a username fallback for old
+//                            clients) then FriendsAdd; re-enforces
+//                            the BeforeAddFriends rate + pending caps
+//                            since a runtime FriendsAdd skips them.
 package main
 
 import (
@@ -226,8 +239,14 @@ func InitModule(
 	// pending outgoing friend requests and a per-caller rate
 	// limit on add-by-username ("friend code") calls. Always on;
 	// no env flag. See runtime/friends_limits.go.
+	//
+	// The limiter instance is shared with the add_friend_by_code RPC
+	// (registered below): both enforce the same per-caller add-by-code
+	// rate limit, so they must count against one budget rather than
+	// two independent ones.
+	sharedFriendsLimiter := newFriendsLimiter()
 	if err := registerFriendsLimitHook(
-		initializer, newFriendsLimiter()); err != nil {
+		initializer, sharedFriendsLimiter); err != nil {
 		return err
 	}
 
@@ -428,12 +447,29 @@ func InitModule(
 		exportPlayerDataRpcFactory(games)); err != nil {
 		return err
 	}
+	// Friend codes: account-level, decoupled from the username. No
+	// game scoping — friends are shared across every game on the
+	// platform. add_friend_by_code reuses the shared friends limiter
+	// for anti-enumeration.
+	if err := addRpc("get_friend_code", getFriendCodeRpc); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"add_friend_by_code",
+		addFriendByCodeRpcFactory(sharedFriendsLimiter)); err != nil {
+		return err
+	}
 	if err := addRpc("transport_select", transportSelectRpc); err != nil {
 		return err
 	}
 	if err := addRpc(
 		"party_start_matchmaking",
 		partyStartMatchmakingRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_abort_matchmaking",
+		partyAbortMatchmakingRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(

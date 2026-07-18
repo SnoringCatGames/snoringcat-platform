@@ -19,7 +19,6 @@ signal friend_request_accepted(data: Dictionary)
 signal friend_request_rejected(data: Dictionary)
 signal friend_request_cancelled(data: Dictionary)
 signal friend_removed(data: Dictionary)
-signal friend_search_result(data: Dictionary)
 signal notifications_received(data: Dictionary)
 signal friends_marked_seen(data: Dictionary)
 signal request_failed(error: String)
@@ -128,18 +127,52 @@ func fetch_friends() -> void:
 	})
 
 
+## Send a friend request by friend code.
+##
+## Friend codes are generated per-account and are NOT the Nakama
+## username (runtime/friend_code.go). Resolution happens server-side in
+## the `add_friend_by_code` RPC, which rate-limits, resolves the code
+## (falling back to a username lookup for old clients still sharing
+## username-as-code), and adds by user id in one round trip.
+##
+## Emits `friend_request_sent` carrying the RPC result dict on success
+## AND on a code that resolves to nobody (`result == "not_found"`); the
+## consuming UI switches on `result` to show the right toast and decide
+## whether to close. Only transport / rate-limit failures take the
+## `request_failed` path.
 func send_request_by_code(code: String) -> void:
-	# Friend codes are stored as Nakama usernames in this
-	# project (same uniqueness, simpler lookup).
 	var session := _ensure_session()
 	if session == null:
 		return
-	var result = await Platform.nakama_client.add_friends_async(
-		session, null, [code])
+	var result = await Platform.nakama_client.rpc_async(
+		session, "add_friend_by_code",
+		JSON.stringify({"code": code}))
 	if result.is_exception():
 		request_failed.emit(_describe(result.get_exception()))
 		return
-	friend_request_sent.emit({"code": code})
+	var data: Variant = JSON.parse_string(result.payload)
+	if data is Dictionary:
+		friend_request_sent.emit(data)
+	else:
+		request_failed.emit("Unexpected response")
+
+
+## Fetch (creating on first call) this account's stable friend code.
+## Returns the 8-char code, or "" when the runtime predates the RPC or
+## the call fails. Callers must treat "" as "unavailable" and not show
+## a bogus code.
+func get_my_friend_code() -> String:
+	var session := _ensure_session()
+	if session == null:
+		return ""
+	var result = await Platform.nakama_client.rpc_async(
+		session, "get_friend_code", "{}")
+	if result.is_exception():
+		return ""
+	var data: Variant = JSON.parse_string(result.payload)
+	if data is Dictionary:
+		return str(data.get("friend_code", ""))
+	return ""
 
 
 func send_request_by_player_id(
@@ -188,28 +221,6 @@ func cancel_request(player_id: String) -> void:
 
 func remove_friend(player_id: String) -> void:
 	await _delete_friend(player_id, "removed")
-
-
-func search_friend_code(code: String) -> void:
-	var session := _ensure_session()
-	if session == null:
-		return
-	var result = await Platform.nakama_client.get_users_async(
-		session, PackedStringArray(), [code], null)
-	if result.is_exception():
-		request_failed.emit(_describe(result.get_exception()))
-		return
-	if result.users.size() == 0:
-		friend_search_result.emit({"code": code, "found": false})
-		return
-	var u = result.users[0]
-	friend_search_result.emit({
-		"code": code,
-		"found": true,
-		"player_id": u.id,
-		"display_name": u.display_name,
-		"avatar_url": u.avatar_url,
-	})
 
 
 ## Signal that the user has looked at their friends list.

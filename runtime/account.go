@@ -377,6 +377,12 @@ func deleteAccountRpc(
 		}
 	}
 
+	// 3f. Friend code. The forward/reverse rows are system-owned
+	// (UserID=""), so the user-owned SQL scrub above does not touch
+	// them; delete them explicitly so the deleted account's code
+	// stops resolving.
+	deleteFriendCode(ctx, logger, nk, userID)
+
 	// Stage 1.5: no more UsersBanId. The user remains able to
 	// authenticate during the 30-day grace window so the
 	// cancellation flow can prompt them on next sign-in via

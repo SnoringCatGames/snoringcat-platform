@@ -63,12 +63,40 @@ const _MATCH_READY_SUBJECT := "match_ready"
 const _MATCH_FAILED_SUBJECT := "match_failed"
 const _PROGRESS_TICK_SEC := 1.0
 
+## Poll granularity while the leader waits for party members to
+## show up in the realtime party. Fine enough that a fully-present
+## party starts near-instantly, coarse enough not to spin.
+const _PARTY_WAIT_POLL_SEC := 0.25
+
 
 var _socket: NakamaSocket = null
 var _ticket: String = ""
 var _is_searching := false
 var _elapsed_timer: Timer = null
 var _elapsed_sec := 0.0
+
+## Nakama *realtime* party id, when this client is matchmaking as
+## part of a group. Empty for solo matchmaking.
+##
+## Not to be confused with the persistent Nakama group that backs
+## the social party (PlatformPartyApiClient). The realtime party is
+## created fresh for each matchmaking attempt, lives on this
+## socket, and exists for exactly one reason: PartyMatchmakerAdd
+## submits ONE ticket for its whole membership, which is the only
+## construct Nakama offers that guarantees a group is matched into
+## the same match.
+var _rt_party_id := ""
+
+## True when this client created the realtime party and is
+## therefore the one that submits the ticket. Followers join and
+## wait; only the leader ticketing is what keeps the party on a
+## single ticket.
+var _is_rt_party_leader := false
+
+## user_ids of OTHER members currently present in the realtime
+## party (self excluded). Fed by received_party_presence; read by
+## wait_for_rt_party_members.
+var _rt_party_member_ids: Dictionary = {}
 
 ## When start_matchmaking is called with a non-empty
 ## preview_device_id, this class authenticates that device id as
@@ -133,34 +161,8 @@ func start_matchmaking(
 	_preview_device_id = preview_device_id
 	_local_player_count = local_player_count
 
-	# Resolve the Nakama session for the socket. Either the
-	# per-instance preview device session or the standard
-	# token-store-derived session (with anonymous-JWT refresh on
-	# demand). On failure, `_resolve_socket_session` already
-	# emitted `matchmaking_failed` so callers don't need to.
-	var session: NakamaSession = await _resolve_socket_session()
-	if session == null:
+	if not await ensure_socket():
 		return
-
-	if _socket == null or not _socket.is_connected_to_host():
-		_socket = Nakama.create_socket_from(
-			Platform.get_nakama_client())
-		_socket.received_matchmaker_matched.connect(
-			_on_matchmaker_matched)
-		_socket.received_notification.connect(_on_notification)
-		_socket.closed.connect(_on_socket_closed)
-		_socket.connection_error.connect(
-			_on_socket_connection_error)
-		var connect_result: NakamaAsyncResult = (
-			await _socket.connect_async(session))
-		if connect_result.is_exception():
-			var connect_ex: NakamaException = (
-				connect_result.get_exception())
-			_socket = null
-			matchmaking_failed.emit(
-				"Nakama socket connect failed: %s"
-				% connect_ex.message)
-			return
 
 	# Record this client's public IP server-side before joining
 	# the pool. The runtime's MatchmakerMatched hook reads the
@@ -228,7 +230,14 @@ func cancel_matchmaking() -> void:
 	_elapsed_timer.stop()
 	if _socket != null and _socket.is_connected_to_host():
 		if not _ticket.is_empty():
-			_socket.remove_matchmaker_async(_ticket)
+			# A party ticket has to be withdrawn through the party
+			# API; remove_matchmaker_async doesn't know about it and
+			# would leave the whole party queued.
+			if not _rt_party_id.is_empty() and _is_rt_party_leader:
+				_socket.remove_matchmaker_party_async(
+					_rt_party_id, _ticket)
+			else:
+				_socket.remove_matchmaker_async(_ticket)
 		_socket.rpc_async(
 			"cancel_matchmaking_allocation", "{}")
 	_ticket = ""
@@ -238,14 +247,328 @@ func cancel_matchmaking() -> void:
 ## logout / app exit.
 func cleanup() -> void:
 	cancel_matchmaking()
+	# Drop realtime-party state without a server round trip: the
+	# socket close below evicts us anyway, and awaiting a leave on
+	# a socket we're about to destroy just risks hanging shutdown.
+	_rt_party_id = ""
+	_rt_party_member_ids.clear()
+	_is_rt_party_leader = false
 	if _socket != null:
 		_socket.close()
 		_socket = null
 
 
+## Open the matchmaker socket if it isn't already up. Returns true
+## when a live socket is available.
+##
+## Split out of start_matchmaking so the party flow can get a
+## socket without submitting a ticket: the leader needs one to
+## create the realtime party, and followers need one to join it
+## while never ticketing at all.
+##
+## On failure `matchmaking_failed` has already been emitted, so
+## callers just bail.
+##
+## `preview_device_id` / `local_player_count` should be set before
+## calling — the session resolution reads the former.
+func ensure_socket() -> bool:
+	if _socket != null and _socket.is_connected_to_host():
+		return true
+
+	# Resolve the Nakama session for the socket. Either the
+	# per-instance preview device session or the standard
+	# token-store-derived session (with anonymous-JWT refresh on
+	# demand). On failure, `_resolve_socket_session` already
+	# emitted `matchmaking_failed` so callers don't need to.
+	var session: NakamaSession = await _resolve_socket_session()
+	if session == null:
+		return false
+
+	_socket = Nakama.create_socket_from(
+		Platform.get_nakama_client())
+	_socket.received_matchmaker_matched.connect(
+		_on_matchmaker_matched)
+	_socket.received_notification.connect(_on_notification)
+	_socket.received_party_presence.connect(
+		_on_received_party_presence)
+	_socket.received_party_close.connect(
+		_on_received_party_close)
+	_socket.closed.connect(_on_socket_closed)
+	_socket.connection_error.connect(
+		_on_socket_connection_error)
+	var connect_result: NakamaAsyncResult = (
+		await _socket.connect_async(session))
+	if connect_result.is_exception():
+		var connect_ex: NakamaException = (
+			connect_result.get_exception())
+		# Drop the failed handle so a later ensure_socket doesn't
+		# see is_connected_to_host()=false on a stale socket and
+		# skip re-creating it.
+		_socket = null
+		matchmaking_failed.emit(
+			"Nakama socket connect failed: %s"
+			% connect_ex.message)
+		return false
+	return true
+
+
+# --------------------------------------------------------------
+# Realtime party (group matchmaking)
+# --------------------------------------------------------------
+
+
+## The realtime party this client is currently in, or "" .
+func get_rt_party_id() -> String:
+	return _rt_party_id
+
+
+## user_ids of other members present in the realtime party.
+func get_rt_party_member_ids() -> Array:
+	return _rt_party_member_ids.keys()
+
+
+## Create a realtime party and become its leader. Returns the new
+## party id, or "" on failure (matchmaking_failed already emitted).
+##
+## The party is created `open` so members admit themselves without
+## a leader-approval round trip. That's safe because the id is a
+## server-minted UUID delivered only to the social party's members
+## via a Nakama notification — holding it already implies
+## membership, and the approval dance would just add a failure mode
+## to a window we're trying to keep short.
+##
+## `max_size`: the SDK documents this as excluding the leader,
+## which we can't verify from here. Passing the social party's cap
+## is safe under either reading — it's either exact or one seat
+## generous, and both beat under-provisioning (a member who can't
+## get in aborts the whole attempt).
+## Takes no preview_device_id, unlike start_matchmaking: the
+## editor's multi-instance preview authenticates each slot as an
+## anonymous device account, and every party path is gated on
+## non-anonymous, so a preview slot can never reach this. The
+## socket resolves the normal token-store session.
+func create_rt_party(max_size: int) -> String:
+	if not await ensure_socket():
+		return ""
+	var result = await _socket.create_party_async(true, max_size)
+	if result.is_exception():
+		var ex: NakamaException = result.get_exception()
+		matchmaking_failed.emit(
+			"Party create failed: %s" % ex.message)
+		return ""
+	_rt_party_id = str(result.party_id)
+	_is_rt_party_leader = true
+	_rt_party_member_ids.clear()
+	print("[PlatformMatchmaking] rt party created: %s"
+		% _rt_party_id)
+	return _rt_party_id
+
+
+## Join the leader's realtime party. Follower path. Returns true on
+## success.
+func join_rt_party(rt_party_id: String) -> bool:
+	if rt_party_id.is_empty():
+		return false
+	if not await ensure_socket():
+		return false
+	var result = await _socket.join_party_async(rt_party_id)
+	if result.is_exception():
+		var ex: NakamaException = result.get_exception()
+		matchmaking_failed.emit(
+			"Party join failed: %s" % ex.message)
+		return false
+	_rt_party_id = rt_party_id
+	_is_rt_party_leader = false
+	_rt_party_member_ids.clear()
+	print("[PlatformMatchmaking] joined rt party: %s"
+		% rt_party_id)
+	return true
+
+
+## Block until `expected_others` other members are present in the
+## realtime party, or the timeout expires. Returns true only when
+## the full roster showed up.
+##
+## The leader uses this to decide whether to submit the ticket at
+## all. A false return means at least one member never got their
+## socket into the party, and the caller is expected to abort
+## rather than start a match the party didn't agree to.
+func wait_for_rt_party_members(
+	expected_others: int,
+	timeout_sec: float,
+) -> bool:
+	if expected_others <= 0:
+		return true
+	var deadline := (
+		Time.get_ticks_msec() + int(timeout_sec * 1000.0))
+	while Time.get_ticks_msec() < deadline:
+		if _rt_party_member_ids.size() >= expected_others:
+			return true
+		# The socket dropping mid-wait can never be satisfied by
+		# waiting longer.
+		if _socket == null or not _socket.is_connected_to_host():
+			return false
+		await get_tree().create_timer(
+			_PARTY_WAIT_POLL_SEC).timeout
+	return _rt_party_member_ids.size() >= expected_others
+
+
+## Submit ONE matchmaker ticket covering the whole realtime party.
+## Leader only.
+##
+## min/max counts are TOTAL match sizes (as with a solo ticket);
+## Nakama accounts for the party's own size when filling.
+func start_rt_party_matchmaking(
+	query: String,
+	min_count: int,
+	max_count: int,
+	string_props: Dictionary,
+	numeric_props: Dictionary,
+	local_player_count: int = 1,
+) -> void:
+	if _is_searching:
+		push_warning("[PlatformMatchmaking] Already searching")
+		return
+	if _rt_party_id.is_empty():
+		matchmaking_failed.emit(
+			"No realtime party to matchmake for")
+		return
+	if not _is_rt_party_leader:
+		matchmaking_failed.emit(
+			"Only the party leader submits the ticket")
+		return
+	_local_player_count = local_player_count
+	if _socket == null or not _socket.is_connected_to_host():
+		matchmaking_failed.emit("Matchmaker socket is down")
+		return
+
+	await _record_client_ip()
+
+	print((
+		"[PlatformMatchmaking] Joining matchmaker as party"
+		+ " rt_party=%s query=%s min=%d max=%d"
+	) % [_rt_party_id, query, min_count, max_count])
+
+	var ticket_result = await _socket.add_matchmaker_party_async(
+		_rt_party_id,
+		query,
+		min_count,
+		max_count,
+		string_props,
+		numeric_props,
+	)
+	if ticket_result.is_exception():
+		var ex: NakamaException = ticket_result.get_exception()
+		matchmaking_failed.emit(
+			"Party matchmaker add failed: %s" % ex.message)
+		return
+
+	_ticket = str(ticket_result.ticket)
+	_is_searching = true
+	_elapsed_sec = 0.0
+	_elapsed_timer.start()
+	print("[PlatformMatchmaking] Party ticket: %s" % _ticket)
+	progress_updated.emit("queued", 0.0, -1.0)
+
+
+## Follower path: we hold no ticket (the leader's party ticket
+## covers us), but we still need to sit in the searching state so
+## the incoming match_ready is accepted and so the same timeout
+## applies if the leader goes silent.
+##
+## Records our client IP first: the allocator feeds every matched
+## player's IP to Edgegap for region selection, so skipping it for
+## followers would bias placement toward the leader.
+func begin_rt_party_wait(
+	local_player_count: int = 1,
+) -> void:
+	if _is_searching:
+		return
+	if _rt_party_id.is_empty():
+		matchmaking_failed.emit("Not in a realtime party")
+		return
+	_local_player_count = local_player_count
+	await _record_client_ip()
+	_ticket = ""
+	_is_searching = true
+	_elapsed_sec = 0.0
+	_elapsed_timer.start()
+	progress_updated.emit("queued", 0.0, -1.0)
+
+
+## Tear down realtime-party state and leave the party server-side.
+## Safe to call in any state.
+##
+## The leader closes the party (which evicts everyone, so followers
+## don't linger in a party whose leader has moved on); followers
+## just leave.
+func leave_rt_party() -> void:
+	var party_id := _rt_party_id
+	_rt_party_id = ""
+	_rt_party_member_ids.clear()
+	var was_leader := _is_rt_party_leader
+	_is_rt_party_leader = false
+	if party_id.is_empty():
+		return
+	if _socket == null or not _socket.is_connected_to_host():
+		return
+	if was_leader:
+		await _socket.close_party_async(party_id)
+	else:
+		await _socket.leave_party_async(party_id)
+
+
 # --------------------------------------------------------------
 # Internals
 # --------------------------------------------------------------
+
+
+## Track who is actually in the realtime party. The leader gates
+## ticket submission on this, so it has to exclude self: Nakama
+## reports the creator's own presence, which would otherwise let a
+## solo leader satisfy a 1-other-member wait immediately.
+func _on_received_party_presence(p_event) -> void:
+	if _rt_party_id.is_empty():
+		return
+	if str(p_event.party_id) != _rt_party_id:
+		return
+	var self_id := _socket_user_id()
+	for presence in p_event.joins:
+		var uid := str(presence.user_id)
+		if uid.is_empty() or uid == self_id:
+			continue
+		_rt_party_member_ids[uid] = true
+	for presence in p_event.leaves:
+		_rt_party_member_ids.erase(str(presence.user_id))
+
+
+## The leader closed the party (or Nakama tore it down). For a
+## follower still waiting this is terminal — without the party
+## there's no ticket covering us and no match coming.
+##
+## Ignored once `_is_searching` is false: a close we triggered
+## ourselves during our own teardown isn't a failure.
+func _on_received_party_close(p_event) -> void:
+	if _rt_party_id.is_empty():
+		return
+	if str(p_event.party_id) != _rt_party_id:
+		return
+	_rt_party_id = ""
+	_rt_party_member_ids.clear()
+	if not _is_searching:
+		return
+	_is_searching = false
+	_elapsed_timer.stop()
+	matchmaking_failed.emit("The party stopped matchmaking")
+
+
+## The user_id this socket is authenticated as. Preview instances
+## authenticate a per-slot device account, so they must not read
+## the shared token store.
+func _socket_user_id() -> String:
+	if not _preview_user_id.is_empty():
+		return _preview_user_id
+	return Platform.token_store.player_id
 
 
 func _record_client_ip() -> void:

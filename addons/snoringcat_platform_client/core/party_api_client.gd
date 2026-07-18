@@ -483,12 +483,20 @@ func transfer_leadership(
 		{"party_id": party_id, "leader_id": target_user_id})
 
 
+## Signals every member to join the leader's realtime party, so the
+## leader can submit one matchmaker ticket covering the group.
+##
+## `rt_party_id` is the realtime party the caller must have already
+## created on its matchmaker socket (see
+## PlatformMatchmakingClient.create_rt_party). The runtime rejects
+## the call without one — there is no longer a path where members
+## enqueue independently, because that path could not keep a party
+## together.
 func start_matchmaking(
 	party_id: String,
+	rt_party_id: String,
 	game_mode: String = "ffa",
 ) -> void:
-	# Custom Nakama RPC: enqueues every party member into the
-	# matchmaker simultaneously so they end up in the same match.
 	var session := await _ensure_session()
 	if session == null:
 		return
@@ -496,6 +504,7 @@ func start_matchmaking(
 		session, "party_start_matchmaking",
 		JSON.stringify({
 			"party_id": party_id,
+			"rt_party_id": rt_party_id,
 			"game_mode": game_mode,
 		}))
 	if rpc_result.is_exception():
@@ -505,6 +514,32 @@ func start_matchmaking(
 	party_matchmaking_started.emit(
 		data if data is Dictionary else
 		{"party_id": party_id, "ticket_id": ""})
+
+
+## Tell every member to stop waiting. Leader-only; the runtime
+## enforces it.
+##
+## Fire-and-forget by design: the caller is already on an abort
+## path, and surfacing a second failure ("the abort failed") would
+## only add noise. Members who miss the notification fall back to
+## their own matchmaking timeout.
+func abort_matchmaking(
+	party_id: String,
+	reason: String = "aborted",
+) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_abort_matchmaking",
+		JSON.stringify({
+			"party_id": party_id,
+			"reason": reason,
+		}))
+	if rpc_result.is_exception():
+		push_warning(
+			"[PlatformParty] abort_matchmaking failed: %s"
+			% _describe(rpc_result.get_exception()))
 
 
 # --------------------------------------------------------------

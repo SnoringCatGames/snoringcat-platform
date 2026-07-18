@@ -41,6 +41,23 @@ const partyStateChangedSubject = "party_state_changed"
 // downstream filters can route on either field.
 const partyStateChangedCode = 101
 
+// partyMatchmakingAbortSubject tells followers to stand down after
+// the leader gave up on a party matchmaking attempt — most often
+// because a member never got their realtime socket into the party
+// (see partyAbortMatchmakingRpc).
+//
+// Sent transient: an abort is only meaningful to a client that is
+// currently sitting in the "waiting to be matched" state. A client
+// that was offline for the whole attempt has nothing to stand down
+// from, and replaying the abort on their next login would drop
+// them out of an unrelated later attempt.
+const partyMatchmakingAbortSubject = "party_matchmaking_abort"
+
+// partyMatchmakingAbortCode pairs with the subject above. 100 is
+// match_ready / party_matchmaking_start, 101 is
+// party_state_changed.
+const partyMatchmakingAbortCode = 102
+
 // partyEvent describes which membership operation triggered a
 // party_state_changed notification. Clients today refresh state on
 // any event, but the field is included so a future UI can render
@@ -139,18 +156,32 @@ const partyInviteCodeMaxAttempts = 5
 type partyStartMatchmakingArgs struct {
 	PartyID  string `json:"party_id"`
 	GameMode string `json:"game_mode"`
+	// RtPartyID is the Nakama *realtime* party the leader created
+	// on its socket before calling this RPC. Distinct from PartyID,
+	// which is the persistent group backing the social party.
+	//
+	// Followers join this realtime party so the leader can submit a
+	// single matchmaker ticket for the whole group via
+	// PartyMatchmakerAdd. That is what actually guarantees the
+	// party lands in one match: before this existed, every member
+	// submitted an independent ticket carrying party_id as an inert
+	// property, and Nakama was free to split them across matches
+	// whenever other players were queued at the same time.
+	RtPartyID string `json:"rt_party_id"`
 }
 
 type partyStartMatchmakingResp struct {
-	OK         bool     `json:"ok"`
-	PartyID    string   `json:"party_id"`
-	GameMode   string   `json:"game_mode"`
-	LeaderID   string   `json:"leader_id"`
-	MemberIDs  []string `json:"member_ids"`
-	// MatchmakerProperties is the property bag the client should
-	// attach to its matchmaker ticket. Carrying party_id as a
-	// string property lets fleet_allocator confirm the matched
-	// players actually shared a party.
+	OK        bool     `json:"ok"`
+	PartyID   string   `json:"party_id"`
+	RtPartyID string   `json:"rt_party_id"`
+	GameMode  string   `json:"game_mode"`
+	LeaderID  string   `json:"leader_id"`
+	MemberIDs []string `json:"member_ids"`
+	// MatchmakerProperties is the property bag attached to the
+	// party's matchmaker ticket. party_id rides along so
+	// fleet_allocator can confirm the matched players shared a
+	// party; co-location itself is now guaranteed by the realtime
+	// party, not by this property.
 	MatchmakerProperties map[string]string `json:"matchmaker_properties"`
 }
 
@@ -178,23 +209,36 @@ func partyStartMatchmakingRpcFactory(
 }
 
 // partyStartMatchmakingRpc handles the leader's "start matchmaking
-// for the whole party" request. The actual matchmaker ticketing is
-// driven from each member's client (Nakama's server runtime can't
-// add matchmaker tickets on behalf of users without their active
-// session/presence). This RPC:
+// for the whole party" request. Nakama's server runtime can't add
+// matchmaker tickets on behalf of users (that needs their live
+// socket), so the ticket is still driven from a client — but from
+// the LEADER's client only, as a single party ticket, rather than
+// from every member independently.
+//
+// This RPC:
 //   1. Validates the caller is the party group's leader (creator).
 //   2. Confirms the group is actually a party (name prefix).
 //   3. Enumerates members.
-//   4. Sends a persistent `party_matchmaking_start` notification
-//      to each member with the shared party_id, so each client can
-//      enqueue its own ticket with a matching `party_id` property.
-//   5. Returns the same info to the caller (the leader), so it can
-//      enqueue itself without waiting for its own notification to
-//      round-trip.
+//   4. Sends a transient `party_matchmaking_start` notification to
+//      each member carrying the leader's `rt_party_id`, so each
+//      client can join that realtime party on its own socket.
+//   5. Returns the same info to the caller (the leader), which
+//      waits for the members' presences to appear and then submits
+//      one PartyMatchmakerAdd for the whole party.
 //
 // The caller's own client SHOULD treat the RPC response as the
 // authoritative kickoff (skip waiting for the leader's own
 // notification) — the notification is for the followers.
+//
+// Why the realtime party at all: matched-together-ness cannot be
+// expressed as a matchmaker property. The previous design attached
+// `party_id` to N independent tickets and hoped; Nakama matches on
+// the query, which never referenced party_id, so a party queuing
+// alongside solo players could be split across matches. Nor can a
+// query fix it — pinning `+properties.party_id:X` would stop a
+// 3-person party from ever filling a 4-player match. A single
+// party ticket is the only construct that says "these N players,
+// together, plus fill".
 //
 // Authorization: caller must be the party's leader. Returns
 // PERMISSION_DENIED (7) otherwise.
@@ -219,6 +263,31 @@ func partyStartMatchmakingRpc(
 	}
 	if args.PartyID == "" {
 		return "", runtime.NewError("party_id required", 3)
+	}
+	// rt_party_id is deliberately NOT required.
+	//
+	// Clients predating the realtime-party flow don't send one, and
+	// the runtime auto-deploys on every push to main while the web
+	// client ships on its own cadence — so there is always a window
+	// where the live client is older than the runtime. Rejecting
+	// the call would take party matchmaking from "works, but can
+	// split the party under load" to "errors out", which is a
+	// strictly worse trade for the people playing right now.
+	//
+	// Old callers therefore keep the legacy behavior: they get a
+	// notification with no rt_party_id and go on submitting their
+	// own solo tickets, exactly as before. New callers get
+	// co-location. Once the old client is off the field this can
+	// become a hard error — the client-side guard in
+	// PartyManager._start_party_matchmaking already refuses to
+	// silently degrade, so a new client can never take this path.
+	if args.RtPartyID == "" {
+		logger.Warn(
+			"party_start_matchmaking without rt_party_id"+
+				" (pre-realtime-party client): party=%s user=%s;"+
+				" members will submit independent tickets and may"+
+				" be split across matches",
+			args.PartyID, userID)
 	}
 	if args.GameMode == "" {
 		// Stage 5.7: prefer the leader-persisted mode for the
@@ -284,12 +353,19 @@ func partyStartMatchmakingRpc(
 	}
 
 	// Dispatch the start notification to each non-leader member.
-	// Persistent=true so the notification survives a disconnected
-	// client (Nakama will replay it when the client reconnects);
-	// the matchmaker timeout on the leader side is the bound on
-	// how long we wait before declaring the party-block dead.
+	//
+	// Transient (persistent=false). This used to be persistent, on
+	// the theory that a disconnected member should pick the request
+	// up on reconnect. That reasoning doesn't survive the realtime
+	// party: the leader waits a bounded number of seconds for
+	// members to join and then aborts, so a notification replayed
+	// minutes later refers to a matchmaking attempt that is long
+	// dead — and acting on it would drag the member into a match
+	// nobody asked for. A member who missed the window is expected
+	// to miss the match.
 	notification := map[string]any{
 		"party_id":              args.PartyID,
+		"rt_party_id":           args.RtPartyID,
 		"game_mode":             args.GameMode,
 		"leader_id":             userID,
 		"matchmaker_properties": matchmakerProperties,
@@ -318,7 +394,7 @@ func partyStartMatchmakingRpc(
 			notification,
 			100,
 			"",
-			true,
+			false,
 		); err != nil {
 			logger.Warn(
 				"notify party member %s: %v",
@@ -327,19 +403,171 @@ func partyStartMatchmakingRpc(
 	}
 
 	logger.Info(
-		"party_matchmaking_start dispatched: party=%s leader=%s"+
-			" members=%d game_mode=%s",
-		args.PartyID, userID, len(memberIDs), args.GameMode)
+		"party_matchmaking_start dispatched: party=%s rt_party=%s"+
+			" leader=%s members=%d game_mode=%s",
+		args.PartyID, args.RtPartyID, userID, len(memberIDs),
+		args.GameMode)
 
 	resp := partyStartMatchmakingResp{
 		OK:                   true,
 		PartyID:              args.PartyID,
+		RtPartyID:            args.RtPartyID,
 		GameMode:             args.GameMode,
 		LeaderID:             userID,
 		MemberIDs:            memberIDs,
 		MatchmakerProperties: matchmakerProperties,
 	}
 	out, _ := json.Marshal(resp)
+	return string(out), nil
+}
+
+// partyAbortMatchmakingArgs is the leader's "stand down" payload.
+type partyAbortMatchmakingArgs struct {
+	PartyID string `json:"party_id"`
+	// Reason is an opaque short tag echoed to members so their UI
+	// can explain itself ("members_never_joined", "cancelled").
+	// Not validated — it's display/telemetry only.
+	Reason string `json:"reason"`
+}
+
+type partyAbortMatchmakingResp struct {
+	OK      bool   `json:"ok"`
+	PartyID string `json:"party_id"`
+	Reason  string `json:"reason"`
+}
+
+func partyAbortMatchmakingRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyAbortMatchmakingRpc(
+			ctx, logger, nk, games, payload)
+	}
+}
+
+// partyAbortMatchmakingRpc fans out `party_matchmaking_abort` so
+// every member drops out of the "waiting to be matched" state.
+//
+// The leader calls this when it gives up on an attempt — chiefly
+// when a member never joined the realtime party within the client's
+// wait window. Aborting is deliberate: the alternative (submit the
+// ticket with whoever showed up) silently starts a match the party
+// didn't agree to, and the missing member is left staring at a
+// lobby while their friends play.
+//
+// Note this does NOT touch the realtime party or the matchmaker
+// ticket — both live on the leader's socket and are the leader
+// client's to tear down. This RPC only carries word to the others,
+// which is the part a client can't do for itself.
+//
+// Authorization: caller must be the current leader. A non-leader
+// aborting would be a trivial grief vector (any member could cancel
+// everyone's queue), so this returns PERMISSION_DENIED (7).
+func partyAbortMatchmakingRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partyAbortMatchmakingArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" {
+		return "", runtime.NewError("party_id required", 3)
+	}
+	if args.Reason == "" {
+		args.Reason = "aborted"
+	}
+
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	group := groups[0]
+	if !strings.HasPrefix(group.Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, args.PartyID, group.CreatorId)
+	if err != nil {
+		logger.Error(
+			"resolvePartyLeader(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if leaderID != userID {
+		return "", runtime.NewError(
+			"only the party leader can abort matchmaking", 7)
+	}
+
+	members, _, err := nk.GroupUsersList(
+		ctx, args.PartyID, 100, nil, "")
+	if err != nil {
+		logger.Error("GroupUsersList(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	content := map[string]any{
+		"party_id": args.PartyID,
+		"reason":   args.Reason,
+	}
+	for _, m := range members {
+		if m.User == nil || m.User.Id == "" {
+			continue
+		}
+		if m.State != nil && m.State.Value == 3 {
+			continue
+		}
+		// The leader is acting on this RPC's response directly and
+		// doesn't need to hear its own abort.
+		if m.User.Id == userID {
+			continue
+		}
+		if err := nk.NotificationSend(
+			ctx,
+			m.User.Id,
+			partyMatchmakingAbortSubject,
+			content,
+			partyMatchmakingAbortCode,
+			"",
+			false,
+		); err != nil {
+			logger.Warn(
+				"notify abort to %s: %v", m.User.Id, err)
+		}
+	}
+
+	logger.Info(
+		"party_matchmaking_abort: party=%s leader=%s reason=%s",
+		args.PartyID, userID, args.Reason)
+
+	out, _ := json.Marshal(partyAbortMatchmakingResp{
+		OK:      true,
+		PartyID: args.PartyID,
+		Reason:  args.Reason,
+	})
 	return string(out), nil
 }
 
