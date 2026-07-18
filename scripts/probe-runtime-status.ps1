@@ -38,9 +38,14 @@ starting Nakama (see infra/remote/nakama/docker-compose.yml).
 
 # RPC takes no payload; URL-encoded empty body matches the wire
 # format Nakama expects when called via HTTP key.
-$uri = "$NakamaHost/v2/rpc/runtime_status?http_key=$([Uri]::EscapeDataString($HttpKey))&unwrap=true"
+$encodedKey = [Uri]::EscapeDataString($HttpKey)
+$uri = "$NakamaHost/v2/rpc/runtime_status?http_key=$encodedKey&unwrap=true"
 
-Write-Host "POST $($uri.Replace($HttpKey, '<redacted>'))"
+# Redact the ENCODED key (what actually appears in $uri). Redacting
+# the raw key fails to match once it contains characters that get
+# percent-encoded (a base64 key has /, +, =), which silently leaked
+# the key in cleartext.
+Write-Host "POST $($uri.Replace($encodedKey, '<redacted>'))"
 try {
     $payload = Invoke-RestMethod `
         -Method POST `
