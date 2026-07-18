@@ -47,6 +47,10 @@
 //                            ticket for the whole group.
 //   - party_abort_matchmaking: leader tells members to stand down
 //                            (e.g. someone never joined).
+//   - party_invite:        invite a friend on behalf of ANY active
+//                            member (server-side add as the leader/
+//                            admin, since Nakama gates client adds to
+//                            admins). Kick stays leader-only.
 //   - party_set_ready:     toggle the caller's per-party ready
 //                            flag (fans out party_state_changed).
 //   - party_set_mode:      leader picks the matchmaker game mode
@@ -470,6 +474,11 @@ func InitModule(
 	if err := addRpc(
 		"party_abort_matchmaking",
 		partyAbortMatchmakingRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
+		"party_invite",
+		partyInviteRpcFactory(games)); err != nil {
 		return err
 	}
 	if err := addRpc(

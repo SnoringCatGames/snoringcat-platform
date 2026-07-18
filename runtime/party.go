@@ -320,20 +320,17 @@ func partyStartMatchmakingRpc(
 				partyGroupPrefix+"\")",
 			3)
 	}
+	// Any ACTIVE member can start matchmaking, not just the leader
+	// (verified against the roster enumerated below). The
+	// leader-persisted game mode resolved above — and the leader's
+	// level / cheat prefs — stay authoritative regardless of who
+	// starts, so the match still reflects the leader's choices.
 	leaderID, err := resolvePartyLeader(
 		ctx, nk, args.PartyID, group.CreatorId)
 	if err != nil {
 		logger.Error(
 			"resolvePartyLeader(%s): %v", args.PartyID, err)
 		return "", err
-	}
-	if leaderID != userID {
-		logger.Info(
-			"party_start_matchmaking refused for non-leader:"+
-				" user=%s party=%s leader=%s",
-			userID, args.PartyID, leaderID)
-		return "", runtime.NewError(
-			"only the party leader can start matchmaking", 7)
 	}
 
 	// Enumerate party members. Nakama caps the page size; parties
@@ -352,12 +349,38 @@ func partyStartMatchmakingRpc(
 		"game_mode": args.GameMode,
 	}
 
-	// Dispatch the start notification to each non-leader member.
+	// Enumerate active members (state 3 = pending invite, not yet a
+	// real member) and confirm the caller is one of them BEFORE
+	// sending anything — otherwise a non-member could spam a party's
+	// members with start notifications.
+	memberIDs := make([]string, 0, len(members))
+	callerIsMember := false
+	for _, m := range members {
+		if m.User == nil || m.User.Id == "" {
+			continue
+		}
+		if m.State != nil && m.State.Value == 3 {
+			continue
+		}
+		memberIDs = append(memberIDs, m.User.Id)
+		if m.User.Id == userID {
+			callerIsMember = true
+		}
+	}
+	if !callerIsMember {
+		return "", runtime.NewError(
+			"only an active party member can start matchmaking", 7)
+	}
+
+	// Dispatch the start notification to every OTHER active member.
+	//
+	// `leader_id` carries the resolved party leader (informational;
+	// followers don't act on it — they join the rt_party_id above).
 	//
 	// Transient (persistent=false). This used to be persistent, on
 	// the theory that a disconnected member should pick the request
 	// up on reconnect. That reasoning doesn't survive the realtime
-	// party: the leader waits a bounded number of seconds for
+	// party: the starter waits a bounded number of seconds for
 	// members to join and then aborts, so a notification replayed
 	// minutes later refers to a matchmaking attempt that is long
 	// dead — and acting on it would drag the member into a match
@@ -367,29 +390,18 @@ func partyStartMatchmakingRpc(
 		"party_id":              args.PartyID,
 		"rt_party_id":           args.RtPartyID,
 		"game_mode":             args.GameMode,
-		"leader_id":             userID,
+		"leader_id":             leaderID,
 		"matchmaker_properties": matchmakerProperties,
 	}
-	memberIDs := make([]string, 0, len(members))
-	for _, m := range members {
-		if m.User == nil || m.User.Id == "" {
-			continue
-		}
-		// State 3 = JOIN_REQUEST (pending invite the user has
-		// not yet accepted). Skip — they aren't truly in the
-		// party until they accept.
-		if m.State != nil && m.State.Value == 3 {
-			continue
-		}
-		memberIDs = append(memberIDs, m.User.Id)
-		// The leader doesn't need a notification — they're acting
+	for _, id := range memberIDs {
+		// The starter doesn't need a notification — they're acting
 		// on the RPC response directly.
-		if m.User.Id == userID {
+		if id == userID {
 			continue
 		}
 		if err := nk.NotificationSend(
 			ctx,
-			m.User.Id,
+			id,
 			partyMatchmakingStartSubject,
 			notification,
 			100,
@@ -397,8 +409,7 @@ func partyStartMatchmakingRpc(
 			false,
 		); err != nil {
 			logger.Warn(
-				"notify party member %s: %v",
-				m.User.Id, err)
+				"notify party member %s: %v", id, err)
 		}
 	}
 
@@ -465,13 +476,17 @@ func partyAbortMatchmakingRpcFactory(
 // lobby while their friends play.
 //
 // Note this does NOT touch the realtime party or the matchmaker
-// ticket — both live on the leader's socket and are the leader
-// client's to tear down. This RPC only carries word to the others,
-// which is the part a client can't do for itself.
+// ticket — both live on the starter's socket and are that client's
+// to tear down. This RPC only carries word to the others, which is
+// the part a client can't do for itself.
 //
-// Authorization: caller must be the current leader. A non-leader
-// aborting would be a trivial grief vector (any member could cancel
-// everyone's queue), so this returns PERMISSION_DENIED (7).
+// Authorization: caller must be an ACTIVE member. It used to be
+// leader-only, but any member can now start matchmaking (becoming the
+// rt-party leader), so the starter — not necessarily the party leader
+// — must be able to abort it. Aborting only drops members out of the
+// waiting state (it doesn't disband the party), so opening it to any
+// active member is low-stakes: the worst case is a member cancelling
+// an attempt everyone can simply restart.
 func partyAbortMatchmakingRpc(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -511,28 +526,16 @@ func partyAbortMatchmakingRpc(
 		return "", runtime.NewError(
 			"group "+args.PartyID+" is not a party", 3)
 	}
-	leaderID, err := resolvePartyLeader(
-		ctx, nk, args.PartyID, group.CreatorId)
-	if err != nil {
-		logger.Error(
-			"resolvePartyLeader(%s): %v", args.PartyID, err)
-		return "", err
-	}
-	if leaderID != userID {
-		return "", runtime.NewError(
-			"only the party leader can abort matchmaking", 7)
-	}
-
+	// Confirm the caller is an active member before fanning anything
+	// out (a non-member could otherwise spam the party with aborts).
 	members, _, err := nk.GroupUsersList(
 		ctx, args.PartyID, 100, nil, "")
 	if err != nil {
 		logger.Error("GroupUsersList(%s): %v", args.PartyID, err)
 		return "", err
 	}
-	content := map[string]any{
-		"party_id": args.PartyID,
-		"reason":   args.Reason,
-	}
+	memberIDs := make([]string, 0, len(members))
+	callerIsMember := false
 	for _, m := range members {
 		if m.User == nil || m.User.Id == "" {
 			continue
@@ -540,22 +543,36 @@ func partyAbortMatchmakingRpc(
 		if m.State != nil && m.State.Value == 3 {
 			continue
 		}
-		// The leader is acting on this RPC's response directly and
-		// doesn't need to hear its own abort.
+		memberIDs = append(memberIDs, m.User.Id)
 		if m.User.Id == userID {
+			callerIsMember = true
+		}
+	}
+	if !callerIsMember {
+		return "", runtime.NewError(
+			"only an active party member can abort matchmaking", 7)
+	}
+
+	content := map[string]any{
+		"party_id": args.PartyID,
+		"reason":   args.Reason,
+	}
+	for _, id := range memberIDs {
+		// The caller is acting on this RPC's response directly and
+		// doesn't need to hear its own abort.
+		if id == userID {
 			continue
 		}
 		if err := nk.NotificationSend(
 			ctx,
-			m.User.Id,
+			id,
 			partyMatchmakingAbortSubject,
 			content,
 			partyMatchmakingAbortCode,
 			"",
 			false,
 		); err != nil {
-			logger.Warn(
-				"notify abort to %s: %v", m.User.Id, err)
+			logger.Warn("notify abort to %s: %v", id, err)
 		}
 	}
 
@@ -567,6 +584,149 @@ func partyAbortMatchmakingRpc(
 		OK:      true,
 		PartyID: args.PartyID,
 		Reason:  args.Reason,
+	})
+	return string(out), nil
+}
+
+// partyInviteArgs is the client → runtime payload for inviting a
+// friend to a party on behalf of a (possibly non-leader) member.
+type partyInviteArgs struct {
+	PartyID  string `json:"party_id"`
+	TargetID string `json:"target_id"`
+}
+
+func partyInviteRpcFactory(
+	games *perGameConfig,
+) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		return partyInviteRpc(ctx, logger, nk, games, payload)
+	}
+}
+
+// partyInviteRpc lets ANY active party member invite a friend, not
+// just the leader. Nakama's client AddGroupUsers requires the caller
+// to be a group admin, and only the leader is admin — so a non-leader
+// invite fails client-side. This RPC verifies the caller is an active
+// member, then performs the add server-side acting as the party leader
+// (an admin). For a closed group (parties are created closed) an
+// admin-initiated add produces a state-3 invitation the target accepts
+// through the normal join flow, exactly like a leader's invite.
+//
+// Only invite is opened up this way; kick / set-mode / transfer stay
+// leader-only on their existing admin-gated paths.
+func partyInviteRpc(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	payload string,
+) (string, error) {
+	userID, err := requireClientSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, err := requireGameID(ctx, games); err != nil {
+		return "", err
+	}
+	args := partyInviteArgs{}
+	if err := json.Unmarshal([]byte(payload), &args); err != nil {
+		return "", runtime.NewError(
+			"invalid payload: "+err.Error(), 3)
+	}
+	if args.PartyID == "" || args.TargetID == "" {
+		return "", runtime.NewError(
+			"party_id and target_id required", 3)
+	}
+	if args.TargetID == userID {
+		return "", runtime.NewError("cannot invite yourself", 3)
+	}
+
+	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
+	if err != nil {
+		logger.Error("GroupsGetId(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if len(groups) == 0 {
+		return "", runtime.NewError("party not found", 5)
+	}
+	group := groups[0]
+	if !strings.HasPrefix(group.Name, partyGroupPrefix) {
+		return "", runtime.NewError(
+			"group "+args.PartyID+" is not a party", 3)
+	}
+	if group.EdgeCount >= group.MaxCount {
+		return "", runtime.NewError("party is full", 9)
+	}
+
+	// The caller must be an ACTIVE member (state != 3) to invite.
+	members, _, err := nk.GroupUsersList(
+		ctx, args.PartyID, 100, nil, "")
+	if err != nil {
+		logger.Error("GroupUsersList(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	callerIsMember := false
+	for _, m := range members {
+		if m.User == nil || m.User.Id != userID {
+			continue
+		}
+		// State 3 = pending invite: not yet a real member.
+		if m.State == nil || m.State.Value != 3 {
+			callerIsMember = true
+		}
+		break
+	}
+	if !callerIsMember {
+		return "", runtime.NewError(
+			"only an active party member can invite", 7)
+	}
+
+	// Add as the leader (an admin). resolvePartyLeader honors a
+	// transfer override, and the auto-transfer path promotes new
+	// leaders to Nakama admin so this add succeeds for them too.
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, args.PartyID, group.CreatorId)
+	if err != nil {
+		logger.Error(
+			"resolvePartyLeader(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if err := nk.GroupUsersAdd(
+		ctx, leaderID, args.PartyID, []string{args.TargetID},
+	); err != nil {
+		logger.Warn(
+			"party_invite GroupUsersAdd(party=%s target=%s"+
+				" as leader=%s): %v",
+			args.PartyID, args.TargetID, leaderID, err)
+		return "", runtime.NewError(
+			"failed to invite: "+err.Error(), 13)
+	}
+
+	// Notify the invitee + refresh the party. Mirrors
+	// party_join_by_code's explicit fan-out; harmless if the
+	// AfterAddGroupUsers hook also fires (the client dedups by id).
+	notifyPartyMembers(
+		ctx, logger, nk, args.PartyID,
+		partyEventInvited, []string{args.TargetID},
+	)
+
+	logger.Info(
+		"party_invite: party=%s inviter=%s target=%s",
+		args.PartyID, userID, args.TargetID)
+
+	out, _ := json.Marshal(map[string]any{
+		"ok":        true,
+		"party_id":  args.PartyID,
+		"target_id": args.TargetID,
 	})
 	return string(out), nil
 }

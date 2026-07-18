@@ -83,11 +83,19 @@ func invite_to_party(
 	party_id: String,
 	player_id: String,
 ) -> void:
+	# Routed through the party_invite runtime RPC, not Nakama's client
+	# add_group_users (which requires the caller to be a group admin,
+	# i.e. the leader). The RPC checks active membership and performs
+	# the add as the leader server-side, so ANY member can invite.
 	var session := await _ensure_session()
 	if session == null:
 		return
-	var result = await Platform.get_nakama_client().add_group_users_async(
-		session, party_id, [player_id])
+	var result = await Platform.get_nakama_client().rpc_async(
+		session, "party_invite",
+		JSON.stringify({
+			"party_id": party_id,
+			"target_id": player_id,
+		}))
 	if result.is_exception():
 		request_failed.emit(_describe(result.get_exception()))
 		return
