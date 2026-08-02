@@ -30,6 +30,13 @@ services:
       - "hba_file=/etc/postgresql/pg_hba.conf"
       - "-c"
       - "listen_addresses=*"
+      # Feeds the slow-query sections of the pg-bloat-and-slow-queries
+      # (daily) and postgres-deep-dive (weekly) scheduled jobs. The
+      # preload only loads the hooks; the extension itself is
+      # CREATE EXTENSION'd once in the nakama DB (and from then on
+      # rides along in the pg_dumpall dump/restore cycle).
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nakama -d nakama"]
       interval: 10s
