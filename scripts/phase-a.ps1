@@ -10,6 +10,8 @@
 #   pwsh -File scripts/phase-a.ps1                # Full run
 #   pwsh -File scripts/phase-a.ps1 -SkipPreview   # Skip preview gate
 #   pwsh -File scripts/phase-a.ps1 -StartAt Postgres   # Resume mid-run
+#   pwsh -File scripts/phase-a.ps1 -RestoreBackup # DR rebuild: restore
+#                                  # newest R2 dump before Nakama boots
 #
 # The -StartAt step names are: PulumiSetup, S3, PulumiLogin, Preview,
 # Up, WaitBoot, Postgres, Nakama, Verify, Reencrypt, Complete.
@@ -17,6 +19,16 @@
 [CmdletBinding()]
 param(
 	[switch]$SkipPreview,
+	# DR rebuild: restore the newest R2 pg-backup dump into Postgres
+	# before Nakama first boots (see Invoke-PgRestore). When R2
+	# already holds backups and neither switch is given, Step-Nakama
+	# refuses to bring the stack up — that combination means a
+	# rebuild of an existing deployment, and booting Nakama against
+	# an empty DB races the restore (DR drill 2026-08-02, Gap B).
+	[switch]$RestoreBackup,
+	# Deliberately skip the restore and the backup check (brand-new
+	# deployment / intentional reset to an empty database).
+	[switch]$NoRestore,
 	[ValidateSet(
 		"PulumiSetup", "S3", "PulumiLogin", "Preview", "Up",
 		"WaitBoot", "Postgres", "Nakama", "Verify",
@@ -172,6 +184,121 @@ function Wait-CloudInit {
 		Start-Sleep -Seconds 20
 	}
 	throw "Timed out waiting for cloud-init on $label ($ip)"
+}
+
+# --------------------------------------------------------------------
+# DR restore (R2 pg-backup dumps)
+# --------------------------------------------------------------------
+function Get-R2BackupBucket {
+	if ($env:R2_BUCKET) { return $env:R2_BUCKET }
+	return "hopnbop-pulumi-state-r2"
+}
+
+function Get-LatestPgBackupKey {
+	# Newest pg-backups/postgres-YYYY-MM-DD.sql.gz key in R2, or
+	# $null when none exist (genuinely fresh deployment). The
+	# date-stamped names sort lexicographically, so newest == last.
+	$env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
+	$env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
+	$listing = aws s3 ls "s3://$(Get-R2BackupBucket)/pg-backups/" `
+		--endpoint-url $env:R2_ENDPOINT 2>$null
+	if ($LASTEXITCODE -ne 0 -or -not $listing) { return $null }
+	$names = @($listing | ForEach-Object { ($_ -split '\s+')[-1] } |
+		Where-Object { $_ -match '^postgres-\d{4}-\d{2}-\d{2}\.sql\.gz$' } |
+		Sort-Object)
+	if ($names.Count -eq 0) { return $null }
+	return "pg-backups/$($names[-1])"
+}
+
+function Invoke-PgRestore {
+	# Replays the newest R2 pg_dumpall dump into the stack's
+	# Postgres while Nakama is still down. Called from Step-Nakama
+	# between `compose build` and the first `compose up`, because
+	# `up -d caddy` cascades via depends_on into Nakama's first
+	# boot — a restore attempted any later races Nakama's
+	# migrate-up and live writes (DR drill 2026-08-02, Gap B).
+	#
+	# The dump is pg_dumpall output: it re-CREATEs the nakama role
+	# + database and \connect's into it, so psql must target the
+	# `postgres` maintenance DB, NOT -d nakama. Role-exists errors
+	# during replay are expected noise (the fresh container already
+	# created the nakama role), hence ON_ERROR_STOP=0 plus the
+	# table-count verification at the end.
+	param([string]$ip)
+
+	if (-not $env:POSTGRES_PASSWORD) {
+		throw "POSTGRES_PASSWORD missing from credentials.env; cannot restore"
+	}
+	$key = Get-LatestPgBackupKey
+	if (-not $key) {
+		throw "-RestoreBackup given but R2 has no pg-backups/postgres-*.sql.gz"
+	}
+	Note "Restore: replaying $key (Nakama still down)"
+
+	# Pull locally, then scp up: at this point in phase-a the fresh
+	# host has neither an aws CLI config nor R2 creds (phase-b's
+	# pg-backup step provisions those later).
+	$tmpDump = Join-Path ([System.IO.Path]::GetTempPath()) "dr-restore.sql.gz"
+	Invoke-Checked "aws s3 cp (dump from R2)" {
+		$env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
+		$env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
+		aws s3 cp "s3://$(Get-R2BackupBucket)/$key" $tmpDump `
+			--endpoint-url $env:R2_ENDPOINT --no-progress | Out-Null
+	}
+	try {
+		Invoke-Checked "scp dump to host" {
+			Scp-Up $ip $NakamaKey $tmpDump "/tmp/dr-restore.sql.gz" | Out-Null
+		}
+	} finally {
+		Remove-Item $tmpDump -Force -ErrorAction SilentlyContinue
+	}
+
+	# Postgres alone first — deliberately NOT an `up -d` on the
+	# whole stack. Same health-poll pattern as Step-Postgres.
+	Invoke-Checked "compose up postgres (pre-restore)" {
+		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d postgres" | Out-Null
+	}
+	$deadline = (Get-Date).AddMinutes(3)
+	$healthy = $false
+	while ((Get-Date) -lt $deadline) {
+		$st = Ssh-Run $ip $NakamaKey "docker inspect --format '{{.State.Health.Status}}' postgres 2>/dev/null" 2>&1
+		if ($LASTEXITCODE -eq 0 -and "$st".Trim() -eq "healthy") { $healthy = $true; break }
+		Start-Sleep -Seconds 5
+	}
+	if (-not $healthy) { throw "Postgres did not become healthy before restore" }
+
+	# Base64 the remote script to defeat the PowerShell -> ssh ->
+	# bash quoting layers (same trick as claude-config's
+	# Invoke-RemoteSql). `docker stop nakama` covers idempotent
+	# re-runs where a prior partial run already booted Nakama;
+	# WITH (FORCE) clears any straggler sessions (postgres-exporter
+	# reconnects on its own).
+	$restoreScript = @"
+set -e
+docker stop nakama >/dev/null 2>&1 || true
+docker exec -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
+  psql --no-password -h 127.0.0.1 -U nakama -d postgres \
+  -c 'DROP DATABASE IF EXISTS nakama WITH (FORCE)' >/dev/null
+gunzip -c /tmp/dr-restore.sql.gz \
+  | docker exec -i -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
+    psql --no-password -h 127.0.0.1 -U nakama -d postgres \
+    -v ON_ERROR_STOP=0 -q >/dev/null 2>&1
+rm -f /tmp/dr-restore.sql.gz
+docker exec -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
+  psql --no-password -h 127.0.0.1 -U nakama -d nakama -tA \
+  -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+"@
+	$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($restoreScript))
+	$tableCount = Ssh-Run $ip $NakamaKey "echo $b64 | base64 -d | bash"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Restore pipeline failed (exit $LASTEXITCODE)"
+	}
+	$count = 0
+	[void][int]::TryParse("$tableCount".Trim(), [ref]$count)
+	if ($count -lt 1) {
+		throw "Restore verification failed: nakama DB has no public tables"
+	}
+	Note "Restore complete: $count tables in nakama DB (from $key)"
 }
 
 # --------------------------------------------------------------------
@@ -497,6 +624,29 @@ function Step-Nakama {
 	# digests match the build context.
 	Invoke-Checked "compose build signaling-proxy" {
 		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose build signaling-proxy" | Out-Null
+	}
+
+	# DR gate + optional restore. Must happen HERE — after the
+	# compose files + .env are on the host, before the first
+	# `compose up`: `up -d caddy` cascades via depends_on into
+	# Nakama's first boot, and Nakama would migrate-up + write an
+	# empty DB that races any later restore (DR drill 2026-08-02,
+	# Gap B).
+	if ($RestoreBackup) {
+		Invoke-PgRestore $ip
+	} elseif (-not $NoRestore) {
+		if (Get-Command aws -ErrorAction SilentlyContinue) {
+			$latestKey = Get-LatestPgBackupKey
+			if ($latestKey) {
+				throw ("R2 already holds pg backups (latest: $latestKey), " +
+					"so this looks like a rebuild of an existing deployment. " +
+					"Re-run with -RestoreBackup to restore it before Nakama " +
+					"first boots, or -NoRestore to deliberately start from " +
+					"an empty database.")
+			}
+		} else {
+			Log "aws CLI not found locally; skipping the pre-boot R2 backup check"
+		}
 	}
 
 	# Bring Caddy up first so it starts the cert flow, then

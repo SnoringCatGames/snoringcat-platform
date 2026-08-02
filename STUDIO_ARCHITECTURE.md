@@ -731,9 +731,14 @@ for the full matrix. Quick reference:
   fallback to `admin@snoringcat.games` is configured in
   Grafana. Beyond that, UptimeRobot has its own email
   notifications.
-- **Postgres data corruption:** restore from
-  `Hetzner Storage Box backup` (taken nightly via cron). RPO
-  is ~24h; no PITR setup at indie scale.
+- **Postgres data corruption:** restore from the nightly
+  `pg-backup.timer` dump in Cloudflare R2
+  (`s3://hopnbop-pulumi-state-r2/pg-backups/`, 7-day
+  retention). Stop Nakama first, then replay against the
+  `postgres` maintenance DB &mdash; procedure in
+  `hopnbop/CLAUDE.md` ("Backups"); on a full rebuild,
+  `scripts/phase-a.ps1 -RestoreBackup` does it before Nakama
+  first boots. RPO is ~24h; no PITR setup at indie scale.
 
 ---
 
