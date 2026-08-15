@@ -706,8 +706,11 @@ for the full matrix. Quick reference:
 
 ### Audit costs
 
-1. Daily Discord summary from the cost-monitor systemd timer
-   on the Nakama box. Should arrive ~09:00 UTC.
+1. The morning brief's cost section, fed by the cost-monitor
+   systemd timer on the Nakama box (it queues its daily summary
+   into the service-status JSONL rather than posting to Discord
+   itself). Threshold crossings and cost-monitor failures do go
+   straight to Discord.
 2. Monthly: log in to each provider's dashboard and verify
    month-to-date spend. Hetzner, Edgegap, AWS (until closed),
    Cloudflare (free), GitHub (free).

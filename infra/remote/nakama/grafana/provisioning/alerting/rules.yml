@@ -145,27 +145,15 @@ groups:
           summary: "CPU >80% for 15m on {{ $labels.instance }}"
           description: "Sustained load. Check for runaway queries or scrape volume."
 
-      - uid: postgres-slow-queries
-        title: Postgres slow queries spiking
-        condition: B
-        data:
-          - refId: A
-            relativeTimeRange: { from: 300, to: 0 }
-            datasourceUid: prometheus
-            model:
-              expr: rate(pg_stat_database_xact_commit{datname="nakama"}[5m]) * 0
-              instant: true
-              refId: A
-          - refId: B
-            datasourceUid: __expr__
-            model:
-              type: threshold
-              expression: A
-              refId: B
-              conditions:
-                - evaluator: { params: [10], type: gt }
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "Slow query spike on Postgres"
-          description: "Placeholder rule. Replace with pg_stat_statements query once that extension is enabled."
+      # A `postgres-slow-queries` rule used to sit here. Its query
+      # was `rate(pg_stat_database_xact_commit{...}[5m]) * 0`
+      # against a `> 10` threshold — identically zero, so it could
+      # never fire no matter what Postgres did. It read as slow-query
+      # coverage on the Discord contact point while providing none.
+      #
+      # Reinstating it needs a real series first: pg_stat_statements
+      # is now preloaded on the postgres service (2026-08-02), but
+      # postgres-exporter v0.16.0 does not scrape it unless the
+      # statements collector is enabled, so there is still nothing in
+      # Prometheus to alert on. Enable that collector, confirm the
+      # metric exists, then write the rule against it.

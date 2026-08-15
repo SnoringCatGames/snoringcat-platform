@@ -87,9 +87,10 @@ contents into game-level CLAUDE.md; cross-reference instead.
 Operations (single-host, lightweight obs — 2026-05-13 Stage 7.11):
 ┌──────────────────────────────────────────────────────────────┐
 │  systemd timers on the Nakama box:                           │
-│  - cost-monitor.timer (hourly): Hetzner / Edgegap-active /   │
-│    R2 / CF Pages / GH Actions usage → Discord daily summary  │
-│    + threshold pings.                                        │
+│  - cost-monitor.timer (every 5 min): Hetzner / Edgegap-      │
+│    active / R2 / CF Pages / GH Actions usage → daily summary │
+│    into the service-status JSONL (morning brief folds it in) │
+│    + threshold pings straight to Discord.                    │
 │  - pg-backup.timer (nightly 03:11 UTC): pg_dumpall → R2.     │
 │  - dns-watchdog.timer (hourly): scrubs stale per-deploy DNS  │
 │    A records.                                                │
@@ -538,23 +539,37 @@ Default: no upper bound. Lower bound: 0 (true scale-to-zero).
 
 ### Cost monitor
 
-Hourly systemd timer on the Nakama host that polls Hetzner
-Cloud, Edgegap, Cloudflare R2, Cloudflare Pages, and GitHub
-Actions APIs for month-to-date usage; pings Discord on
-threshold crossings and posts a daily summary.
+Systemd timer on the Nakama host (every 5 min) that polls
+Hetzner Cloud, Edgegap, Cloudflare R2, Cloudflare Pages, and
+GitHub Actions APIs for month-to-date usage; pings Discord on
+threshold crossings and queues a daily summary for the morning
+brief.
 
 **Source files (this repo):**
 `infra/remote/cost-monitor/{cost-monitor.sh, cost-monitor.service,
 cost-monitor.timer}`. Deployed by Pulumi to
 `/opt/snoringcat/cost-monitor/` on the Nakama box.
 
-**Trigger:** `cost-monitor.timer` —
-`OnCalendar=*-*-* *:00:00 UTC`, `RandomizedDelaySec=60`.
+**Trigger:** `cost-monitor.timer` — every 5 minutes
+(`OnCalendar=*-*-* *:00,05,…,55:00 UTC`, `RandomizedDelaySec=30`,
+`Persistent=true`). Tightened from hourly on 2026-06-01 because
+short matches were starting and ending between hourly polls.
 
 **Behaviour:**
 - Silent on most runs.
-- One routine "Billing status" Discord summary per day, at
-  `DAILY_SUMMARY_HOUR_UTC` (default `9` = 09:00 UTC).
+- One routine cost summary per day, on the first run at or after
+  `DAILY_SUMMARY_HOUR_UTC` (default `9` = 09:00 UTC). It is
+  **not** posted to Discord: it goes to the service-status JSONL
+  queue that the daily LLM consolidator drains into the single
+  morning Discord post. (Direct posting stopped 2026-05-07; the
+  ">=" rather than "== that hour" test means a host that was down
+  at 09:00 still reports later that day instead of dropping the
+  day.)
+- Any unhandled failure pings Discord directly (rate-limited to
+  one ping per 6h via `/var/lib/snoringcat/cost-monitor-failed.stamp`,
+  cleared on the next clean run). Before that existed, a fatal
+  error just marked the systemd unit failed and the cost lines
+  silently vanished from the morning brief.
 - Threshold crossings (`BUDGET_WARN_LOW`, `_MID`, `_HIGH`,
   `EMERGENCY_CAP`, plus R2 storage bands and Cloudflare Pages
   build-count bands `CF_PAGES_WARN_BUILDS` /
@@ -631,7 +646,10 @@ cat /var/lib/snoringcat/cost-monitor-state.json
 
 ### "Costs spiked unexpectedly"
 
-1. Daily cost script's last Discord message has the breakdown.
+1. The morning brief's cost section has the breakdown (sourced
+   from the cost-monitor's daily service-status entry). For the
+   live numbers without waiting: `journalctl -u
+   cost-monitor.service -n 20` on the Nakama box.
 2. If Edgegap > expected: check fleet usage in Edgegap
    dashboard. Possibly a runaway match-creation loop.
 3. If Hetzner > expected: probably a forgotten test instance.

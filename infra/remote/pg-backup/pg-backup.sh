@@ -29,9 +29,11 @@
 # Layout in R2:
 #   <bucket>/pg-backups/postgres-YYYY-MM-DD.sql.gz
 #
-# Daily summary in cost-monitor's Discord pings should match
-# the prod-health-check skill's expectation of finding today's
-# object via HEAD on $R2_BUCKET/postgres/postgres-$DATE.sql.gz.
+# The daily prod-health-check job looks for today's object; the
+# key it must HEAD is $R2_BUCKET/pg-backups/postgres-$DATE.sql.gz.
+# (This note used to say `postgres/postgres-$DATE.sql.gz` — no
+# such prefix has ever been written, so anything trusting it
+# reports a missing backup every single day.)
 #
 # Idempotent: re-running on the same day just overwrites the
 # day's object.
@@ -48,7 +50,9 @@ DATE_TODAY="$(date -u +%Y-%m-%d)"
 DATE_CUTOFF="$(date -u -d "${PG_BACKUP_RETENTION_DAYS} days ago" +%Y-%m-%d)"
 OBJECT_KEY="pg-backups/postgres-${DATE_TODAY}.sql.gz"
 TMP_FILE="$(mktemp --suffix=.sql.gz)"
-trap 'rm -f "$TMP_FILE"' EXIT
+# Guard so one failure produces one Discord ping. See alert_failure.
+ALERT_MARKER="$(mktemp -u)"
+trap 'rm -f "$TMP_FILE" "$ALERT_MARKER"' EXIT
 
 # Append an entry to SERVICE_STATUS_LOG (JSONL) for the daily LLM
 # consolidator to pick up via SSH-drain. Silent no-op when the env
@@ -77,6 +81,17 @@ post_status() {
 # retention while-subshell and post_status().
 alert_failure() {
 	local lineno="$1"
+	# The retention loop runs in a pipeline subshell, so a failure
+	# there fires this trap twice: once inside the subshell, then
+	# again in the parent when pipefail propagates the status —
+	# two Discord pings and two 'red' status entries for one
+	# fault, each blaming a different line. A marker FILE rather
+	# than a shell variable because the subshell's assignments
+	# never reach the parent.
+	if [[ -e "$ALERT_MARKER" ]]; then
+		return 0
+	fi
+	: > "$ALERT_MARKER" 2>/dev/null || true
 	local msg="pg-backup FAILED at line ${lineno} on $(hostname -s) ($(date -u +%FT%TZ))"
 	echo "$msg" >&2
 	if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
@@ -127,7 +142,7 @@ AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 	--endpoint-url "$R2_ENDPOINT" \
 	--no-progress
 
-# Retention: list everything under postgres/, drop anything
+# Retention: list everything under pg-backups/, drop anything
 # older than the cutoff date. Pure string-compare on the date
 # in the key works because YYYY-MM-DD sorts lexicographically.
 AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \

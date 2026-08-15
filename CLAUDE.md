@@ -153,10 +153,12 @@ Nakama, Postgres, and observability.
 - `infra/remote/postgres/` — Postgres docker-compose +
   `pg_hba.conf`. Deployed to `/opt/postgres/` on the Postgres
   host.
-- `infra/remote/cost-monitor/` — hourly systemd timer for
+- `infra/remote/cost-monitor/` — 5-minute systemd timer for
   Hetzner + Edgegap + R2 + GitHub Actions MTD spend. Deployed
-  to `/opt/snoringcat/cost-monitor/`. Discord summary daily
-  at 09:00 UTC; threshold crossings ping immediately;
+  to `/opt/snoringcat/cost-monitor/`. Daily summary (09:00 UTC
+  or the first run after) is queued into the service-status
+  JSONL for the morning brief, not posted to Discord; threshold
+  crossings and run failures ping Discord immediately;
   emergency cap PATCHes Edgegap to `capacity_max=0`. Full
   details in `PLATFORM_ARCHITECTURE.md` → "Cost monitor".
 

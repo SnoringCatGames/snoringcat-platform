@@ -1,12 +1,17 @@
 #!/bin/bash
-# Hourly cost monitor for the snoringcat-platform stack.
+# Cost monitor for the snoringcat-platform stack. Driven by
+# cost-monitor.timer, which fires every 5 minutes (tightened from
+# hourly on 2026-06-01; see the timer unit).
 #
 # Each run: compute MTD spend, decide whether to alert.
 # - Threshold crossings (LOW / MID / HIGH / EMERGENCY) fire a
 #   Discord ping immediately, gated by a state file so we don't
-#   re-alert every hour for the same threshold.
-# - One routine "Daily cost" summary per day, posted at
-#   $DAILY_SUMMARY_HOUR_UTC (default 09:00).
+#   re-alert on every run for the same threshold.
+# - One routine "Daily cost" summary per day, on the first run at
+#   or after $DAILY_SUMMARY_HOUR_UTC (default 09:00). It is
+#   written to the service-status JSONL queue, NOT posted to
+#   Discord directly — the daily LLM consolidator folds it into
+#   the single morning Discord post.
 # - Other runs are silent.
 #
 # The EMERGENCY threshold also scales the Edgegap fleet to 0
@@ -14,7 +19,9 @@
 #
 # Reads /opt/snoringcat/cost-monitor/.env for tokens + thresholds.
 
-set -euo pipefail
+# -E (errtrace) so the ERR trap installed below also fires for
+# failures inside functions and command substitutions.
+set -Eeuo pipefail
 
 ENV_FILE="/opt/snoringcat/cost-monitor/.env"
 STATE_FILE_DEFAULT="/var/lib/snoringcat/cost-monitor-state.json"
@@ -50,6 +57,44 @@ STATE_FILE="${STATE_FILE:-$STATE_FILE_DEFAULT}"
 # the GitHub block in this script is silently skipped.
 GITHUB_ORG="${GITHUB_ORG:-snoringcatgames}"
 
+# ---------------------------------------------------------------------
+# Failure alerting.
+#
+# Every `set -e` abort used to be silent: systemd marked the unit
+# failed and nothing else happened, so a fatal bug (see the RFC3339
+# note below) could sit unnoticed for months while the morning brief
+# quietly shipped without cost lines. pg-backup already alerts on any
+# failure (DR drill Gap 3); this is the same treatment.
+#
+# Rate-limited by a stamp file so a persistently broken run doesn't
+# ping every 5 minutes. The stamp is cleared on a clean run, so the
+# next distinct breakage alerts immediately.
+# ---------------------------------------------------------------------
+FAILURE_STAMP="${FAILURE_STAMP:-/var/lib/snoringcat/cost-monitor-failed.stamp}"
+FAILURE_ALERT_INTERVAL_SEC="${FAILURE_ALERT_INTERVAL_SEC:-21600}"
+
+alert_failure() {
+	local lineno="$1"
+	local msg="⚠️ cost-monitor FAILED at line ${lineno} on $(hostname -s). MTD spend is not being tracked; \`journalctl -u cost-monitor.service -n 50\`."
+	echo "[cost-monitor] $msg" >&2
+	mkdir -p "$(dirname "$FAILURE_STAMP")" 2>/dev/null || true
+	if [[ -f "$FAILURE_STAMP" ]]; then
+		local last now
+		last=$(stat -c %Y "$FAILURE_STAMP" 2>/dev/null || echo 0)
+		now=$(date -u +%s)
+		if (( now - last < FAILURE_ALERT_INTERVAL_SEC )); then
+			return 0
+		fi
+	fi
+	: > "$FAILURE_STAMP" 2>/dev/null || true
+	if [[ -n "${DISCORD_WEBHOOK_URL:-}" ]]; then
+		curl -fsS -X POST -H "Content-Type: application/json" \
+			-d "$(jq -n --arg c "$msg" '{content:$c}')" \
+			"$DISCORD_WEBHOOK_URL" >/dev/null 2>&1 || true
+	fi
+}
+trap 'alert_failure "$LINENO"' ERR
+
 CURRENT_MONTH="$(date -u +%Y-%m)"
 CURRENT_DAY="$(date -u +%Y-%m-%d)"
 CURRENT_HOUR_UTC="$(date -u +%-H)"
@@ -59,6 +104,40 @@ MONTH_START_EPOCH="$(date -u -d "${CURRENT_MONTH}-01" +%s)"
 MONTH_LABEL="$(date -u -d "${CURRENT_MONTH}-01" "+%B %Y")"
 
 mkdir -p "$(dirname "$STATE_FILE")"
+
+# ---------------------------------------------------------------------
+# Shared jq helper.
+#
+# jq's `fromdate` is `fromdateiso8601`, which matches exactly
+# "%Y-%m-%dT%H:%M:%SZ". Hetzner stamps every timestamp RFC3339 *with
+# a numeric offset* ("2016-01-30T23:50:00+00:00", plus a
+# minute-precision "2016-01-30T23:50+00:00" form for whole minutes) —
+# never with a Z. So `.created | fromdate` raised
+#   date "...+00:00" does not match format "%Y-%m-%dT%H:%M:%SZ"
+# and, under `set -e`, killed the run at the very first Hetzner block:
+# no threshold evaluation, no Discord ping, and no daily cost entry
+# for the morning brief. The old `sub("\\.[0-9]+\\+"; "+")` only
+# stripped fractional seconds; it left the offset that fromdate
+# chokes on. Parse the offset ourselves instead.
+# ---------------------------------------------------------------------
+JQ_RFC3339_EPOCH='
+def rfc3339_epoch:
+	(sub("\\.[0-9]+"; "")
+		| capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?)(?<zone>Z|[+-][0-9]{2}:?[0-9]{2})?$")
+	) as $m
+	| (if ($m.base | test("T[0-9]{2}:[0-9]{2}$"))
+		then $m.base + ":00"
+		else $m.base
+		end) as $base
+	| (($base + "Z") | fromdate) as $utc
+	| ($m.zone // "Z") as $zone
+	| if $zone == "Z" then $utc
+		else
+			($zone | capture("^(?<sign>[+-])(?<hh>[0-9]{2}):?(?<mm>[0-9]{2})$")) as $z
+			| $utc - ((if $z.sign == "+" then 1 else -1 end)
+				* (($z.hh | tonumber) * 3600 + ($z.mm | tonumber) * 60))
+		end;
+'
 
 # ---------------------------------------------------------------------
 # State
@@ -170,13 +249,14 @@ HETZNER_DEFAULT_LOC="${HETZNER_DEFAULT_LOC:-hil}"
 
 # Step 1: snapshot the current server set in a normalized form.
 current_servers=$(echo "$servers_json" | jq \
-	--arg ms "$MONTH_START_EPOCH" --arg defloc "$HETZNER_DEFAULT_LOC" '
+	--arg ms "$MONTH_START_EPOCH" --arg defloc "$HETZNER_DEFAULT_LOC" \
+	"$JQ_RFC3339_EPOCH"'
 	[.servers[] | {
 		id: (.id | tostring),
 		type: .server_type.name,
 		loc: (.datacenter.location.name // $defloc),
-		created_epoch: (.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
-		start: ([(.created | sub("\\.[0-9]+\\+"; "+") | fromdate),
+		created_epoch: (.created | rfc3339_epoch),
+		start: ([(.created | rfc3339_epoch),
 			($ms | tonumber)] | max)
 	}] | INDEX(.id)
 ')
@@ -295,14 +375,14 @@ hetzner_ip_native=$(jq -n \
 	--argjson ips "$primary_ips_json" \
 	--argjson pricing "$pricing_json" \
 	--arg ms "$MONTH_START_EPOCH" \
-	--arg now "$NOW_EPOCH" -r '
+	--arg now "$NOW_EPOCH" -r "$JQ_RFC3339_EPOCH"'
 	([$pricing.pricing.primary_ips[]?
 		| select(.type == "ipv4") | .prices[0]] | first) as $p
 	| (($p.price_hourly.net // "0") | tonumber) as $hr
 	| (($p.price_monthly.net // "0") | tonumber) as $mo
 	| [$ips.primary_ips[]? | select(.type == "ipv4")
 		| ((.created // "1970-01-01T00:00:00+00:00")
-			| sub("\\.[0-9]+\\+"; "+") | fromdate) as $c
+			| rfc3339_epoch) as $c
 		| ((($now | tonumber) - ([$c, ($ms | tonumber)] | max)) / 3600) as $h
 		| ([$h * $hr, $mo] | min)]
 	| add // 0' 2>/dev/null || echo "0")
@@ -336,7 +416,7 @@ state=$(echo "$state" | jq \
 # returning a marketing landing page). The `/v1/deployments`
 # listing only returns currently-active containers — terminated
 # deployments fall off, even with `?status=Terminated`. So we
-# accumulate usage ourselves across hourly runs:
+# accumulate usage ourselves across runs:
 #
 #   state.edgegap_tracked = { request_id: { start: epoch,
 #                                            last_seen: epoch } }
@@ -346,9 +426,9 @@ state=$(echo "$state" | jq \
 #   1. Fetch current active deployments.
 #   2. For tracked deployments missing from current active:
 #      add (last_seen - start) / 60 to completed_minutes, drop
-#      them from tracked. (Up to ~1h tail per terminated
-#      deployment is lost since the cost-monitor timer is
-#      hourly.)
+#      them from tracked. (Up to one timer interval of tail per
+#      terminated deployment is lost — ~5 min at the current
+#      cadence.)
 #   3. For currently-active deployments:
 #      - new ones get added with start = parsed start_time,
 #        last_seen = now.
@@ -357,8 +437,9 @@ state=$(echo "$state" | jq \
 #      tracked), each entry's start clamped at month_start so
 #      cross-month deployments don't backfill prior months.
 #
-# Dollar estimate uses EDGEGAP_MCPU_PER_DEPLOY (default 1024 =
-# 1 vCPU; matches hopnbop-server) and EDGEGAP_RATE_USD_PER_MCPU_MIN
+# Dollar estimate uses EDGEGAP_MCPU_PER_DEPLOY (default 512;
+# hopnbop-server's req_cpu since the 2026-06-01 right-sizing)
+# and EDGEGAP_RATE_USD_PER_MCPU_MIN
 # (default $0.00000115, verified against May 2026 invoice
 # S95TLZML-0002 line "Deployment Compute" at $0.00115/1000 mCPU-min).
 #
@@ -768,18 +849,40 @@ fi
 
 last_summary_day=$(echo "$state" | jq -r '.last_summary_day // ""')
 should_summarize=0
-if [[ "$CURRENT_HOUR_UTC" == "$DAILY_SUMMARY_HOUR_UTC" \
-		&& "$last_summary_day" != "$CURRENT_DAY" ]]; then
+# `>=` and not `==`: the once-per-day guard is last_summary_day, so
+# the hour only decides how early the summary may fire. String
+# equality against the exact hour meant a host that was down (or a
+# timer that failed) for that one hour dropped the day's cost entry
+# from the morning brief entirely, and a `.env` writing `09`
+# instead of `9` never matched at all — %-H prints no leading zero.
+# 10# forces base 10 so `08`/`09` don't parse as invalid octal.
+if (( 10#$CURRENT_HOUR_UTC >= 10#$DAILY_SUMMARY_HOUR_UTC )) \
+		&& [[ "$last_summary_day" != "$CURRENT_DAY" ]]; then
 	should_summarize=1
 	state=$(echo "$state" | jq --arg d "$CURRENT_DAY" '.last_summary_day = $d')
 fi
 
+# Returns non-zero when the webhook rejects the post, WITHOUT
+# taking the run down with it. This used to be a bare `curl -fsS`,
+# so under `set -e` a Discord outage (or an empty
+# DISCORD_WEBHOOK_URL) aborted the script mid-run: the state file
+# never got written and, when the failure landed on the 09:00
+# threshold ping, the daily service-status entry that feeds the
+# morning brief was never written either — one Discord hiccup
+# silently cost a day of cost reporting.
 post_discord() {
 	local content="$1"
-	curl -fsS -X POST \
-		-H "Content-Type: application/json" \
-		-d "$(jq -n --arg c "$content" '{content:$c}')" \
-		"$DISCORD_WEBHOOK_URL" >/dev/null
+	if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+		echo "[cost-monitor] WARN: DISCORD_WEBHOOK_URL unset" >&2
+		return 1
+	fi
+	if ! curl -fsS -X POST \
+			-H "Content-Type: application/json" \
+			-d "$(jq -n --arg c "$content" '{content:$c}')" \
+			"$DISCORD_WEBHOOK_URL" >/dev/null; then
+		echo "[cost-monitor] WARN: Discord post failed" >&2
+		return 1
+	fi
 }
 
 # Append a structured status entry to SERVICE_STATUS_LOG (a JSONL
@@ -898,9 +1001,23 @@ if (( ${#new_crossings[@]} > 0 )); then
 		crossed_str+="$label @ ${c#*:} | "
 	done
 	crossed_str="${crossed_str% | }"
-	post_discord "${mention}**Threshold crossed: $crossed_str**
-- Hetzner MTD: \$$total_usd ($MONTH_LABEL)
-$provider_lines${emergency_msg}"
+	# Headline is the grand total (Hetzner + Edgegap when a rate is
+	# configured), not Hetzner alone. It was labelled "Hetzner MTD"
+	# while carrying $total_usd, so the ping contradicted the
+	# per-provider "- Hetzner:" line right underneath it.
+	if ! post_discord "${mention}**Threshold crossed: $crossed_str**
+- Total MTD: \$$total_usd ($MONTH_LABEL)
+$provider_lines${emergency_msg}"; then
+		# Un-record the crossings we failed to deliver.
+		# `thresholds_crossed` is a once-per-month gate: leaving a
+		# never-sent crossing in it silences that threshold until
+		# the month rolls over. Dropping it back out means the
+		# next run (5 min later) retries.
+		for c in "${new_crossings[@]}"; do
+			state=$(echo "$state" | jq --arg n "${c%:*}" \
+				'.thresholds_crossed -= [$n]')
+		done
+	fi
 	post_status "cost-monitor" "warn" \
 		"threshold crossed: $crossed_str" \
 		"$(jq -nc \
@@ -1007,5 +1124,9 @@ fi
 
 # Persist state.
 echo "$state" > "$STATE_FILE"
+
+# Clean run: drop the failure stamp so the next distinct breakage
+# alerts immediately instead of waiting out the rate-limit window.
+rm -f "$FAILURE_STAMP" 2>/dev/null || true
 
 echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$${edgegap_usd} edgegap_active=${edgegap_active_count} edgegap_mtd_hours=${edgegap_mtd_hours} r2=${r2_gb}GB cf_pages=${cf_pages_builds_used} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
