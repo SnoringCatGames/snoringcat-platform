@@ -1,0 +1,11 @@
+[Unit]
+Description=snoringcat-platform desktop dead-man (pages when the operator desktop stops draining the status queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/snoringcat/desktop-drain-watch/desktop-drain-watch.sh
+StandardOutput=journal
+StandardError=journal
+User=root

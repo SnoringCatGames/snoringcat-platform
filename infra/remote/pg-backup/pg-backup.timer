@@ -3,9 +3,10 @@ Description=snoringcat-platform Postgres backup (daily 03:11 UTC)
 
 [Timer]
 # 03:11 UTC keeps the backup window clear of cost-monitor's
-# 09:00 UTC daily summary, dns-watchdog, and Hetzner's typical
-# nightly maintenance windows. Off-round-minute (per the
-# scheduling.md offset convention).
+# 09:00 UTC daily summary and Hetzner's typical nightly
+# maintenance windows. Off-round-minute (per the scheduling.md
+# offset convention). Its nightly status entry is also what
+# desktop-drain-watch ages to detect a dark desktop.
 OnCalendar=*-*-* 03:11:00 UTC
 Persistent=true
 RandomizedDelaySec=120

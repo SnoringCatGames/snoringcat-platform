@@ -1,0 +1,17 @@
+[Unit]
+Description=snoringcat-platform desktop dead-man (daily 16:37 UTC)
+# 16:37 UTC lands after the desktop's 07:03 PT drain in both PDT
+# (14:03 UTC) and PST (15:03 UTC), so with pg-backup's 03:11 UTC entry
+# one missed drain reads ~13.5h old and two consecutive misses ~37.5h,
+# against the 36h page threshold. See desktop-drain-watch.sh's header.
+# Off-round minute per the scheduling.md offset convention; 09:37 PDT /
+# 08:37 PST, so a page arrives in the morning.
+
+[Timer]
+OnCalendar=*-*-* 16:37:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+Unit=desktop-drain-watch.service
+
+[Install]
+WantedBy=timers.target
