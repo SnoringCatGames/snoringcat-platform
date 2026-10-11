@@ -577,100 +577,159 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# Cloudflare R2 storage usage.
-# Free tier: 10 GB storage / 1M class-A ops / 10M class-B / mo.
-# Egress is free. Storage is the only realistic overage risk for
-# this project. Class-A/B requests would need millions/day to
-# matter — not modeled here.
-#
-# We use list-objects + sum because the /usage endpoint
-# aggregates with hourly+ lag and reports 0 for bucket changes
-# that happened in the last hour. List-objects is real-time.
-# Pagination caps at 1000 per call; for our 4-file bucket we
-# fit in one page comfortably.
+# Cloudflare API helper for the R2 + Pages probes below. Prints the
+# response body only when the HTTP call AND the API envelope both
+# succeed; callers treat a non-zero return as "could not measure".
+# The token needs read access to R2 and Pages (phase-b renders
+# CLOUDFLARE_COST_MONITOR_TOKEN if one exists, else the Pages:Edit +
+# R2 Storage:Edit CLOUDFLARE_PAGES_TOKEN; see Step-CostMonitor).
 # ---------------------------------------------------------------------
-r2_bytes="0"
-r2_gb="0.00"
-if [[ -n "${CLOUDFLARE_API_TOKEN:-}" \
-		&& -n "${CLOUDFLARE_ACCOUNT_ID:-}" \
-		&& -n "${R2_BUCKET:-}" ]]; then
-	cursor=""
-	r2_bytes=0
-	while :; do
-		url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/r2/buckets/$R2_BUCKET/objects?per_page=1000"
-		[[ -n "$cursor" ]] && url="${url}&cursor=${cursor}"
-		if ! resp=$(curl -fsS \
-				-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-				"$url" 2>/dev/null); then
-			break
+cf_get() {
+	local body
+	body=$(curl -fsS -m 20 \
+		-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+		"https://api.cloudflare.com/client/v4$1" 2>/dev/null) || return 1
+	[[ "$(echo "$body" | jq -r '.success // false' 2>/dev/null)" == "true" ]] \
+		|| return 1
+	printf '%s' "$body"
+}
+
+# ---------------------------------------------------------------------
+# Cloudflare R2 storage usage, account-wide.
+# Free tier: 10 GB-month of Standard storage, 1M class-A and 10M
+# class-B ops per month, for the whole ACCOUNT. Egress is free.
+# Storage is the only realistic overage risk for this project;
+# request counts would need millions a day to matter and are not
+# modeled, nor is Infrequent Access storage (nothing uses it).
+#
+# Sums every bucket in the account. It used to sum one bucket
+# (R2_BUCKET=hopnbop-assets) and so never counted the Pulumi-state +
+# pg-backups bucket at all; R2_BUCKET is now ignored. Set
+# R2_BUCKETS="a b" only to restrict the sum on purpose.
+#
+# Reads GET .../r2/buckets/<b>/usage (payloadSize + metadataSize): one
+# call per bucket, however many objects it holds. Cloudflare
+# aggregates it with some lag, which a monthly 10 GB tier does not
+# care about. Summing list-objects would cost one call per 1000
+# objects every 5 minutes. (Matched list-objects to the byte on both
+# buckets, 2026-10-11.)
+#
+# r2_tracked stays false unless every bucket was read, and then the
+# summary says "not tracked" instead of printing 0.00. A zero that
+# really meant "no token" or "API error" is how the R2 cap rule sat
+# silently unevaluated for months.
+# ---------------------------------------------------------------------
+r2_tracked=false
+r2_error=""
+r2_bytes=0
+r2_gb=""
+r2_bucket_count=0
+if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+	r2_error="no Cloudflare token/account id in .env"
+else
+	r2_buckets=""
+	if [[ -n "${R2_BUCKETS:-}" ]]; then
+		r2_buckets="$R2_BUCKETS"
+	elif buckets_resp=$(cf_get "/accounts/$CLOUDFLARE_ACCOUNT_ID/r2/buckets?per_page=1000"); then
+		r2_buckets=$(echo "$buckets_resp" \
+			| jq -r '[.result.buckets[]?.name] | join(" ")' 2>/dev/null || echo "")
+	else
+		r2_error="bucket list failed"
+	fi
+	if [[ -z "$r2_error" ]]; then
+		for b in $r2_buckets; do
+			if usage_resp=$(cf_get "/accounts/$CLOUDFLARE_ACCOUNT_ID/r2/buckets/$b/usage") \
+					&& b_bytes=$(echo "$usage_resp" | jq -r '
+						((.result.payloadSize // "0") | tonumber)
+						+ ((.result.metadataSize // "0") | tonumber)' 2>/dev/null) \
+					&& [[ "$b_bytes" =~ ^[0-9]+$ ]]; then
+				r2_bytes=$(( r2_bytes + b_bytes ))
+				r2_bucket_count=$(( r2_bucket_count + 1 ))
+			else
+				r2_error="usage read failed for bucket $b"
+				break
+			fi
+		done
+		if [[ -z "$r2_error" ]]; then
+			r2_tracked=true
+			r2_gb=$(awk -v b="$r2_bytes" 'BEGIN { printf "%.2f", b / (1024*1024*1024) }')
 		fi
-		page_sum=$(echo "$resp" | jq '[.result[].size] | add // 0' 2>/dev/null || echo 0)
-		r2_bytes=$((r2_bytes + page_sum))
-		cursor=$(echo "$resp" | jq -r '.result_info.cursor // ""' 2>/dev/null)
-		[[ -z "$cursor" || "$cursor" == "null" ]] && break
-	done
-	r2_gb=$(awk -v b="$r2_bytes" 'BEGIN { printf "%.2f", b / (1024*1024*1024) }')
+	fi
 fi
 
 # ---------------------------------------------------------------------
-# Cloudflare Pages build count (account-wide).
-# Free tier: 500 builds / month across all projects on the
-# account. Bandwidth and requests are effectively unlimited on
-# the free plan and are not modeled.
+# Cloudflare Pages builds (account-wide).
+# Free tier: 500 builds / month across all projects. Bandwidth and
+# requests are effectively unlimited on the free plan, not modeled.
 #
-# Pages has no aggregate-by-month endpoint. We list projects,
-# then for each project page through deployments newest-first,
-# counting those with created_on >= start of current month.
-# Stop paging a project once we see a deployment older than the
-# month boundary. Token must have Account.Pages:Read (the
-# existing CLOUDFLARE_PAGES_TOKEN with Pages:Edit qualifies).
+# A "build" is a run of Cloudflare's own build system, which only a
+# Git-connected project triggers ("Each time you push new code to your
+# Git repository, Pages will build and deploy your site"). Direct
+# Upload deployments (wrangler pages deploy, from deploy-cf-pages.ps1 or
+# a GH Actions job) upload prebuilt assets: their
+# deployment_trigger.type is "ad_hoc" and their build stage never
+# starts. Observed 2026-10-11: every hopnbop-website deployment ever
+# is ad_hoc with an idle build stage, and the project has no Git
+# source. So cf_pages_builds counts the non-ad_hoc deployments only
+# and is what the CF_PAGES_* thresholds compare against; ad_hoc ones
+# are reported as cf_pages_direct_uploads. (Until 2026-10-11 every
+# deployment counted as a build.) Cloudflare's docs never say outright
+# that direct uploads are exempt; if one ever shows up in the
+# dashboard's build count, fold the two back together.
+#
+# No aggregate-by-month endpoint: list projects, then page each
+# project's deployments newest-first until one predates the month.
+# cf_pages_tracked stays false unless every page was read.
 # ---------------------------------------------------------------------
 cf_pages_tracked=false
 cf_pages_builds_used=0
+cf_pages_direct_uploads=0
+JQ_PAGES_COUNTS='
+[.result[] | {
+	t: (try (.created_on | sub("\\.[0-9]+Z$"; "Z") | fromdate) catch 0),
+	direct: ((.deployment_trigger.type // "") == "ad_hoc")
+}] as $d
+| ($ms | tonumber) as $start
+| ($d | map(select(.t >= $start))) as $m
+| "\($m | map(select(.direct | not)) | length) \($m | map(select(.direct)) | length) \($d | any(.t < $start)) \($d | length)"
+'
 if [[ -n "${CLOUDFLARE_API_TOKEN:-}" \
 		&& -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
 	# Pages list-projects rejects pagination params (HTTP 400
 	# "Invalid list options"), so call without them.
-	if projects_resp=$(curl -fsS \
-			-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-			"https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects" \
-			2>/dev/null); then
+	if projects_resp=$(cf_get "/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects"); then
+		cf_pages_ok=true
 		while IFS= read -r project; do
 			[[ -z "$project" ]] && continue
 			page=1
 			while :; do
-				url="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$project/deployments?page=$page&per_page=25"
-				if ! resp=$(curl -fsS \
-						-H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-						"$url" 2>/dev/null); then
+				if ! resp=$(cf_get "/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$project/deployments?page=$page&per_page=25") \
+						|| ! counts=$(echo "$resp" | jq -r --arg ms "$MONTH_START_EPOCH" \
+							"$JQ_PAGES_COUNTS" 2>/dev/null); then
+					cf_pages_ok=false
 					break
 				fi
-				count=$(echo "$resp" | jq -r --arg ms "$MONTH_START_EPOCH" '
-					[.result[]
-						| select(
-							(.created_on
-								| sub("\\.[0-9]+Z"; "Z")
-								| fromdate)
-								>= ($ms | tonumber))]
-					| length' 2>/dev/null || echo 0)
-				cf_pages_builds_used=$((cf_pages_builds_used + count))
-				has_old=$(echo "$resp" | jq -r --arg ms "$MONTH_START_EPOCH" '
-					any(.result[];
-						(.created_on
-							| sub("\\.[0-9]+Z"; "Z")
-							| fromdate)
-							< ($ms | tonumber))' 2>/dev/null \
-					|| echo "true")
-				page_count=$(echo "$resp" | jq -r '.result | length' \
-					2>/dev/null || echo 0)
+				read -r n_build n_direct has_old page_count <<< "$counts"
+				cf_pages_builds_used=$((cf_pages_builds_used + n_build))
+				cf_pages_direct_uploads=$((cf_pages_direct_uploads + n_direct))
 				if [[ "$has_old" == "true" || "$page_count" -lt 25 ]]; then
 					break
 				fi
 				page=$((page + 1))
 			done
 		done < <(echo "$projects_resp" | jq -r '.result[].name' 2>/dev/null)
-		cf_pages_tracked=true
+		if $cf_pages_ok; then
+			cf_pages_tracked=true
+		fi
 	fi
+fi
+# Empty when unmeasured, for the status entry, the state file, and the
+# journal line.
+cf_builds_field=""
+cf_direct_field=""
+if $cf_pages_tracked; then
+	cf_builds_field="$cf_pages_builds_used"
+	cf_direct_field="$cf_pages_direct_uploads"
 fi
 
 # ---------------------------------------------------------------------
@@ -740,22 +799,27 @@ for entry in "low:$BUDGET_WARN_LOW" "mid:$BUDGET_WARN_MID" \
 	fi
 done
 
-# R2 size thresholds. Use the same crossings array so a single
-# Discord message covers everything.
-for entry in "r2_warn:${R2_WARN_GB:-8}" "r2_hard:${R2_HARD_GB:-9.5}"; do
-	name="${entry%:*}"
-	value="${entry#*:}"
-	if awk -v t="$r2_gb" -v v="$value" 'BEGIN { exit !(t >= v) }'; then
-		if ! echo "$already_crossed" | grep -qx "$name"; then
-			new_crossings+=("$name:${value}GB")
-			state=$(echo "$state" | jq --arg n "$name" \
-				'.thresholds_crossed += [$n]')
+# R2 size thresholds (account-wide total). Use the same crossings
+# array so a single Discord message covers everything. Only when
+# measured: an untracked run has no number to compare.
+if $r2_tracked; then
+	for entry in "r2_warn:${R2_WARN_GB:-8}" "r2_hard:${R2_HARD_GB:-9.5}"; do
+		name="${entry%:*}"
+		value="${entry#*:}"
+		if awk -v t="$r2_gb" -v v="$value" 'BEGIN { exit !(t >= v) }'; then
+			if ! echo "$already_crossed" | grep -qx "$name"; then
+				new_crossings+=("$name:${value}GB")
+				state=$(echo "$state" | jq --arg n "$name" \
+					'.thresholds_crossed += [$n]')
+			fi
 		fi
-	fi
-done
+	done
+fi
 
-# Cloudflare Pages build count thresholds. Free tier is 500/mo
-# account-wide. Defaults: warn at 80%, hard at 95%.
+# Cloudflare Pages build-count thresholds. Free tier is 500/mo
+# account-wide. Defaults: warn at 80%, hard at 95%. Compared against
+# Cloudflare-run builds only (direct uploads run no build; see the
+# Pages section above).
 if $cf_pages_tracked; then
 	for entry in "cf_pages_warn:${CF_PAGES_WARN_BUILDS:-400}" \
 			"cf_pages_hard:${CF_PAGES_HARD_BUILDS:-475}"; do
@@ -827,10 +891,10 @@ if (( ${#new_crossings[@]} > 0 )); then
 				;;
 			r2_hard)
 				# Active enforcement happens in
-				# deploy-cf-pages.ps1, which queries this same
-				# /usage endpoint before each upload. The alert
-				# here just makes sure we notice.
-				emergency_msg+=$'\n**R2 HARD CAP** Bucket is at the configured limit. New deploys will refuse to upload until you free space (or raise R2_HARD_GB).'
+				# deploy-cf-pages.ps1, which checks R2 usage
+				# itself before each upload. The alert here just
+				# makes sure we notice.
+				emergency_msg+=$'\n**R2 HARD CAP** Account-wide R2 storage is at the configured limit. New deploys will refuse to upload until you free space (or raise R2_HARD_GB).'
 				;;
 			cf_pages_hard)
 				emergency_msg+=$'\n**CF PAGES HARD CAP** Account is near the 500 builds/month free-tier limit. Cloudflare will queue further builds until next billing cycle (or raise CF_PAGES_HARD_BUILDS).'
@@ -959,16 +1023,31 @@ fmt_edgegap_line() {
 	echo "$line"
 }
 
+# R2 and CF Pages lines, shared by the threshold ping and the daily
+# summary. A metric that was not measured says so instead of printing
+# a zero that reads as "within the free tier".
+fmt_r2_line() {
+	if $r2_tracked; then
+		echo "- R2 storage: ${r2_gb} GB across ${r2_bucket_count} bucket(s) / 10 GB free tier (account-wide)"
+	else
+		echo "- R2 storage: not tracked (${r2_error})"
+	fi
+}
+fmt_cf_pages_line() {
+	if $cf_pages_tracked; then
+		echo "- CF Pages: ${cf_pages_builds_used} / 500 Cloudflare builds free tier (+${cf_pages_direct_uploads} direct uploads, which run no build)"
+	else
+		echo "- CF Pages: not tracked"
+	fi
+}
+
 # Common body lines shared between threshold-crossing and daily
 # summary messages. Each tracked provider gets its own line so
 # adding more later doesn't bunch up the formatting.
 provider_lines="- Hetzner: \$$hetzner_usd
 $(fmt_edgegap_line)
-- R2 storage: ${r2_gb} GB / 10 GB free tier"
-if $cf_pages_tracked; then
-	provider_lines+="
-- CF Pages: ${cf_pages_builds_used} / 500 builds free tier"
-fi
+$(fmt_r2_line)
+$(fmt_cf_pages_line)"
 if $gh_tracked; then
 	provider_lines+="
 - GH Actions: ${gh_minutes_used} min · ${gh_storage_gbh} GB-h storage"
@@ -1062,11 +1141,8 @@ if (( should_summarize )); then
 	# always use MTD-only.
 	daily_provider_lines="- Hetzner: $(fmt_pair "$hetzner_day_usd" "$hetzner_usd")
 $(fmt_edgegap_daily_line)
-- R2 storage: ${r2_gb} GB / 10 GB free tier"
-	if $cf_pages_tracked; then
-		daily_provider_lines+="
-- CF Pages: ${cf_pages_builds_used} / 500 builds free tier"
-	fi
+$(fmt_r2_line)
+$(fmt_cf_pages_line)"
 	if $gh_tracked; then
 		daily_provider_lines+="
 - GH Actions: ${gh_minutes_used} min · ${gh_storage_gbh} GB-h storage"
@@ -1092,8 +1168,12 @@ $(fmt_edgegap_daily_line)
 			--arg edgegap_mtd "$edgegap_usd" \
 			--arg edgegap_active "$edgegap_active_count" \
 			--arg edgegap_hours "$edgegap_mtd_hours" \
+			--arg r2_tracked "$r2_tracked" \
 			--arg r2_gb "$r2_gb" \
-			--arg cf_pages_builds "$cf_pages_builds_used" \
+			--arg r2_buckets "$r2_bucket_count" \
+			--arg cf_pages_tracked "$cf_pages_tracked" \
+			--arg cf_pages_builds "$cf_builds_field" \
+			--arg cf_pages_direct "$cf_direct_field" \
 			--arg gh_minutes "$gh_minutes_used" \
 			--arg gh_paid "$gh_paid_usd" \
 			--arg month "$MONTH_LABEL" \
@@ -1101,7 +1181,10 @@ $(fmt_edgegap_daily_line)
 				hetzner_day_usd: $hetzner_day, hetzner_mtd_usd: $hetzner_mtd,
 				edgegap_day_usd: $edgegap_day, edgegap_mtd_usd: $edgegap_mtd,
 				edgegap_active: $edgegap_active, edgegap_mtd_hours: $edgegap_hours,
-				r2_gb: $r2_gb, cf_pages_builds: $cf_pages_builds,
+				r2_tracked: $r2_tracked, r2_gb: $r2_gb, r2_buckets: $r2_buckets,
+				cf_pages_tracked: $cf_pages_tracked,
+				cf_pages_builds: $cf_pages_builds,
+				cf_pages_direct_uploads: $cf_pages_direct,
 				gh_minutes: $gh_minutes, gh_paid_usd: $gh_paid,
 				month_label: $month}')"
 	# Capture this summary's headline numbers so the next daily
@@ -1122,6 +1205,30 @@ $(fmt_edgegap_daily_line)
 		| .prev_month_label = ""')
 fi
 
+# Publish the latest R2 / Pages measurements on every run, so readers
+# of the state file (claude-config's weekly-cost-snapshot) get them
+# without waiting for, or parsing, a daily summary. Until 2026-10-11
+# only the JSONL summary carried them, so the snapshot reported both
+# as "not reported" for months. An untracked run records
+# *_tracked=false and an empty value, never a stand-in zero.
+state=$(echo "$state" | jq \
+	--argjson r2_tracked "$r2_tracked" \
+	--arg r2_gb "$r2_gb" \
+	--argjson r2_buckets "$r2_bucket_count" \
+	--arg r2_error "$r2_error" \
+	--argjson cf_tracked "$cf_pages_tracked" \
+	--arg cf_builds "$cf_builds_field" \
+	--arg cf_direct "$cf_direct_field" \
+	--arg at "$NOW_ISO" \
+	'.r2_tracked = $r2_tracked
+	| .r2_gb = $r2_gb
+	| .r2_bucket_count = $r2_buckets
+	| .r2_error = $r2_error
+	| .cf_pages_tracked = $cf_tracked
+	| .cf_pages_builds = $cf_builds
+	| .cf_pages_direct_uploads = $cf_direct
+	| .usage_measured_at = $at')
+
 # Persist state.
 echo "$state" > "$STATE_FILE"
 
@@ -1129,4 +1236,6 @@ echo "$state" > "$STATE_FILE"
 # alerts immediately instead of waiting out the rate-limit window.
 rm -f "$FAILURE_STAMP" 2>/dev/null || true
 
-echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$${edgegap_usd} edgegap_active=${edgegap_active_count} edgegap_mtd_hours=${edgegap_mtd_hours} r2=${r2_gb}GB cf_pages=${cf_pages_builds_used} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
+r2_disp="untracked"
+if $r2_tracked; then r2_disp="${r2_gb}GB/${r2_bucket_count}buckets"; fi
+echo "[cost-monitor] $NOW_ISO total=\$$total_usd hetzner=\$$hetzner_usd edgegap=\$${edgegap_usd} edgegap_active=${edgegap_active_count} edgegap_mtd_hours=${edgegap_mtd_hours} r2=${r2_disp} cf_pages=${cf_builds_field:-untracked} cf_direct=${cf_direct_field:-untracked} gh_min=${gh_minutes_used} gh_storage_gbh=${gh_storage_gbh} gh_paid=\$${gh_paid_usd} new_crossings=${new_crossings[*]:-none} summary=$should_summarize"
