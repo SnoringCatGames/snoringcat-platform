@@ -86,24 +86,29 @@ contents into game-level CLAUDE.md; cross-reference instead.
 
 Operations (single-host, lightweight obs — 2026-05-13 Stage 7.11):
 ┌──────────────────────────────────────────────────────────────┐
-│  systemd timers on the Nakama box:                           │
+│  systemd timers on the Nakama box (installed by phase-b):    │
 │  - cost-monitor.timer (every 5 min): Hetzner / Edgegap-      │
-│    active / R2 / CF Pages / GH Actions usage → daily summary │
-│    into the service-status JSONL (morning brief folds it in) │
+│    active / R2 (every bucket) / CF Pages builds / GH Actions │
+│    usage → daily summary into the service-status JSONL       │
 │    + threshold pings straight to Discord.                    │
 │  - pg-backup.timer (nightly 03:11 UTC): pg_dumpall → R2.     │
-│  - dns-watchdog.timer (hourly): scrubs stale per-deploy DNS  │
-│    A records.                                                │
+│  - geoip-refresh.timer (monthly, the 5th): DB-IP country     │
+│    MMDB for geoip-sidecar.                                   │
+│  - desktop-drain-watch.timer (daily 16:37 UTC): pages        │
+│    Discord when the desktop stops draining the status        │
+│    queue (oldest undrained entry >36h).                      │
 │  External / off-box:                                         │
-│  - UptimeRobot 5-min synthetic check on Nakama healthcheck.  │
-│  - Daily Claude prod-health-check job (06:51 PT) → Discord:  │
-│    container/disk/memory/error-log/backup/Edgegap-leak       │
-│    summary.                                                  │
+│  - UptimeRobot, 3 monitors at 5 min: Nakama healthcheck      │
+│    (GET), hopnbop.net, levi.dev.                             │
+│  - Daily prod-health-check script (05:51 PT) → status        │
+│    trail: container/disk/memory/error-log/backup/Edgegap-    │
+│    leak checks (Discord only on failure).                    │
 │  In-box obs (re-introduced 2026-05-13):                      │
 │  - Prometheus scrapes nakama:9099 (built-in metrics +        │
 │    `snoringcat_alloc_seconds` custom timer), caddy:2019,     │
-│    node-exporter:9100, postgres-exporter:9187. 30d           │
-│    retention.                                                │
+│    node-exporter:9100, postgres-exporter:9187,               │
+│    cadvisor:8080 (every container, incl. local match         │
+│    containers), geoip-sidecar:8080. 30d retention.           │
 │  - Grafana at https://grafana.snoringcat.games provisions    │
 │    Prometheus as default datasource + 5 alert rules          │
 │    (nakama-down / postgres-down / postgres-conn-saturation   │
@@ -116,6 +121,26 @@ Operations (single-host, lightweight obs — 2026-05-13 Stage 7.11):
 │    introduction without reconstruction.                      │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**Containers on nakama-prod-1:** one compose project in
+`/opt/nakama` (`infra/remote/nakama/docker-compose.yml`), 10
+services. Checked against `docker ps` on 2026-10-11.
+
+| Container | Role |
+|---|---|
+| `postgres` | Postgres 16, Nakama's database (co-tenant since the 2026-05-06 consolidation). Dumped nightly by `pg-backup.timer`. |
+| `nakama` | Nakama 3.25 + the `snoringcat.so` runtime plugin. Spawns local match containers through the Docker socket (`LocalDockerAllocator`). |
+| `caddy` | TLS + reverse proxy for `nakama.`, `signaling.` and `grafana.snoringcat.games` (custom build with `caddy-ratelimit`). |
+| `signaling-proxy` | Stateless WebRTC signaling bridge behind `signaling.snoringcat.games`; verifies the HMAC-signed URL token. |
+| `geoip-sidecar` | DB-IP country lookups for the hybrid allocator's North-America check; MMDB refreshed by `geoip-refresh.timer`. Also a Prometheus target. |
+| `prometheus` | Scrapes nakama, caddy, node-exporter, postgres-exporter, cadvisor, geoip-sidecar. 30d retention. |
+| `grafana` | Dashboards + the 5 alert rules, Discord contact point. |
+| `cadvisor` | Per-container CPU / memory / network / filesystem metrics for Prometheus, including the on-demand local match containers. |
+| `node-exporter` | Host metrics for Prometheus. |
+| `postgres-exporter` | Postgres metrics for Prometheus. |
+
+Local match containers (`allocator_mode: local` or `hybrid`) come
+and go on demand and are not compose services.
 
 **Hostnames:**
 - `nakama.snoringcat.games` — Nakama HTTP + realtime WS.
@@ -586,8 +611,10 @@ brief.
 
 **Source files (this repo):**
 `infra/remote/cost-monitor/{cost-monitor.sh, cost-monitor.service,
-cost-monitor.timer}`. Deployed by Pulumi to
-`/opt/snoringcat/cost-monitor/` on the Nakama box.
+cost-monitor.timer}`. Installed to `/opt/snoringcat/cost-monitor/`
+by `scripts/phase-b.ps1 -StartAt CostMonitor -StopAt CostMonitor`
+(copies the files, renders `.env` from `credentials.env`, enables
+the timer, runs it once). Not Pulumi.
 
 **Trigger:** `cost-monitor.timer` — every 5 minutes
 (`OnCalendar=*-*-* *:00,05,…,55:00 UTC`, `RandomizedDelaySec=30`,
@@ -599,11 +626,31 @@ short matches were starting and ending between hourly polls.
 - One routine cost summary per day, on the first run at or after
   `DAILY_SUMMARY_HOUR_UTC` (default `9` = 09:00 UTC). It is
   **not** posted to Discord: it goes to the service-status JSONL
-  queue that the daily LLM consolidator drains into the single
-  morning Discord post. (Direct posting stopped 2026-05-07; the
-  ">=" rather than "== that hour" test means a host that was down
-  at 09:00 still reports later that day instead of dropping the
-  day.)
+  queue, which the desktop's `service-status-sync` drains into the
+  status trail (`claude-config/jobs/status/`). (Direct posting
+  stopped 2026-05-07; the ">=" rather than "== that hour" test
+  means a host that was down at 09:00 still reports later that day
+  instead of dropping the day.)
+- **R2** is summed across every bucket in the account, since the
+  10 GB free tier is account-wide (`hopnbop-assets` plus
+  `hopnbop-pulumi-state-r2`, which holds Pulumi state and the
+  pg-backups). It reads each bucket's `/usage` figure, one API call
+  per bucket. Until 2026-10-11 it read only `R2_BUCKET`, which is
+  now ignored (`R2_BUCKETS` can restrict the sum).
+- **CF Pages** counts Cloudflare-run builds, which is what the 500/month
+  free tier limits: deployments whose `deployment_trigger.type` is
+  not `ad_hoc`. Direct uploads (`wrangler pages deploy` from
+  `deploy-cf-pages.ps1` or CI) run no Cloudflare build and are
+  reported separately as `cf_pages_direct_uploads`. Every
+  `hopnbop-website` deployment to date is a direct upload. The
+  `CF_PAGES_*` thresholds compare against builds only.
+- Every run writes the latest usage into the state file: `r2_tracked`,
+  `r2_gb`, `r2_bucket_count`, `r2_error`, `cf_pages_tracked`,
+  `cf_pages_builds`, `cf_pages_direct_uploads`, `usage_measured_at`.
+  claude-config's `weekly-cost-snapshot` reads them from there. A
+  metric that could not be measured (no token, API error) is
+  `*_tracked: false` with an empty value and prints "not tracked"
+  in the summary, never a stand-in `0`.
 - Any unhandled failure pings Discord directly (rate-limited to
   one ping per 6h via `/var/lib/snoringcat/cost-monitor-failed.stamp`,
   cleared on the next clean run). Before that existed, a fatal
@@ -621,19 +668,117 @@ short matches were starting and ending between hourly polls.
   (The action is inline in `cost-monitor.sh`; there is no
   separate `emergency-shutdown.sh`.)
 
-**Config:** `/opt/snoringcat/cost-monitor/.env` on the host —
-provider tokens (`HCLOUD_TOKEN`, `EDGEGAP_TOKEN`,
-`CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN`), threshold overrides,
-and the `DISCORD_WEBHOOK_URL` (separate copy from
-`~/.claude/jobs/discord-config.json`).
+**Config:** `/opt/snoringcat/cost-monitor/.env` on the host,
+rendered by phase-b from `credentials.env`: `HCLOUD_TOKEN`,
+`EDGEGAP_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`,
+threshold overrides, and the `DISCORD_WEBHOOK_URL` (separate copy
+from `~/.claude/jobs/discord-config.json`). The Cloudflare token is
+`CLOUDFLARE_COST_MONITOR_TOKEN` if `credentials.env` has one (meant
+to be a dedicated read-only token: Account → Cloudflare Pages: Read +
+Workers R2 Storage: Read), otherwise `CLOUDFLARE_PAGES_TOKEN`
+(Pages:Edit + Workers R2 Storage:Edit + Account Settings:Read).
+None of the tokens we hold can create tokens, so the read-only one
+has to be made in the dashboard. Then add it to `credentials.env`
+and re-run the CostMonitor step. `GITHUB_TOKEN` is not rendered
+today, so the GitHub Actions block is skipped (its numbers read 0).
 
 **Inspect:**
 ```bash
-ssh nakama@nakama.snoringcat.games
+ssh root@nakama.snoringcat.games
 systemctl status cost-monitor.timer
 journalctl -u cost-monitor.service -n 50
 cat /var/lib/snoringcat/cost-monitor-state.json
 ```
+
+### Desktop dead-man (desktop-drain-watch)
+
+Every job that watches prod (prod-liveness-ping, slo-burn-rate,
+job-watchdog, backup-restore-smoke, ...) runs on Levi's desktop under
+Task Scheduler, so when that machine is off or logged out, monitoring
+and its alerting stop together. `desktop-drain-watch.timer` is the
+off-desktop check for that. It runs daily at 16:37 UTC on the Nakama
+host.
+
+The desktop's `service-status-sync` drains
+`/var/log/snoringcat/service-status.jsonl` daily at 07:03 PT. Phase A
+moves it aside to `*.draining` and touches a fresh queue; phase B
+deletes the staging file. So an entry left undrained in either file
+for more than `DRAIN_WATCH_STALE_HOURS` (36) means the drain has
+stopped: the desktop is dark, or the drain is broken. The script then
+pages Discord, at most once per 20h while stale. With pg-backup's
+03:11 UTC entry, one missed drain reads ~13.5h old at the check and
+two consecutive misses ~37.5h. Recovery clears the stamp
+(`/var/lib/snoringcat/desktop-drain-watch.stamp`) and queues a green
+status entry. Blind spot: an empty queue reads fresh, but the
+producers that fill it (pg-backup, cost-monitor) page on their own
+failures.
+
+- Source: `infra/remote/desktop-drain-watch/`, installed by
+  `scripts/phase-b.ps1 -StartAt DrainWatch -StopAt DrainWatch`.
+- Test without posting: `desktop-drain-watch.sh --dry-run`, plus
+  `--queue <file> --stamp <file> --now <epoch>` to drive each branch.
+- If `service-status-sync` is ever disabled on purpose, disable this
+  timer too, or it pages daily.
+
+### Backups and disaster recovery
+
+**Backups.** `pg-backup.timer` runs nightly at 03:11 UTC: a
+`pg_dumpall` of the co-tenant Postgres (roles, ACLs, the `nakama`
+DB) to `s3://hopnbop-pulumi-state-r2/pg-backups/postgres-YYYY-MM-DD.sql.gz`,
+with 7-day retention and a Discord ping on any failure.
+claude-config's weekly `backup-restore-smoke` replays the newest
+dump into a scratch database and compares table counts against
+live. The manual restore procedure (stop Nakama first; psql targets
+the `postgres` maintenance DB, not `nakama`) is in
+`hopnbop/CLAUDE.md` → "Backups".
+
+**Recovery targets.** These are current targets, set 2026-10-11
+from the 2026-10-07 DR drill ("db host vanishes"). Revise them
+deliberately, after the next drill or a real recovery, rather than
+letting them drift.
+
+| | Target | Basis |
+|---|---|---|
+| **RPO** | Up to 24h of writes | Bounded by the nightly 03:11 UTC `pg_dumpall`. No WAL archiving or point-in-time recovery, so a host lost just before 03:11 loses that day. The 7-day R2 retention bounds how far back a restore can reach. |
+| **RTO** | 60-90 min | The drill's estimate with its Gaps A and B fixed (both fixed 2026-10-11; 90-180 min before). Covers detection, triage, `phase-a.ps1 -RestoreBackup`, `phase-b.ps1`, the host-key re-pin and sync, and the smoke check. |
+
+Matches already running on Edgegap survive a Nakama-host outage;
+login, lobby and matchmaking are what go down.
+
+**Full-host rebuild:**
+
+1. `pwsh -File scripts/phase-a.ps1 -RestoreBackup`. Pulumi creates
+   the host (the Cloudflare A records follow the new IP), then
+   cloud-init runs, then **HostKeys** asks you to confirm the new
+   ed25519 fingerprint in the Hetzner web console
+   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). It rewrites
+   `claude-config/jobs/known_hosts` and
+   `~/.hopnbop-migration/known_hosts`. Then come the compose files,
+   the newest R2 dump restored before Nakama first boots, and
+   verification.
+2. Push the re-pinned `known_hosts` through claude-config:
+   `& "$HOME\Repositories\claude-config\sync-if-changed.ps1"`. The
+   desktop's hourly sync would otherwise push it within the hour, and
+   the laptop has no scheduled sync. Until it lands, every scheduled
+   prod job fails host-key verification.
+3. If the IP changed, update the claude-config jobs and skills that
+   still SSH to the old IP. HostKeys lists them.
+4. `pwsh -File scripts/phase-b.ps1`: obs configs plus the host
+   timers (cost-monitor, geoip-refresh, pg-backup,
+   desktop-drain-watch).
+5. Smoke check: the `hopnbop-check-prod` skill.
+
+**Known gap, not in the RTO estimate** (found 2026-10-11 by
+comparing the live `/opt/nakama/.env` with what the scripts render;
+not yet fixed): phase-a and phase-b do not write `EDGEGAP_TOKEN`,
+`EDGEGAP_APP_NAME`, `EDGEGAP_APP_VERSION`, `SIGNALING_DOMAIN`,
+`LOCAL_PUBLIC_IP`, the local port ranges, or `GEOIP_MMDB_PATH` into
+that file. phase-b's NakamaStack step also rewrites it without
+`SIGNALING_HMAC_SECRET`. The runtime lets the process env (empty
+for those keys) override `config.yml`, so by code reading a
+script-built host passes its healthcheck and auth smoke test but
+has the matchmaker allocation hook and the local allocator off
+until those keys are restored by hand.
 
 ---
 
@@ -653,6 +798,11 @@ cat /var/lib/snoringcat/cost-monitor-state.json
 | Cost monitor source | `snoringcat-platform/infra/remote/cost-monitor/` |
 | Cost monitor deployed | `/opt/snoringcat/cost-monitor/` on Nakama host |
 | Cost monitor state | `/var/lib/snoringcat/cost-monitor-state.json` on Nakama host |
+| Desktop dead-man source | `snoringcat-platform/infra/remote/desktop-drain-watch/` |
+| Desktop dead-man deployed | `/opt/snoringcat/desktop-drain-watch/` on Nakama host |
+| Service-status queue | `/var/log/snoringcat/service-status.jsonl` on Nakama host (drained daily by the desktop) |
+| Postgres backups | `s3://hopnbop-pulumi-state-r2/pg-backups/` (Cloudflare R2, 7 days) |
+| Pinned SSH host keys | `claude-config/jobs/known_hosts` (synced; every scheduled job); `~/.hopnbop-migration/known_hosts` (phase-a/b). phase-a's HostKeys step keeps both in step. |
 | Migration plan | `hopnbop/docs/archive/MIGRATION_PLAN.md` |
 | Migration state | `~/.hopnbop-migration/state.json` |
 | Migration credentials | `~/.hopnbop-migration/credentials.env` (NEVER commit) |
@@ -719,6 +869,15 @@ docker compose logs -f nakama
 Postgres keeps running; Nakama reconnects on startup. Active
 matches survive (game servers are independent). Players in the
 lobby may see brief disconnect, auto-reconnect.
+
+### "The Nakama host is gone" (full rebuild)
+
+Follow "Backups and disaster recovery" above:
+`scripts/phase-a.ps1 -RestoreBackup`, then `scripts/phase-b.ps1`.
+**After a rebuild, re-pin the host keys (phase-a step HostKeys)**
+and push `claude-config/jobs/known_hosts`, or every scheduled prod
+job keeps failing host-key verification. Re-run the step on its own
+with `-StartAt HostKeys -StopAt HostKeys`.
 
 ### "Need to recover from a failed Pulumi up"
 

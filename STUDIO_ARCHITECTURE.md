@@ -174,9 +174,12 @@ release notes, scheduler heartbeats.
 ### UptimeRobot for synthetic / blackbox monitoring
 
 External-perspective monitor that complements Grafana's
-internal-perspective. Checks `nakama.snoringcat.games/healthcheck`,
-the website, the game server WS endpoint, etc. Free tier (50
-monitors, 5-min interval). Pings Discord on failure.
+internal one. It is also the one check that keeps watching prod
+while the desktop, and every scheduled job on it, is dark. Three
+HTTP GET monitors at a 5-minute interval: the Nakama healthcheck,
+the hopnbop.net web client, and the levi.dev portfolio. Alerts go
+to email and the failure-only Discord channel. Free tier. Monitor
+details and API caveats are under Service inventory → UptimeRobot.
 
 ### Cloudflare DNS for all studio domains
 
@@ -249,15 +252,28 @@ doesn't affect us since we're not using Hetzner DNS.)
 Operations stack (same Hetzner box as Nakama):
 
 ```
+Containers (one compose stack in /opt/nakama, 10 services):
+  postgres, nakama, caddy, signaling-proxy, geoip-sidecar,
+  prometheus, grafana, cadvisor, node-exporter, postgres-exporter
+
 Prometheus  ─►  Grafana  ─►  Discord webhook (alerts)
-   ▲              ▲
-   │              │
-postgres_exporter, node_exporter, Caddy, Nakama metrics, Loki
-                          ▲
-                  UptimeRobot blackbox checks
-                          │
-              External: hits public endpoints
+   ▲
+   │ scrapes
+nakama, caddy, node-exporter, postgres-exporter,
+cadvisor (per container), geoip-sidecar
+(Loki/Promtail configs are kept but not running)
+
+Host systemd timers: cost-monitor (5 min), pg-backup (nightly),
+geoip-refresh (monthly), desktop-drain-watch (daily dead-man)
+
+External: UptimeRobot, 3 GET monitors on the public endpoints
 ```
+
+Roles of each container are listed in `PLATFORM_ARCHITECTURE.md`
+→ Topology. In short, geoip-sidecar answers the hybrid allocator's
+"is every player in North America?" check, and cadvisor feeds
+per-container metrics (including on-demand local match containers)
+to Prometheus.
 
 Auxiliary one-shot infrastructure:
 
@@ -436,9 +452,13 @@ credential rotation."
 - **Dashboard:** https://console.hetzner.com
 - **Account:** `admin@snoringcat.games`
 - **Project:** `snoringcat-platform`
-- **What's hosted:** Single Nakama box (CPX21, upsized from CPX11 on 2026-06-01) running Nakama
-  + Postgres + Caddy in one docker-compose stack; staging box
-  (CX21, after Phase G), private network, firewall.
+- **What's hosted:** Single Nakama box (CPX21, upsized from
+  CPX11 on 2026-06-01) running one docker-compose stack of 10
+  containers (postgres, nakama, caddy, signaling-proxy,
+  geoip-sidecar, prometheus, grafana, cadvisor, node-exporter,
+  postgres-exporter) plus host timers (cost-monitor, pg-backup,
+  geoip-refresh, desktop-drain-watch); staging box (CX21, after
+  Phase G), private network, firewall.
 - **API token:** `HCLOUD_TOKEN` &mdash; in age-encrypted
   credentials. Permissions: Read &amp; Write at project level.
 - **Cost:** ~$8/mo (CPX21 capped + minor bandwidth + cents
@@ -473,6 +493,14 @@ credential rotation."
   age-encrypted credentials. Scopes: Account &rarr; Cloudflare
   Pages: Edit; Account &rarr; Account Settings: Read; Zone
   &rarr; DNS: Edit (all zones).
+- **Pages + R2 token:** `CLOUDFLARE_PAGES_TOKEN` &mdash; Pages:
+  Edit, Workers R2 Storage: Edit, Account Settings: Read. Used by
+  `hopnbop/scripts/deploy-cf-pages.ps1`, and rendered as the
+  host cost-monitor's `CLOUDFLARE_API_TOKEN` for its read-only R2
+  and Pages usage calls (the token above cannot read R2). A
+  dedicated read-only `CLOUDFLARE_COST_MONITOR_TOKEN` would take
+  its place there, but none of the tokens we hold can create tokens
+  (checked 2026-10-11), so it has to be made in the dashboard.
 - **Account ID:** `CLOUDFLARE_ACCOUNT_ID` &mdash; in
   age-encrypted credentials.
 - **Cost:** $0 on free tier (unlimited bandwidth on Pages, no
@@ -524,8 +552,27 @@ credential rotation."
 - **Account:** `admin@snoringcat.games`
 - **API key:** `UPTIMEROBOT_API_KEY` in age-encrypted
   credentials.
-- **Monitors (post-migration):** Nakama healthcheck, website,
-  game-server WS endpoint.
+- **Monitors** (as of 2026-10-11; all HTTP GET, 5-min interval,
+  30s timeout, 30s grace period):
+  - "Nakama healthcheck":
+    `https://nakama.snoringcat.games/healthcheck`. GET since
+    2026-10-11. Before that it HEAD-probed a GET-only endpoint,
+    got 501, and sat DOWN from 2026-04-29 to 2026-10-11 while prod
+    was healthy.
+  - "hopnbop.net web client": `https://hopnbop.net/`.
+  - "levi.dev portfolio": `https://levi.dev/`.
+- **Alert contacts** (on all three): `admin@snoringcat.games`
+  email and the failure-only Discord channel's webhook.
+- **Free-plan caveats:** notification recurrence (repeat alerts
+  while a monitor stays down) is silently dropped, so each outage
+  alerts once. The v2 API's `newMonitor` refuses to create
+  monitors ("not allowed with your current plan"). The v3 API
+  works: `Authorization: Bearer <api key>`, `POST
+  https://api.uptimerobot.com/v3/monitors` with explicit `timeout`
+  and `gracePeriod`. (phase-b's UptimeRobot step still uses v2, so
+  it can only reuse an existing monitor, not create one.)
+- **Watched by:** claude-config's job-watchdog, which requires
+  every monitor to report "up".
 - **Cost:** $0 on free tier (50 monitors, 5-min interval).
 
 ### Google Cloud Console (OAuth + Analytics)
@@ -691,7 +738,10 @@ for the full matrix. Quick reference:
 1. Read the alert. Severity (Critical/Warning/Info) is in the
    message. Sources: cost-monitor (cost / Edgegap-active
    thresholds), prod-health-check Claude job (containers,
-   logs, vitals, backup), UptimeRobot (external liveness).
+   logs, vitals, backup), UptimeRobot (external liveness),
+   desktop-drain-watch on the Nakama host (the desktop stopped
+   draining the status queue: it is dark, or the drain is
+   broken, so none of its scheduled checks are running).
 2. Pull recent logs ad-hoc: `ssh root@nakama.snoringcat.games
    "docker logs nakama --since 1h | tail -100"` (Loki/Grafana
    were dropped in the 2026-05-06 consolidation; logs live in
@@ -723,6 +773,13 @@ for the full matrix. Quick reference:
 - **Hetzner regional outage** (rare but happens): website still
   served by Cloudflare. Backend and games are down. No active-
   active redundancy at indie scale. Wait for Hetzner to recover.
+- **Nakama host lost** (destroyed or unrecoverable): rebuild with
+  `scripts/phase-a.ps1 -RestoreBackup`, then `scripts/phase-b.ps1`.
+  Current targets: RTO 60-90 min, RPO up to 24h. Confirm and
+  re-pin the new host keys when phase-a's HostKeys step asks, then
+  push `claude-config/jobs/known_hosts`. Procedure, targets, and a
+  known `.env` gap are in `PLATFORM_ARCHITECTURE.md` → "Backups
+  and disaster recovery".
 - **Cloudflare Pages outage:** websites down; backend and games
   unaffected (they don't depend on Cloudflare). Status page:
   https://www.cloudflarestatus.com/.

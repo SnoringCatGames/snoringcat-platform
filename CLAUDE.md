@@ -167,21 +167,32 @@ Nakama, Postgres, and observability.
   override. Private IPs (`10.0.1.10`/`10.0.1.20`) and the
   `/16` network range stay hardcoded — changing them needs a
   state migration, not just a config swap.
-- `infra/remote/nakama/` — Nakama + Caddy + Prometheus/Grafana/
-  Loki/Promtail. `docker-compose.yml`, `Caddyfile`, scrape
-  configs, dashboards. Deployed to `/opt/nakama/` on the
-  Nakama host.
-- `infra/remote/postgres/` — Postgres docker-compose +
-  `pg_hba.conf`. Deployed to `/opt/postgres/` on the Postgres
-  host.
+- `infra/remote/nakama/` — the single-host compose stack, 10
+  services: postgres, nakama, caddy, signaling-proxy,
+  geoip-sidecar, prometheus, grafana, cadvisor, node-exporter,
+  postgres-exporter (roles in `PLATFORM_ARCHITECTURE.md` →
+  Topology). `docker-compose.yml`, `Caddyfile`, scrape configs,
+  dashboards; the Loki/Promtail configs are kept but not run.
+  Deployed to `/opt/nakama/` on the Nakama host.
+- `infra/remote/postgres/` — the pre-2026-05-06 separate
+  Postgres host's compose + `pg_hba.conf`. Unused on the
+  single-host stack; phase-a/phase-b skip it.
 - `infra/remote/cost-monitor/` — 5-minute systemd timer for
-  Hetzner + Edgegap + R2 + GitHub Actions MTD spend. Deployed
-  to `/opt/snoringcat/cost-monitor/`. Daily summary (09:00 UTC
-  or the first run after) is queued into the service-status
-  JSONL for the morning brief, not posted to Discord; threshold
-  crossings and run failures ping Discord immediately;
-  emergency cap PATCHes Edgegap to `capacity_max=0`. Full
-  details in `PLATFORM_ARCHITECTURE.md` → "Cost monitor".
+  Hetzner + Edgegap + R2 (every bucket) + CF Pages builds +
+  GitHub Actions MTD spend. Deployed to
+  `/opt/snoringcat/cost-monitor/` by phase-b. Daily summary (09:00
+  UTC or the first run after) is queued into the service-status
+  JSONL, not posted to Discord; threshold crossings and run
+  failures ping Discord immediately; emergency cap PATCHes
+  Edgegap to `capacity_max=0`. Full details in
+  `PLATFORM_ARCHITECTURE.md` → "Cost monitor".
+- `infra/remote/desktop-drain-watch/` — daily systemd timer that
+  pages Discord when the operator desktop stops draining the
+  service-status queue (desktop dark, so its scheduled prod
+  checks are not running either). See
+  `PLATFORM_ARCHITECTURE.md` → "Desktop dead-man".
+- `infra/remote/pg-backup/`, `infra/remote/geoip-refresh/` —
+  nightly `pg_dumpall` to R2 and the monthly GeoIP MMDB refresh.
 
 ## Scripts (`scripts/`)
 
@@ -189,11 +200,14 @@ Platform-shared automation scripts. Run from the snoringcat-platform
 repo root (or the consuming game's submodule path).
 
 - `phase-a.ps1`, `phase-b.ps1` — provisioning orchestrators.
-  `phase-a` brings up Hetzner servers + private network +
-  Postgres + Nakama + Caddy via Pulumi and `scp`. `phase-b`
-  layers on observability (Prometheus/Grafana/Loki/Promtail)
-  + UptimeRobot + cost-monitor. Both idempotent with
-  `-StartAt`/`-StopAt` step gates.
+  `phase-a` brings up the Hetzner host + private network via
+  Pulumi, verifies and re-pins its SSH host keys (HostKeys step),
+  and ships the compose stack via `scp`; `-RestoreBackup` is the
+  one-command DR rebuild. `phase-b` layers on the obs configs,
+  UptimeRobot, and the host timers (cost-monitor, geoip-refresh,
+  pg-backup, desktop-drain-watch). Both are idempotent with
+  `-StartAt`/`-StopAt` step gates. DR procedure and RTO/RPO:
+  `PLATFORM_ARCHITECTURE.md` → "Backups and disaster recovery".
 - `test-google-auth.py`, `platform_smoke_test.gd` — live
   smoke tests for the auth flow and the addon's API client.
 - `probe-runtime-status.ps1` — calls the `runtime_status`
