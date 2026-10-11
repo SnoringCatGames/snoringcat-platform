@@ -29,9 +29,14 @@ import (
 //     made per match by hybridAllocatorChoice based on player IPs.
 //
 // The dispatch happens in fleet_allocator.go's OnMatchmakerMatched
-// after the per-game config resolves. match_metadata then stores
-// the chosen kind so MatchEndRpc / MatchCancelRpc can call the
-// right Stop without re-running the geo decision.
+// after the per-game config resolves (resolveAllocatorMode below).
+// match_metadata then stores the chosen kind so MatchEndRpc /
+// MatchCancelRpc can call the right Stop without re-running the geo
+// decision, and the match_ready payload's `allocator` field reports
+// it to clients.
+//
+// Synthetic probe matches alone may pin a backend per match with the
+// probe_allocator ticket property (probeAllocatorOverride below).
 
 const (
 	allocatorModeEdgegap = "edgegap"
@@ -85,6 +90,130 @@ func hybridAllocatorChoice(
 		}
 	}
 	return true
+}
+
+// probeAllocatorProperty is the matchmaker ticket string property
+// the synthetic-match-probe job sets to pin its match to one backend
+// ("edgegap" or "local"), bypassing the per-game allocator_mode.
+//
+// It exists because the probe runs from an NA desktop. Under
+// allocator_mode=hybrid it therefore always lands on the local host,
+// and without an override nothing exercises the Edgegap path at all
+// (registry image, deploy API, signaling-proxy to a remote deploy,
+// WebRTC to it, teardown).
+//
+// Honored only for synthetic probe matches, and only when every
+// entry names the same concrete backend. Anything else is logged and
+// ignored, and the match allocates exactly as it would have without
+// the property. See probeAllocatorOverride.
+const probeAllocatorProperty = "probe_allocator"
+
+// isProbeMatchEntries reports whether a matched group is a synthetic
+// probe match: every entry carries the string property probe="true".
+// The synthetic-match-probe job tags both of its tickets this way and
+// pairs them with the targeted query `+properties.probe:true`, so a
+// real player never lands in one. Defense-in-depth: one entry without
+// the marker makes the whole match real (better to over-count a
+// leaderboard than to silently exclude a real player).
+func isProbeMatchEntries(entries []runtime.MatchmakerEntry) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	for _, e := range entries {
+		// Indexing a nil map yields the zero value, so an entry with
+		// no properties at all reads as unmarked.
+		v, ok := e.GetProperties()["probe"].(string)
+		if !ok || v != "true" {
+			return false
+		}
+	}
+	return true
+}
+
+// probeAllocatorOverride returns the backend a synthetic probe match
+// pinned via probeAllocatorProperty, with ok=true when the pin
+// applies. It applies only when isProbeMatch is true, every entry
+// carries the property with the same value, and that value is a
+// concrete backend (allocatorModeEdgegap or allocatorModeLocal).
+//
+// Every other combination returns ok=false and leaves the match on
+// its normal routing. When at least one entry set the property, the
+// reason it was ignored is logged so a misconfigured probe is
+// diagnosable from the Nakama logs. Real-player matches never get an
+// override: isProbeMatch is false for them, so this returns ok=false
+// before looking at the value.
+func probeAllocatorOverride(
+	logger runtime.Logger,
+	entries []runtime.MatchmakerEntry,
+	isProbeMatch bool,
+) (string, bool) {
+	values := make([]string, len(entries))
+	anySet := false
+	for i, e := range entries {
+		v, ok := e.GetProperties()[probeAllocatorProperty].(string)
+		if ok && v != "" {
+			values[i] = v
+			anySet = true
+		}
+	}
+	if !anySet {
+		return "", false
+	}
+	if !isProbeMatch {
+		logger.Warn(
+			"ignoring %s=%q: not a synthetic probe match (every"+
+				" entry must carry probe=true); allocating normally",
+			probeAllocatorProperty, values)
+		return "", false
+	}
+	want := values[0]
+	for _, v := range values[1:] {
+		if v != want {
+			logger.Warn(
+				"ignoring %s=%q: matched entries disagree;"+
+					" allocating normally",
+				probeAllocatorProperty, values)
+			return "", false
+		}
+	}
+	if want != allocatorModeEdgegap && want != allocatorModeLocal {
+		logger.Warn(
+			"ignoring %s=%q: must be %q or %q; allocating normally",
+			probeAllocatorProperty, want,
+			allocatorModeEdgegap, allocatorModeLocal)
+		return "", false
+	}
+	return want, true
+}
+
+// resolveAllocatorMode turns the per-game allocator_mode into the
+// concrete backend for one match. A non-empty probeOverride (from
+// probeAllocatorOverride) wins outright and skips the hybrid geo
+// decision. Otherwise "hybrid" resolves per match through
+// hybridAllocatorChoice, and every other value passes through
+// unchanged: "" and "edgegap" take the Edgegap retry loop, "local"
+// takes the LocalDockerAllocator.
+func resolveAllocatorMode(
+	logger runtime.Logger,
+	geo geoIPLookup,
+	configuredMode string,
+	matchedIPs []string,
+	probeOverride string,
+) string {
+	if probeOverride != "" {
+		logger.Info(
+			"synthetic probe match pinned %s=%s; overriding"+
+				" allocator_mode=%q (hybrid geo routing skipped)",
+			probeAllocatorProperty, probeOverride, configuredMode)
+		return probeOverride
+	}
+	if configuredMode == allocatorModeHybrid {
+		if hybridAllocatorChoice(logger, geo, matchedIPs) {
+			return allocatorModeLocal
+		}
+		return allocatorModeEdgegap
+	}
+	return configuredMode
 }
 
 // ipIsNorthAmerica is the policy gate: tries the geoip sidecar
@@ -192,7 +321,6 @@ func (c *geoIPHTTPClient) Lookup(ip net.IP) (string, error) {
 	}
 	return out.Country, nil
 }
-
 
 // naCIDRs is the geoip-sidecar's safety-net classifier — used by
 // ipLooksLikeNorthAmericaStatic when the sidecar lookup errors or

@@ -861,20 +861,10 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// downstream tooling (cost monitor, server-side analytics) can
 	// distinguish probe traffic. Defense-in-depth: if any entry
 	// lacks the marker, treat the match as real (better to over-
-	// count than to silently exclude a real player).
-	isProbeMatch := len(entries) > 0
-	for _, e := range entries {
-		marked := false
-		if props := e.GetProperties(); props != nil {
-			if v, ok := props["probe"].(string); ok && v == "true" {
-				marked = true
-			}
-		}
-		if !marked {
-			isProbeMatch = false
-			break
-		}
-	}
+	// count than to silently exclude a real player). It also gates
+	// the probe_allocator override in the allocator-mode resolution
+	// below.
+	isProbeMatch := isProbeMatchEntries(entries)
 
 	// Leader-authoritative match settings: when the matched players
 	// came from a party (they carry a shared party_id ticket
@@ -951,21 +941,24 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// there's no productive retry semantic). "hybrid" picks per-
 	// match based on the matched players' IPs (NA = local,
 	// non-NA = edgegap fallback).
-	allocatorMode := ""
+	configuredMode := ""
 	var resolvedGameConfig *GameConfig
 	if matchGameID != "" && a.games != nil {
 		if gc, ok := a.games.Get(matchGameID); ok {
 			resolvedGameConfig = gc
-			allocatorMode = gc.AllocatorMode
+			configuredMode = gc.AllocatorMode
 		}
 	}
-	if allocatorMode == allocatorModeHybrid {
-		if hybridAllocatorChoice(logger, a.geo, ipList) {
-			allocatorMode = allocatorModeLocal
-		} else {
-			allocatorMode = allocatorModeEdgegap
-		}
-	}
+	// Synthetic probe matches may pin a concrete backend with the
+	// probe_allocator ticket property, so the probe (which runs from
+	// an NA desktop and would otherwise always resolve to local under
+	// hybrid) can exercise the Edgegap path on demand. Gated on
+	// isProbeMatch inside probeAllocatorOverride: a real-player match
+	// always gets "" here and resolves exactly as before.
+	probeOverride, _ := probeAllocatorOverride(
+		logger, entries, isProbeMatch)
+	allocatorMode := resolveAllocatorMode(
+		logger, a.geo, configuredMode, ipList, probeOverride)
 	// Allocate. Real mode hits the selected backend; mock mode
 	// synthesizes the deploy + status response so compliance
 	// tests don't burn paid container-hours. Both paths produce
@@ -1219,22 +1212,9 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// the allowlist.
 	subject := "match_ready"
 	for _, mp := range matchedPlayers {
-		connInfo := map[string]any{
-			"server_ip":      status.PublicIP,
-			"ports":          status.Ports,
-			"request_id":     status.RequestID,
-			"session_ids":    mp.SessionIDs,
-			"transport_type": transportType,
-			"signaling_url":  signalingURL,
-		}
-		if a.mockDeploy {
-			// Surface mock mode in the payload so compliance
-			// tests can sanity-check that they ran against a
-			// mock-enabled runtime (and so a misconfigured prod
-			// flipping the env on by accident is loudly visible
-			// on the client side too).
-			connInfo["mock"] = true
-		}
+		connInfo := matchReadyConnection(
+			status, mp.SessionIDs, transportType, signalingURL,
+			allocatorKind, a.mockDeploy)
 		connInfoJSON, _ := json.Marshal(connInfo)
 		if err := nk.NotificationSend(ctx, mp.UserID, subject, map[string]any{
 			"connection": string(connInfoJSON),
@@ -1246,6 +1226,46 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// Return empty match ID — the actual realtime match runs on
 	// the Edgegap-allocated game server, not inside Nakama.
 	return "", nil
+}
+
+// matchReadyConnection builds the per-player `connection` object
+// carried (JSON-stringified) in a match_ready notification. Each
+// player gets only their own session_ids; the server holds the full
+// allowlist via the EXPECTED_SESSION_IDS env var.
+//
+// `allocator` names the backend that actually served the match
+// (allocatorModeEdgegap or allocatorModeLocal, post hybrid / probe
+// resolution). The synthetic-match-probe asserts on it, so a match
+// that silently fell back to another backend can't pass as the one
+// the probe asked for. Clients read only the keys they know, so
+// additive fields are safe for older builds.
+//
+// `mock` is set only in EDGEGAP_MOCK_DEPLOY mode, so compliance tests
+// can sanity-check that they ran against a mock-enabled runtime (and
+// so a misconfigured prod flipping the env on by accident is loudly
+// visible on the client side too). In mock mode no backend ran;
+// `allocator` then reports the kind recorded in match_metadata.
+func matchReadyConnection(
+	status *edgegapStatusResponse,
+	sessionIDs []string,
+	transportType string,
+	signalingURL string,
+	allocatorKind string,
+	mock bool,
+) map[string]any {
+	connInfo := map[string]any{
+		"server_ip":      status.PublicIP,
+		"ports":          status.Ports,
+		"request_id":     status.RequestID,
+		"session_ids":    sessionIDs,
+		"transport_type": transportType,
+		"signaling_url":  signalingURL,
+		"allocator":      allocatorKind,
+	}
+	if mock {
+		connInfo["mock"] = true
+	}
+	return connInfo
 }
 
 // tryAllocate runs one full Edgegap allocation attempt: Deploy →

@@ -272,6 +272,45 @@ predict + reconcile.
 (read from matchmaker query attributes). ENet for native-only
 matches; WebRTC for any match including web players.
 
+### Allocator backend selection
+
+Each game's `allocator_mode` (game.yaml, synced into the `games`
+table) picks where its game servers run. `runtime/allocator.go`
+(`resolveAllocatorMode`) turns it into a concrete backend per
+match:
+
+| `allocator_mode` | Backend per match |
+|---|---|
+| `edgegap` or unset | Edgegap deployment (retry loop with continent fallback) |
+| `local` | Container on the Nakama host (`LocalDockerAllocator`, pulls `local_image_ref`) |
+| `hybrid` | Local when every matched player's IP classifies as US/CA (geoip sidecar, static `/8` fallback), Edgegap otherwise |
+
+Hop 'n Bop runs `hybrid`. The concrete backend is persisted as
+`match_metadata.allocator_kind`, so `match_end` / `match_cancel`
+stop the right one, and is reported to clients as the
+match_ready payload's `allocator` field (`"edgegap"` or
+`"local"`). Local request ids also start with `local-`.
+
+**Probe override (`probe_allocator`).** A synthetic probe match
+(every matched ticket carries `probe: "true"`) may pin the
+backend with the ticket string property
+`probe_allocator: "edgegap" | "local"`. The pin beats
+`allocator_mode` and skips the hybrid geo decision. It applies
+only when every entry carries the same valid value. A non-probe
+match, entries that disagree, an entry without the property, or
+any other value is logged (`ignoring probe_allocator=...`) and
+the match routes normally.
+
+It exists because the synthetic-match-probe job (claude-config)
+runs from an NA desktop, so under `hybrid` it always lands on the
+local host and would never exercise Edgegap. That job pins
+`edgegap` on one fixed weekday and fails unless the payload's
+`allocator` is `edgegap` and the deployment is torn down
+afterwards. Real players never get the override: the probe-marker
+gate keeps it off their matches, and probe tickets pair only
+with each other through the targeted query
+`+properties.probe:true`.
+
 ---
 
 ## Per-game configuration
