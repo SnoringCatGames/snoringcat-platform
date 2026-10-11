@@ -52,7 +52,8 @@ func test_delete_endpoint_removes_account() -> void:
 		"basic_server_key")
 	assert_eq(
 		auth.status_code, 200,
-		"create one-shot account: %s" % auth.text)
+		"create one-shot account: %s"
+			% _helper.redact_tokens(auth.text))
 	var token: String = str(auth.body.get("token", ""))
 	var user_id: String = ""
 	# Pull the user_id while we still have the session.

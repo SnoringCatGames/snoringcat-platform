@@ -91,7 +91,11 @@ these later.
    requests directly.
 5. Skip with `pending()` when an env var is missing or when
    `is_live_mode()` is false.
-6. Update the table above.
+6. Wrap any response body you put in an assertion message in
+   `_helper.redact_tokens()`. GUT prints the message on failure,
+   and at `-glog=2` and above on success too, and auth responses
+   carry live session and refresh tokens.
+7. Update the table above.
 
 ### Multi-user tests
 

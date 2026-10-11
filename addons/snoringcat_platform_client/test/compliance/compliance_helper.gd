@@ -25,6 +25,10 @@ extends Node
 ## targeting a different stack (e.g. a future staging instance).
 const _DEFAULT_BASE_URL := "https://nakama.snoringcat.games"
 const _DEFAULT_TIMEOUT_SEC := 10.0
+## Nakama's session and refresh tokens are JWTs, whose base64url
+## header always starts with "eyJ".
+const _JWT_PATTERN := "eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*"
+const _REDACTED_JWT := "<redacted-jwt>"
 
 
 ## Returns the live backend URL, overridable via env var so the
@@ -378,6 +382,15 @@ func session_rpc(
 	var result: Dictionary = await http_post(path, body, auth)
 	result.inner = result.body
 	return result
+
+
+## Returns `text` with every JWT replaced by a placeholder. Use it
+## on any response body an assertion message embeds: GUT prints the
+## message on failure, and at -glog=2 and above on success too, and
+## auth responses carry live session and refresh tokens.
+func redact_tokens(text: String) -> String:
+	var jwt := RegEx.create_from_string(_JWT_PATTERN)
+	return jwt.sub(text, _REDACTED_JWT, true)
 
 
 ## Decode the claims segment of a JWT (base64url, no padding).

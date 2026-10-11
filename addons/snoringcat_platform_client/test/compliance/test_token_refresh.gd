@@ -42,7 +42,7 @@ func test_refresh_returns_fresh_session_pair() -> void:
 		"basic_server_key")
 	assert_eq(
 		auth.status_code, 200,
-		"initial auth: %s" % auth.text)
+		"initial auth: %s" % _helper.redact_tokens(auth.text))
 	var refresh_token: String = str(
 		auth.body.get("refresh_token", ""))
 	assert_false(
@@ -56,10 +56,11 @@ func test_refresh_returns_fresh_session_pair() -> void:
 		"basic_server_key")
 	assert_eq(
 		refresh.status_code, 200,
-		"session refresh: %s" % refresh.text)
+		"session refresh: %s" % _helper.redact_tokens(refresh.text))
 	assert_true(
 		refresh.body is Dictionary,
-		"refresh body not a dict: %s" % refresh.text)
+		"refresh body not a dict: %s"
+			% _helper.redact_tokens(refresh.text))
 
 	var new_token: String = str(refresh.body.get("token", ""))
 	var new_refresh: String = str(

@@ -41,20 +41,20 @@ func test_anon_sign_in_returns_token() -> void:
 		"transport error: %s" % result.error)
 	assert_eq(
 		result.status_code, 200,
-		"non-200: body=%s" % result.text)
+		"non-200: body=%s" % _helper.redact_tokens(result.text))
 
 	# Nakama's auth response shape: {created, token,
 	# refresh_token}. token + refresh_token are JWTs.
 	assert_true(
 		result.body is Dictionary,
-		"body not a dict: %s" % result.text)
+		"body not a dict: %s" % _helper.redact_tokens(result.text))
 	var b: Dictionary = result.body
 	assert_true(
 		b.has("token"),
-		"missing token: %s" % str(b))
+		"missing token: %s" % _helper.redact_tokens(str(b)))
 	assert_true(
 		b.has("refresh_token"),
-		"missing refresh_token: %s" % str(b))
+		"missing refresh_token: %s" % _helper.redact_tokens(str(b)))
 
 	var token: String = str(b.get("token", ""))
 	# Sanity check the token is JWT-shaped.
@@ -80,7 +80,8 @@ func test_anon_token_carries_user_id_claim() -> void:
 		"basic_server_key")
 	assert_eq(
 		result.status_code, 200,
-		"anon sign-in must succeed; body=%s" % result.text)
+		"anon sign-in must succeed; body=%s"
+			% _helper.redact_tokens(result.text))
 	var token: String = str(result.body.get("token", ""))
 
 	var claims: Dictionary = _helper.decode_jwt_claims(token)

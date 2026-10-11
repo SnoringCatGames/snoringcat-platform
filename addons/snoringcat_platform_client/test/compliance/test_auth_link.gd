@@ -82,7 +82,7 @@ func test_link_secondary_device_to_anon_account() -> void:
 		secondary_result.status_code, 200,
 		"secondary auth (post-link) failed: %d body=%s"
 			% [secondary_result.status_code,
-			   secondary_result.text])
+			   _helper.redact_tokens(secondary_result.text)])
 	var secondary_token: String = str(
 		secondary_result.body.get("token", ""))
 	var secondary_account: Dictionary = await _helper.http_get(

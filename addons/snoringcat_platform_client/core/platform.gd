@@ -46,6 +46,19 @@ extends Node
 
 signal initialized
 
+## Log level for nakama-godot's shared logger, which
+## Nakama.create_client() sets. Its default there is DEBUG, and at
+## DEBUG nakama-godot prints every HTTP request's headers and body
+## and the realtime socket's connect URI: session tokens, refresh
+## tokens, the server key, and device ids. That output goes to
+## stdout and to user://logs/godot.log on players' machines.
+## WARNING keeps nakama-godot's socket warnings and errors (server
+## error replies, connection errors, unparseable or unhandled
+## messages) and logs no request headers or bodies. Don't raise it
+## to DEBUG, even in debug builds: those logs end up in bug
+## reports and pasted transcripts.
+const _NAKAMA_LOG_LEVEL := NakamaLogger.LOG_LEVEL.WARNING
+
 var is_initialized := false
 
 var game_id: String = ""
@@ -183,7 +196,10 @@ func get_nakama_client() -> NakamaClient:
 			nakama_server_key,
 			nakama_host,
 			nakama_port,
-			nakama_scheme)
+			nakama_scheme,
+			Nakama.DEFAULT_TIMEOUT,
+			_NAKAMA_LOG_LEVEL,
+		)
 	return nakama_client
 
 
