@@ -1,24 +1,33 @@
-# Phase B orchestrator: deploys observability stack (Prometheus,
-# Grafana, Loki, Promtail, node_exporter, postgres_exporter) plus
-# UptimeRobot synthetic check and a daily cost-monitor systemd
-# timer. Same idempotency model as phase-a.ps1.
+# Phase B orchestrator: deploys the observability configs (Prometheus,
+# Grafana; Loki/Promtail configs ship but stay off), the UptimeRobot
+# synthetic check, and the host's systemd timers (cost-monitor,
+# geoip-refresh, pg-backup, desktop-drain-watch). Same idempotency
+# model as phase-a.ps1.
 #
 # Usage:
 #   pwsh -File scripts/phase-b.ps1                            # Full run
 #   pwsh -File scripts/phase-b.ps1 -StartAt Verify -StopAt Verify
+#   pwsh -File scripts/phase-b.ps1 -StartAt CostMonitor -StopAt CostMonitor
+#
+# Step names: PulumiUp, PostgresExporters, ObsConfigs, NakamaStack,
+# Verify, UptimeRobot, CostMonitor, GeoipRefresh, PgBackup, DrainWatch,
+# AlertTest, Reencrypt, Complete. Keep the two ValidateSets and
+# $StepOrder identical: until 2026-10-11 $StepOrder lacked PgBackup,
+# so Should-Run never let Step-PgBackup run and a rebuilt host got no
+# nightly backups, and -StartAt GeoipRefresh was rejected outright.
 
 [CmdletBinding()]
 param(
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor",
-		"PgBackup", "AlertTest", "Reencrypt", "Complete"
+		"Verify", "UptimeRobot", "CostMonitor", "GeoipRefresh",
+		"PgBackup", "DrainWatch", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StartAt = "PulumiUp",
 	[ValidateSet(
 		"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
-		"Verify", "UptimeRobot", "CostMonitor",
-		"PgBackup", "AlertTest", "Reencrypt", "Complete"
+		"Verify", "UptimeRobot", "CostMonitor", "GeoipRefresh",
+		"PgBackup", "DrainWatch", "AlertTest", "Reencrypt", "Complete"
 	)]
 	[string]$StopAt = "Complete",
 	[switch]$SkipAlertTest
@@ -114,8 +123,26 @@ function Ensure-Secret {
 
 function Ssh-Run {
 	param([string]$ip, [string]$key, [string]$cmd)
+	# This file is CRLF in a Windows checkout, and so are the
+	# multi-line here-strings below. Remote bash keeps the CR:
+	# `&&<CR>` chains onto a bogus `$'\r'` command (so later lines
+	# run even after a failure), `set -e<CR>` is an invalid option,
+	# and `fi<CR>` is a syntax error. Never send a literal CR.
+	$cmd = $cmd -replace "`r`n", "`n"
 	ssh -i $key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$Kh `
 		-o ConnectTimeout=15 -o BatchMode=yes "root@$ip" $cmd
+}
+
+# The separate postgres-prod-1 host's IP, or $null on the single-host
+# stack (phase-a's Step-Up blanks the field when the Pulumi stack stops
+# exporting it). StrictMode-safe: the field may be absent entirely.
+function Get-PostgresHostIp {
+	param($state)
+	$infra = $state.PSObject.Properties['infrastructure']
+	if ($null -eq $infra) { return $null }
+	$p = $infra.Value.PSObject.Properties['hetzner_postgres_ip']
+	if ($null -eq $p -or [string]::IsNullOrWhiteSpace("$($p.Value)")) { return $null }
+	return "$($p.Value)".Trim()
 }
 function Scp-Up {
 	param([string]$ip, [string]$key, [string]$src, [string]$dst, [switch]$Recurse)
@@ -135,7 +162,7 @@ function Scp-Up {
 $StepOrder = @(
 	"PulumiUp", "PostgresExporters", "ObsConfigs", "NakamaStack",
 	"Verify", "UptimeRobot", "CostMonitor", "GeoipRefresh",
-	"AlertTest", "Reencrypt", "Complete"
+	"PgBackup", "DrainWatch", "AlertTest", "Reencrypt", "Complete"
 )
 $StartIdx = $StepOrder.IndexOf($StartAt)
 $StopIdx  = $StepOrder.IndexOf($StopAt)
@@ -161,7 +188,15 @@ function Step-PostgresExporters {
 	if (-not (Should-Run "PostgresExporters")) { return }
 	Note "Step: postgres node-exporter + postgres-exporter"
 	$s = Read-State
-	$ip = $s.infrastructure.hetzner_postgres_ip
+	$ip = Get-PostgresHostIp $s
+	if (-not $ip) {
+		# Single-host stack: both exporters are services in
+		# /opt/nakama's compose file (Step-NakamaStack). This step
+		# used to read hetzner_postgres_ip unconditionally (same bug
+		# as phase-a's DR drill 2026-10-07 Gap A).
+		Note "PostgresExporters: SKIPPED, single-host stack (exporters run in the nakama compose stack)"
+		return
+	}
 	# Updated compose includes node-exporter + postgres-exporter.
 	# Push it and reconcile.
 	Invoke-Checked "scp postgres compose" {
@@ -398,7 +433,8 @@ function Step-CostMonitor {
 		Ssh-Run $ip $NakamaKey "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq >/dev/null"
 	}
 	# /var/log/snoringcat hosts the JSONL queue that cost-monitor,
-	# pg-backup, and dns-watchdog all append status entries to.
+	# pg-backup, and desktop-drain-watch append status entries to
+	# (and that the desktop's service-status-sync drains).
 	# Created here for whichever Step-* runs first; mkdir -p is
 	# idempotent, so subsequent steps are no-ops.
 	Invoke-Checked "mkdir /var/log/snoringcat" {
@@ -421,6 +457,21 @@ function Step-CostMonitor {
 	# DISCORD_USER_ID is optional; when set, threshold pings
 	# include an @-mention so they show up as a Discord
 	# notification (and an email if the user has those on).
+	#
+	# Cloudflare token for the R2 + Pages usage probes (read-only
+	# GETs): prefer a dedicated CLOUDFLARE_COST_MONITOR_TOKEN
+	# (Account -> Cloudflare Pages: Read + Workers R2 Storage: Read)
+	# when credentials.env has one. None does yet: no token we hold
+	# can mint tokens (checked 2026-10-11), so it falls back to
+	# CLOUDFLARE_PAGES_TOKEN, deploy-cf-pages.ps1's Pages:Edit + R2
+	# Storage:Edit + Account Settings:Read token, the narrowest one
+	# that reads both. The Pulumi/DNS CLOUDFLARE_API_TOKEN cannot
+	# read R2 at all.
+	$cfToken = [Environment]::GetEnvironmentVariable('CLOUDFLARE_COST_MONITOR_TOKEN')
+	if (-not $cfToken) { $cfToken = [Environment]::GetEnvironmentVariable('CLOUDFLARE_PAGES_TOKEN') }
+	if (-not $cfToken) { Note "WARN: no Cloudflare token for cost-monitor; R2/Pages lines will report 'not tracked'" }
+	$cfAccount = [Environment]::GetEnvironmentVariable('CLOUDFLARE_ACCOUNT_ID')
+	if (-not $cfAccount) { $cfAccount = "c97b21157100dde27a8715fdfba1d22a" }
 	$envLines = @(
 		"HCLOUD_TOKEN=$env:HCLOUD_TOKEN",
 		"EDGEGAP_TOKEN=$env:EDGEGAP_TOKEN",
@@ -432,12 +483,14 @@ function Step-CostMonitor {
 		"BUDGET_WARN_HIGH=80",
 		"EMERGENCY_CAP=50",
 		"DAILY_SUMMARY_HOUR_UTC=9",
-		# Cloudflare R2 storage probe — token must have
-		# Workers R2 Storage:Read (or Edit). Account ID is hex,
-		# not slug.
-		"CLOUDFLARE_API_TOKEN=$([Environment]::GetEnvironmentVariable('CLOUDFLARE_PAGES_TOKEN'))",
-		"CLOUDFLARE_ACCOUNT_ID=c97b21157100dde27a8715fdfba1d22a",
-		"R2_BUCKET=hopnbop-assets",
+		# Cloudflare R2 + Pages usage probes (see $cfToken above).
+		# Account ID is hex, not slug. R2 is summed across EVERY
+		# bucket in the account, because the 10 GB free tier is
+		# account-wide (it used to read one bucket, R2_BUCKET,
+		# which cost-monitor now ignores). Set R2_BUCKETS to a
+		# space-separated list only to restrict the sum.
+		"CLOUDFLARE_API_TOKEN=$cfToken",
+		"CLOUDFLARE_ACCOUNT_ID=$cfAccount",
 		"R2_WARN_GB=8",
 		"R2_HARD_GB=9.5",
 		# Service-status JSONL: cost-monitor's post_status() helper
@@ -447,7 +500,10 @@ function Step-CostMonitor {
 		# consolidator instead of direct Discord (noise reduction).
 		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl",
 		# Cloudflare Pages free tier is 500 builds/month
-		# account-wide. Defaults: warn at 80%, hard at 95%.
+		# account-wide. Defaults: warn at 80%, hard at 95%. Counted
+		# against Cloudflare-run builds only; direct uploads
+		# (wrangler / GH Actions, `ad_hoc` deployments) run no
+		# Cloudflare build and are reported separately.
 		"CF_PAGES_WARN_BUILDS=400",
 		"CF_PAGES_HARD_BUILDS=475"
 	)
@@ -470,7 +526,9 @@ systemctl list-timers cost-monitor.timer
 "@
 	}
 
-	# Run once now to verify it works (and posts a Discord baseline).
+	# Run once now to verify it works. A normal run: silent unless a
+	# threshold is crossed (the daily summary goes to the JSONL
+	# queue, not Discord).
 	Invoke-Checked "test run cost-monitor" {
 		Ssh-Run $ip $NakamaKey "systemctl start cost-monitor.service && journalctl -u cost-monitor.service -n 20 --no-pager"
 	}
@@ -599,6 +657,58 @@ systemctl list-timers pg-backup.timer
 	Note "pg-backup installed and ran successfully"
 }
 
+function Step-DrainWatch {
+	if (-not (Should-Run "DrainWatch")) { return }
+	Note "Step: desktop-drain-watch systemd timer (host-side dead-man for the desktop's jobs)"
+	$s = Read-State
+	$ip = $s.infrastructure.hetzner_nakama_ip
+	# The operator desktop drains /var/log/snoringcat/service-status.jsonl
+	# daily (claude-config's service-status-sync). This daily timer
+	# pages Discord, at most once a day, while the oldest undrained
+	# entry is older than DRAIN_WATCH_STALE_HOURS: the desktop is dark,
+	# logged out, or its drain is broken, and with it every scheduled
+	# job that watches prod. Nothing else notices that while the
+	# desktop is off.
+	Invoke-Checked "mkdir queue + state dirs" {
+		Ssh-Run $ip $NakamaKey "mkdir -p /var/log/snoringcat /var/lib/snoringcat /opt/snoringcat/desktop-drain-watch && touch /var/log/snoringcat/service-status.jsonl"
+	}
+	foreach ($f in @("desktop-drain-watch.sh", "desktop-drain-watch.service", "desktop-drain-watch.timer")) {
+		Invoke-Checked "scp $f" {
+			Scp-Up $ip $NakamaKey "$RemoteSrc\desktop-drain-watch\$f" "/opt/snoringcat/desktop-drain-watch/"
+		}
+	}
+	$envLines = @(
+		"DISCORD_WEBHOOK_URL=$env:DISCORD_WEBHOOK_URL",
+		"SERVICE_STATUS_LOG=/var/log/snoringcat/service-status.jsonl",
+		# Two consecutive missed daily drains. See the script header
+		# for why 36h against a 16:37 UTC check.
+		"DRAIN_WATCH_STALE_HOURS=36"
+	)
+	$tmp = New-TemporaryFile
+	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")
+	Invoke-Checked "scp .env (desktop-drain-watch)" {
+		Scp-Up $ip $NakamaKey $tmp.FullName "/opt/snoringcat/desktop-drain-watch/.env"
+	}
+	Remove-Item $tmp.FullName -Force
+	Invoke-Checked "install + enable timer" {
+		Ssh-Run $ip $NakamaKey @"
+chmod +x /opt/snoringcat/desktop-drain-watch/desktop-drain-watch.sh &&
+chmod 600 /opt/snoringcat/desktop-drain-watch/.env &&
+cp /opt/snoringcat/desktop-drain-watch/desktop-drain-watch.service /etc/systemd/system/desktop-drain-watch.service &&
+cp /opt/snoringcat/desktop-drain-watch/desktop-drain-watch.timer /etc/systemd/system/desktop-drain-watch.timer &&
+systemctl daemon-reload &&
+systemctl enable --now desktop-drain-watch.timer &&
+systemctl list-timers desktop-drain-watch.timer
+"@
+	}
+	# A normal run: silent while the queue is fresh. On a freshly
+	# rebuilt host the queue is empty, which also reads as fresh.
+	Invoke-Checked "test run desktop-drain-watch" {
+		Ssh-Run $ip $NakamaKey "systemctl start desktop-drain-watch.service && journalctl -u desktop-drain-watch.service -n 5 --no-pager"
+	}
+	Note "desktop-drain-watch installed and ran successfully"
+}
+
 function Step-AlertTest {
 	if (-not (Should-Run "AlertTest")) { return }
 	if ($SkipAlertTest) { Log "SkipAlertTest set, skipping"; return }
@@ -676,6 +786,7 @@ try {
 	Step-CostMonitor
 	Step-GeoipRefresh
 	Step-PgBackup
+	Step-DrainWatch
 	Step-AlertTest
 	Step-Reencrypt
 	Step-Complete
