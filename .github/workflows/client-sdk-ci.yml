@@ -16,7 +16,7 @@ env:
   # the cache key below. There used to be a GODOT_VERSION alongside
   # it that nothing referenced, which made bumping the version look
   # done while CI kept fetching the old build. Don't reintroduce it.
-  GODOT_RELEASE_TAG: 4.7.1-stable
+  GODOT_RELEASE_TAG: 4.7.2-stable
 
 jobs:
   compliance-suite-mock:
