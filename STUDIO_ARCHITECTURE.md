@@ -495,12 +495,13 @@ credential rotation."
   &rarr; DNS: Edit (all zones).
 - **Pages + R2 token:** `CLOUDFLARE_PAGES_TOKEN` &mdash; Pages:
   Edit, Workers R2 Storage: Edit, Account Settings: Read. Used by
-  `hopnbop/scripts/deploy-cf-pages.ps1`, and rendered as the
-  host cost-monitor's `CLOUDFLARE_API_TOKEN` for its read-only R2
-  and Pages usage calls (the token above cannot read R2). A
-  dedicated read-only `CLOUDFLARE_COST_MONITOR_TOKEN` would take
-  its place there, but none of the tokens we hold can create tokens
-  (checked 2026-10-11), so it has to be made in the dashboard.
+  `hopnbop/scripts/deploy-cf-pages.ps1`. It was also the host
+  cost-monitor's token until 2026-10-11.
+- **Cost-monitor token:** `CLOUDFLARE_COST_MONITOR_TOKEN` &mdash;
+  account-owned, read-only (Pages and Workers R2 Storage read).
+  Rendered as the host cost-monitor's `CLOUDFLARE_API_TOKEN` for
+  its R2 and Pages usage calls. None of the other tokens can create
+  tokens, so a replacement has to be made in the dashboard.
 - **Account ID:** `CLOUDFLARE_ACCOUNT_ID` &mdash; in
   age-encrypted credentials.
 - **Cost:** $0 on free tier (unlimited bandwidth on Pages, no

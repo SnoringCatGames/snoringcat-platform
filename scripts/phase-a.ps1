@@ -195,10 +195,15 @@ function Ssh-Run {
 	# ever needs a literal CR (same fix as claude-config's
 	# Invoke-RemoteCommand.ps1).
 	$cmd = $cmd -replace "`r`n", "`n"
+	# Keep-alives bound a session that stalls after connecting, which
+	# ConnectTimeout doesn't (phase-b hung 15+ minutes on one,
+	# 2026-10-11). Long remote commands are unaffected.
 	ssh -i $keyPath `
 		-o StrictHostKeyChecking=accept-new `
 		-o UserKnownHostsFile="$MigKnownHosts" `
 		-o ConnectTimeout=15 `
+		-o ServerAliveInterval=5 `
+		-o ServerAliveCountMax=6 `
 		-o BatchMode=yes `
 		"root@$ip" $cmd
 }
@@ -214,7 +219,11 @@ function Scp-Up {
 	$args = @(
 		"-i", $keyPath,
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=$MigKnownHosts"
+		"-o", "UserKnownHostsFile=$MigKnownHosts",
+		"-o", "ConnectTimeout=15",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=6",
+		"-o", "BatchMode=yes"
 	)
 	if ($Recurse) { $args += "-r" }
 	$args += @($src, "root@${ip}:${dst}")

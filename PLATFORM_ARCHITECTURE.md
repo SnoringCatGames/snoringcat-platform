@@ -673,13 +673,11 @@ rendered by phase-b from `credentials.env`: `HCLOUD_TOKEN`,
 `EDGEGAP_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`,
 threshold overrides, and the `DISCORD_WEBHOOK_URL` (separate copy
 from `~/.claude/jobs/discord-config.json`). The Cloudflare token is
-`CLOUDFLARE_COST_MONITOR_TOKEN` if `credentials.env` has one (meant
-to be a dedicated read-only token: Account → Cloudflare Pages: Read +
-Workers R2 Storage: Read), otherwise `CLOUDFLARE_PAGES_TOKEN`
-(Pages:Edit + Workers R2 Storage:Edit + Account Settings:Read).
-None of the tokens we hold can create tokens, so the read-only one
-has to be made in the dashboard. Then add it to `credentials.env`
-and re-run the CostMonitor step. `GITHUB_TOKEN` is not rendered
+`CLOUDFLARE_COST_MONITOR_TOKEN`, a dedicated account-owned read-only
+token (Cloudflare Pages and Workers R2 Storage read), created and
+deployed 2026-10-11. phase-b falls back to `CLOUDFLARE_PAGES_TOKEN`
+(Pages:Edit + Workers R2 Storage:Edit + Account Settings:Read) only
+if `credentials.env` loses it. `GITHUB_TOKEN` is not rendered
 today, so the GitHub Actions block is skipped (its numbers read 0).
 
 **Inspect:**
@@ -782,14 +780,15 @@ dropped `SIGNALING_HMAC_SECRET`, and a rebuilt Grafana kept its
 default admin password. Checked against prod on 2026-10-11: all 27
 rendered values match what the running containers use.
 
-**Known gap: game-server releases.** The local allocator needs each
-game's `local_image_ref` already on the host. It creates containers
-through the Docker Engine API, which never pulls, and under
-`allocator_mode: hybrid` a failed local allocation fails the match
-(there is no Edgegap fallback). phase-a pulls the images after a
-rebuild, but nothing pulls a new tag when a release bumps
-`local_image_ref`. Until someone runs `docker pull <ref>` on the
-host, every match routed local fails.
+**Game-server releases need the image on the host too.** The local
+allocator needs each game's `local_image_ref` already there. It
+creates containers through the Docker Engine API, which never pulls,
+and under `allocator_mode: hybrid` a failed local allocation fails
+the match (there is no Edgegap fallback). phase-a pulls the images
+after a rebuild. For a release, hopnbop's `sync-game-config.ps1`
+pulls the new tag over SSH before registering it, and refuses to
+register if the pull fails. A CI release (`release.yml`) has no SSH
+key and skips the pull with a warning.
 
 ---
 

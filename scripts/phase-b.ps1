@@ -132,8 +132,15 @@ function Ssh-Run {
 	# run even after a failure), `set -e<CR>` is an invalid option,
 	# and `fi<CR>` is a syntax error. Never send a literal CR.
 	$cmd = $cmd -replace "`r`n", "`n"
+	# Keep-alives bound a session that stalls after connecting, which
+	# ConnectTimeout doesn't: on 2026-10-11 an scp in Step-PgBackup
+	# stalled mid-session and hung for 15+ minutes. Six unanswered 5s
+	# probes now fail it in about 30s. Long remote commands are
+	# unaffected, since sshd answers the probes while they run. Scp-Up
+	# carries the same options.
 	ssh -i $key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$Kh `
-		-o ConnectTimeout=15 -o BatchMode=yes "root@$ip" $cmd
+		-o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=6 `
+		-o BatchMode=yes "root@$ip" $cmd
 }
 
 # The separate postgres-prod-1 host's IP, or $null on the single-host
@@ -152,6 +159,9 @@ function Scp-Up {
 	$scpArgs = @("-i", $key,
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=$Kh",
+		"-o", "ConnectTimeout=15",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=6",
 		"-o", "BatchMode=yes")
 	if ($Recurse) { $scpArgs += "-r" }
 	$scpArgs += $src
@@ -448,14 +458,12 @@ function Step-CostMonitor {
 	# notification (and an email if the user has those on).
 	#
 	# Cloudflare token for the R2 + Pages usage probes (read-only
-	# GETs): prefer a dedicated CLOUDFLARE_COST_MONITOR_TOKEN
-	# (Account -> Cloudflare Pages: Read + Workers R2 Storage: Read)
-	# when credentials.env has one. None does yet: no token we hold
-	# can mint tokens (checked 2026-10-11), so it falls back to
-	# CLOUDFLARE_PAGES_TOKEN, deploy-cf-pages.ps1's Pages:Edit + R2
-	# Storage:Edit + Account Settings:Read token, the narrowest one
-	# that reads both. The Pulumi/DNS CLOUDFLARE_API_TOKEN cannot
-	# read R2 at all.
+	# GETs): CLOUDFLARE_COST_MONITOR_TOKEN, an account-owned read-only
+	# token made for this on 2026-10-11 (Pages and R2 Storage read).
+	# The fallback, CLOUDFLARE_PAGES_TOKEN, is deploy-cf-pages.ps1's
+	# Pages:Edit + R2 Storage:Edit token; it only applies if
+	# credentials.env loses the dedicated one. The Pulumi/DNS
+	# CLOUDFLARE_API_TOKEN cannot read R2 at all.
 	$cfToken = [Environment]::GetEnvironmentVariable('CLOUDFLARE_COST_MONITOR_TOKEN')
 	if (-not $cfToken) { $cfToken = [Environment]::GetEnvironmentVariable('CLOUDFLARE_PAGES_TOKEN') }
 	if (-not $cfToken) { Note "WARN: no Cloudflare token for cost-monitor; R2/Pages lines will report 'not tracked'" }
