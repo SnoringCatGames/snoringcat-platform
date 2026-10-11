@@ -94,6 +94,26 @@ const _HTTPS_REDIRECT_PROVIDERS := [
 	Provider.FACEBOOK,
 ]
 const _REFRESH_COOLDOWN_SEC := 60.0
+## Backoff between automatic refresh attempts after a failure that
+## may be transient (network error, timeout, 5xx). It doubles with
+## each consecutive failure, from the initial delay up to the max,
+## and resets once a session is stored.
+const _REFRESH_RETRY_INITIAL_DELAY_SEC := 5.0
+const _REFRESH_RETRY_MAX_DELAY_SEC := 300.0
+const _REFRESH_RETRY_BACKOFF_MULTIPLIER := 2.0
+## gRPC status codes Nakama puts in its error responses.
+const _GRPC_NOT_FOUND := 5
+const _GRPC_PERMISSION_DENIED := 7
+const _GRPC_UNAUTHENTICATED := 16
+## Codes with which Nakama rejects a session refresh for good: the
+## refresh token is invalid or expired, the account is banned, or
+## the account no longer exists. Retrying cannot turn any of them
+## into a session.
+const _REFRESH_REJECTED_GRPC_CODES := [
+	_GRPC_UNAUTHENTICATED,
+	_GRPC_PERMISSION_DENIED,
+	_GRPC_NOT_FOUND,
+]
 
 # Endpoint constants are opaque dispatch tags consumed by
 # _send_auth_request to pick the matching Nakama call. Their
@@ -132,6 +152,10 @@ var _oauth_provider: Provider
 var _is_awaiting_oauth := false
 var _last_refresh_time := 0.0
 var _is_refreshing := false
+# Unix time before which _check_auto_refresh won't retry a failed
+# refresh, and the wait the next transient failure will impose.
+var _refresh_retry_time := 0.0
+var _refresh_retry_delay_sec := _REFRESH_RETRY_INITIAL_DELAY_SEC
 
 # PKCE verifier for the in-flight Google OAuth attempt. Set when
 # the OAuth URL is built, consumed by the post-callback token
@@ -263,7 +287,10 @@ func get_guest_jwt() -> void:
 
 
 ## Refresh the current JWT using the stored refresh
-## token.
+## token. Emits auth_completed when done. If Nakama
+## rejects the refresh token (invalid or expired,
+## account banned or gone), the token store is
+## cleared first, which leaves the player signed out.
 func refresh_token() -> void:
 	if _is_refreshing:
 		return
@@ -977,9 +1004,15 @@ func _do_provider_auth(body: Dictionary) -> void:
 func _do_session_refresh(_body: Dictionary) -> void:
 	var current := Platform.build_session_from_store()
 	if current == null or current.refresh_token.is_empty():
-		_is_refreshing = false
-		_emit_failure("No refresh token")
+		# Nakama's session parser can't read the stored refresh
+		# token, so no request could ever refresh it either.
+		_handle_refresh_failure(
+			"No refresh token",
+			true,
+			Platform.token_store.refresh_token,
+		)
 		return
+	var refresh_token_used := current.refresh_token
 	# Pass vars on refresh too so an old token minted before the
 	# game_id-vars rollout picks up the value at next refresh.
 	# Nakama merges the request's vars onto the existing
@@ -988,10 +1021,17 @@ func _do_session_refresh(_body: Dictionary) -> void:
 		await Platform.get_nakama_client().session_refresh_async(
 			current, _build_session_vars()))
 	if session.is_exception():
-		_is_refreshing = false
-		_emit_failure(_describe_nakama_exception(
-			session.get_exception()))
+		var ex := session.get_exception()
+		_handle_refresh_failure(
+			_describe_nakama_exception(ex),
+			_is_refresh_token_rejected(ex),
+			refresh_token_used,
+		)
 		return
+	# Cleared on success too. Leaving it set made refresh_token()
+	# and _check_auto_refresh no-ops for the rest of the process
+	# after the first successful refresh.
+	_is_refreshing = false
 	_handle_auth_success(_session_to_response_dict(
 		session, Platform.token_store.provider))
 
@@ -1173,6 +1213,7 @@ func _handle_auth_success(data: Dictionary) -> void:
 		_last_refresh_time = (
 			Time.get_unix_time_from_system()
 		)
+		_reset_refresh_backoff()
 
 	auth_status_changed.emit("Authenticated")
 	auth_completed.emit(true, "")
@@ -1279,7 +1320,70 @@ func _check_auto_refresh() -> void:
 	var now := Time.get_unix_time_from_system()
 	if now - _last_refresh_time < _REFRESH_COOLDOWN_SEC:
 		return
+	if now < _refresh_retry_time:
+		return
 	refresh_token()
+
+
+## Finishes a failed session refresh. `refresh_token_used` is the
+## refresh token the attempt read from the store.
+##
+## A rejected token signs the player out, as PlatformAuthScreen
+## does when its boot-time refresh fails: the cleared store no
+## longer needs_refresh(), so _check_auto_refresh stops, and the
+## next auth screen offers sign-in. The store is left alone if a
+## newer sign-in replaced the token while the request was in
+## flight. Any other failure backs off before the next automatic
+## attempt. Explicit refresh_token() calls skip the backoff: their
+## callers await auth_completed, so they must get an answer.
+##
+## Reports through auth_completed directly. _emit_failure would
+## hand a background refresh failure to whichever link / unlink /
+## merge / delete flow happened to be in progress.
+func _handle_refresh_failure(
+	error: String,
+	is_token_rejected: bool,
+	refresh_token_used: String,
+) -> void:
+	_is_refreshing = false
+	if is_token_rejected:
+		push_warning(
+			"[PlatformAuthApiClient] Refresh token rejected: %s"
+			% error,
+		)
+		_reset_refresh_backoff()
+		if Platform.token_store.refresh_token == refresh_token_used:
+			Platform.token_store.clear_tokens()
+	else:
+		push_warning(
+			(
+				"[PlatformAuthApiClient] Session refresh failed,"
+				+ " retrying in %d s: %s"
+			) % [int(_refresh_retry_delay_sec), error],
+		)
+		_refresh_retry_time = (
+			Time.get_unix_time_from_system()
+			+ _refresh_retry_delay_sec)
+		_refresh_retry_delay_sec = minf(
+			_refresh_retry_delay_sec * _REFRESH_RETRY_BACKOFF_MULTIPLIER,
+			_REFRESH_RETRY_MAX_DELAY_SEC,
+		)
+	auth_completed.emit(false, error)
+
+
+func _reset_refresh_backoff() -> void:
+	_refresh_retry_time = 0.0
+	_refresh_retry_delay_sec = _REFRESH_RETRY_INITIAL_DELAY_SEC
+
+
+## True when a failed refresh means the refresh token can never
+## work again. Only Nakama's own verdict counts: a failure without
+## one of its rejection codes (network error, timeout, 5xx, a
+## proxy's error page) is treated as transient.
+static func _is_refresh_token_rejected(ex: NakamaException) -> bool:
+	if ex == null:
+		return false
+	return ex.grpc_status_code in _REFRESH_REJECTED_GRPC_CODES
 
 
 # =============================================================
