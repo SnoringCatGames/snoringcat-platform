@@ -1,6 +1,8 @@
-# Phase A orchestrator: provisions Nakama + Postgres on Hetzner via
-# Pulumi, brings up Caddy + Nakama Docker Compose stack, and verifies
-# the install end-to-end.
+# Phase A orchestrator: provisions the Hetzner host via Pulumi, brings
+# up the single-host Docker Compose stack (Postgres + Nakama + Caddy +
+# signaling-proxy + geoip-sidecar + the obs subset; see
+# infra/remote/nakama/docker-compose.yml), and verifies the install
+# end-to-end.
 #
 # Each step is idempotent. Rerunning the script is safe: Pulumi up is
 # idempotent, S3 bucket creation is gated on existence, generated
@@ -9,12 +11,34 @@
 # Usage:
 #   pwsh -File scripts/phase-a.ps1                # Full run
 #   pwsh -File scripts/phase-a.ps1 -SkipPreview   # Skip preview gate
-#   pwsh -File scripts/phase-a.ps1 -StartAt Postgres   # Resume mid-run
-#   pwsh -File scripts/phase-a.ps1 -RestoreBackup # DR rebuild: restore
-#                                  # newest R2 dump before Nakama boots
+#   pwsh -File scripts/phase-a.ps1 -StartAt Nakama     # Resume mid-run
+#   pwsh -File scripts/phase-a.ps1 -RestoreBackup # DR rebuild, one
+#                                  # command: new host, then the newest
+#                                  # R2 dump restored before Nakama
+#                                  # boots. Interactive: HostKeys asks
+#                                  # you to confirm the new host's
+#                                  # fingerprint out-of-band.
+#   pwsh -File scripts/phase-a.ps1 -StartAt HostKeys -StopAt HostKeys
+#                                  # Re-verify + re-pin the host's SSH
+#                                  # keys on their own.
 #
 # The -StartAt step names are: PulumiSetup, S3, PulumiLogin, Preview,
-# Up, WaitBoot, Postgres, Nakama, Verify, Reencrypt, Complete.
+# Up, WaitBoot, HostKeys, Postgres, Nakama, Verify, Reencrypt, Complete.
+#
+# Single-host stack: since the 2026-05-06 consolidation Postgres is a
+# compose service next to Nakama, so WaitBoot and Postgres skip the old
+# separate postgres-prod-1 host whenever the Pulumi stack no longer
+# exports one. They used to read hetzner_postgres_ip unconditionally,
+# which hard-failed a single-host DR rebuild (DR drill 2026-10-07,
+# Gap A). The two-host paths stay for forward compatibility only.
+#
+# Host keys: a rebuilt host has new SSH host keys, and every scheduled
+# prod job verifies the host against claude-config/jobs/known_hosts
+# with StrictHostKeyChecking=yes. HostKeys (right after WaitBoot, so
+# before any secret is copied to the host) has you confirm the new
+# ed25519 fingerprint in the Hetzner web console, then rewrites that
+# file and ~/.hopnbop-migration/known_hosts to match (DR drill
+# 2026-10-07, Gap B).
 
 [CmdletBinding()]
 param(
@@ -29,15 +53,21 @@ param(
 	# Deliberately skip the restore and the backup check (brand-new
 	# deployment / intentional reset to an empty database).
 	[switch]$NoRestore,
+	# Skip HostKeys' out-of-band verification and re-pin. Only for
+	# when you cannot reach the Hetzner console right now: the run
+	# continues on phase-a's own trust-on-first-use key, and every
+	# scheduled prod job fails host-key verification until you run
+	# `-StartAt HostKeys -StopAt HostKeys`.
+	[switch]$SkipHostKeyPin,
 	[ValidateSet(
 		"PulumiSetup", "S3", "PulumiLogin", "Preview", "Up",
-		"WaitBoot", "Postgres", "Nakama", "Verify",
+		"WaitBoot", "HostKeys", "Postgres", "Nakama", "Verify",
 		"Reencrypt", "Complete"
 	)]
 	[string]$StartAt = "PulumiSetup",
 	[ValidateSet(
 		"PulumiSetup", "S3", "PulumiLogin", "Preview", "Up",
-		"WaitBoot", "Postgres", "Nakama", "Verify",
+		"WaitBoot", "HostKeys", "Postgres", "Nakama", "Verify",
 		"Reencrypt", "Complete"
 	)]
 	[string]$StopAt = "Complete"
@@ -57,6 +87,16 @@ $PulumiDir  = "$RepoRoot\infra\pulumi\snoringcat-platform"
 $RemoteSrc  = "$RepoRoot\infra\remote"
 $NakamaKey  = "$MigDir\ssh\nakama"
 $PostgresKey= "$MigDir\ssh\postgres"
+# phase-a's own host verification (trust-on-first-use while a fresh
+# host boots); HostKeys overwrites the nakama entries in it with the
+# out-of-band-verified keys, so both files agree from then on.
+$MigKnownHosts    = "$MigDir\known_hosts"
+# The synced, human-verified pin every scheduled prod job and skill
+# checks with StrictHostKeyChecking=yes (claude-config's
+# rules/scheduling.md, "Host-key pinning").
+$ClaudeConfigDir  = "$HOME\Repositories\claude-config"
+$PinnedKnownHosts = "$ClaudeConfigDir\jobs\known_hosts"
+$PinnedHostName   = "nakama.snoringcat.games"
 
 $env:PATH = "$HOME\.pulumi\bin;$env:PATH"
 $env:AWS_PROFILE = "hopnbop"
@@ -144,9 +184,17 @@ function Ssh-Run {
 		[string]$keyPath,
 		[string]$cmd
 	)
+	# This file is CRLF in a Windows checkout (autocrlf), and so is
+	# any multi-line here-string built in it. Remote bash keeps the
+	# CR: `set -e<CR>` is an invalid option, `fi<CR>` is not `fi`,
+	# and `&&<CR>` chains onto a bogus `$'\r'` command, so later
+	# lines run even when earlier ones failed. No remote command
+	# ever needs a literal CR (same fix as claude-config's
+	# Invoke-RemoteCommand.ps1).
+	$cmd = $cmd -replace "`r`n", "`n"
 	ssh -i $keyPath `
 		-o StrictHostKeyChecking=accept-new `
-		-o UserKnownHostsFile="$MigDir\known_hosts" `
+		-o UserKnownHostsFile="$MigKnownHosts" `
 		-o ConnectTimeout=15 `
 		-o BatchMode=yes `
 		"root@$ip" $cmd
@@ -163,7 +211,7 @@ function Scp-Up {
 	$args = @(
 		"-i", $keyPath,
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=$MigDir\known_hosts"
+		"-o", "UserKnownHostsFile=$MigKnownHosts"
 	)
 	if ($Recurse) { $args += "-r" }
 	$args += @($src, "root@${ip}:${dst}")
@@ -181,9 +229,55 @@ function Wait-CloudInit {
 			Note "$label cloud-init complete"
 			return
 		}
+		# sshd is up but presents a different key than the one
+		# known_hosts recorded for this IP. Retrying cannot fix
+		# that, and it used to burn the full 20 minutes silently.
+		if ("$out" -match 'REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed') {
+			throw ("$label ($ip) presents a different SSH host key than " +
+				"$MigKnownHosts recorded for that IP. Expected only if a " +
+				"rebuilt host reused the IP; otherwise treat it as a " +
+				"possible MITM. For a rebuild: ssh-keygen -R $ip -f " +
+				"`"$MigKnownHosts`", then re-run with -StartAt WaitBoot " +
+				"(HostKeys re-verifies the new key out-of-band before " +
+				"any secret is copied to the host).")
+		}
 		Start-Sleep -Seconds 20
 	}
 	throw "Timed out waiting for cloud-init on $label ($ip)"
+}
+
+# --------------------------------------------------------------------
+# State helpers
+# --------------------------------------------------------------------
+# Set-StrictMode makes reading a property that state.json lacks throw,
+# and assigning one silently requires it to exist. These read and
+# write state fields whether or not they are present.
+function Get-StateField {
+	param($obj, [string]$name)
+	if ($null -eq $obj) { return $null }
+	$p = $obj.PSObject.Properties[$name]
+	if ($null -eq $p) { return $null }
+	return $p.Value
+}
+
+function Set-StateField {
+	param($obj, [string]$name, $value)
+	if ($obj.PSObject.Properties[$name]) {
+		$obj.$name = $value
+	} else {
+		$obj | Add-Member -NotePropertyName $name -NotePropertyValue $value
+	}
+}
+
+# The separate postgres-prod-1 host's IP, or $null on the single-host
+# stack. Step-Up blanks the field whenever the Pulumi stack stops
+# exporting postgres_public_ip, so a value left over from the
+# pre-consolidation era cannot send WaitBoot/Postgres to a dead IP.
+function Get-PostgresHostIp {
+	param($state)
+	$ip = Get-StateField (Get-StateField $state 'infrastructure') 'hetzner_postgres_ip'
+	if ([string]::IsNullOrWhiteSpace("$ip")) { return $null }
+	return "$ip".Trim()
 }
 
 # --------------------------------------------------------------------
@@ -288,6 +382,14 @@ docker exec -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
   psql --no-password -h 127.0.0.1 -U nakama -d nakama -tA \
   -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
 "@
+	# The here-string inherits this file's CRLF checkout, and base64
+	# carries the CRs through Ssh-Run's own normalization. Under bash,
+	# `set -e<CR>` fails, and each `\<CR>` escapes the CR instead of
+	# continuing the line, so `docker exec ... postgres` runs with a
+	# stray CR argument and the psql half runs on the bare host. The
+	# DROP and the replay never happen, and the run dies at the
+	# table-count check below. Strip the CRs before encoding.
+	$restoreScript = $restoreScript -replace "`r`n", "`n"
 	$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($restoreScript))
 	$tableCount = Ssh-Run $ip $NakamaKey "echo $b64 | base64 -d | bash"
 	if ($LASTEXITCODE -ne 0) {
@@ -302,11 +404,272 @@ docker exec -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
 }
 
 # --------------------------------------------------------------------
+# Host-key pinning (Step-HostKeys)
+# --------------------------------------------------------------------
+$PinBlockBegin = "# --- current pin (rewritten by phase-a.ps1 Step-HostKeys) ---"
+$PinBlockEnd   = "# --- end current pin ---"
+$HostKeyTypeOrder = @(
+	"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+	"ecdsa-sha2-nistp521", "ssh-rsa"
+)
+
+# OpenSSH's fingerprint of a base64 key blob: "SHA256:" + the unpadded
+# base64 SHA-256 of the blob, i.e. what `ssh-keygen -lf` prints.
+function Get-KeyFingerprint {
+	param([string]$b64)
+	$sha = [Security.Cryptography.SHA256]::Create()
+	try {
+		$hash = $sha.ComputeHash([Convert]::FromBase64String($b64))
+	} finally { $sha.Dispose() }
+	return "SHA256:" + [Convert]::ToBase64String($hash).TrimEnd('=')
+}
+
+# The ed25519 host key the host presents on the wire, as
+# "ssh-ed25519 <base64>". Captured by letting ssh itself record it
+# into a fresh, throwaway known_hosts: Windows' bundled ssh-keyscan
+# (Win32-OpenSSH 9.5) negotiates sntrup761x25519 with Ubuntu 24.04's
+# sshd and then dies with "choose_kex: unsupported KEX method". ssh
+# records the key before user auth, so the file is read whatever the
+# exit code.
+function Get-PresentedEd25519Key {
+	param([string]$ip)
+	$tmpKh = New-TemporaryFile
+	try {
+		ssh -i $NakamaKey `
+			-o StrictHostKeyChecking=accept-new `
+			-o "UserKnownHostsFile=$($tmpKh.FullName)" `
+			-o HostKeyAlgorithms=ssh-ed25519 `
+			-o HashKnownHosts=no `
+			-o UpdateHostKeys=no `
+			-o ConnectTimeout=15 `
+			-o BatchMode=yes `
+			-o LogLevel=ERROR `
+			"root@$ip" true 2>&1 | Out-Null
+		foreach ($l in (Get-Content $tmpKh.FullName)) {
+			$parts = "$l".Trim() -split '\s+'
+			if ($parts.Count -ge 3 -and $parts[1] -eq "ssh-ed25519") {
+				return "ssh-ed25519 $($parts[2])"
+			}
+		}
+	} finally {
+		Remove-Item $tmpKh.FullName -Force -ErrorAction SilentlyContinue
+	}
+	throw "Could not capture an ed25519 host key from $ip (is sshd up?)"
+}
+
+# Every host key type, read from /etc/ssh/*.pub over an SSH session
+# that accepts ONLY the verified ed25519 key. The ecdsa/rsa keys thus
+# inherit the out-of-band verification instead of being trusted on
+# first use: an attacker able to answer for the IP could otherwise
+# plant their own ecdsa key next to the genuine ed25519 one and then
+# negotiate ecdsa. Returns an ordered type -> base64 map.
+function Get-HostKeysOverPinnedSession {
+	param([string]$ip, [string]$edKey)
+	$tmpKh = New-TemporaryFile
+	try {
+		[IO.File]::WriteAllText($tmpKh.FullName, "$ip $edKey`n",
+			[Text.UTF8Encoding]::new($false))
+		$remote = 'for t in ed25519 ecdsa rsa; do f=/etc/ssh/ssh_host_${t}_key.pub; test -f $f && cat $f; done; true'
+		$out = @(ssh -i $NakamaKey `
+			-o StrictHostKeyChecking=yes `
+			-o "UserKnownHostsFile=$($tmpKh.FullName)" `
+			-o HostKeyAlgorithms=ssh-ed25519 `
+			-o ConnectTimeout=15 `
+			-o BatchMode=yes `
+			"root@$ip" $remote)
+		if ($LASTEXITCODE -ne 0) {
+			throw "Reading /etc/ssh/*.pub over the pinned session failed (exit $LASTEXITCODE)"
+		}
+	} finally {
+		Remove-Item $tmpKh.FullName -Force -ErrorAction SilentlyContinue
+	}
+	$found = @{}
+	foreach ($l in $out) {
+		$parts = "$l".Trim() -split '\s+'
+		if ($parts.Count -ge 2 -and $parts[0] -match '^(ssh-|ecdsa-)') {
+			$found[$parts[0]] = $parts[1]
+		}
+	}
+	if ($found["ssh-ed25519"] -ne ($edKey -split ' ')[1]) {
+		throw "/etc/ssh/ssh_host_ed25519_key.pub does not match the verified key"
+	}
+	$keys = [ordered]@{}
+	foreach ($t in $HostKeyTypeOrder) {
+		if ($found.ContainsKey($t)) { $keys[$t] = $found[$t] }
+	}
+	foreach ($t in ($found.Keys | Sort-Object)) {
+		if (-not $keys.Contains($t)) { $keys[$t] = $found[$t] }
+	}
+	return $keys
+}
+
+# Splits a known_hosts file into its leading comment header (kept
+# verbatim), the host field of its entries, and type -> base64 key.
+function Read-PinnedKnownHosts {
+	param([string]$path)
+	$header = [System.Collections.Generic.List[string]]::new()
+	$keys = [ordered]@{}
+	$hostField = ""
+	if (Test-Path $path) {
+		$inHeader = $true
+		foreach ($line in (Get-Content $path)) {
+			if ($inHeader -and ($line -match '^\s*(#|$)')) {
+				$header.Add($line)
+				continue
+			}
+			$inHeader = $false
+			$parts = $line.Trim() -split '\s+'
+			if ($parts.Count -lt 3 -or $parts[0].StartsWith("#")) { continue }
+			$hostField = $parts[0]
+			$keys[$parts[1]] = $parts[2]
+		}
+	}
+	return [pscustomobject]@{
+		Header    = @($header)
+		HostField = $hostField
+		Hosts     = @(if ($hostField) { $hostField -split ',' })
+		Keys      = $keys
+	}
+}
+
+function Format-KnownHostsEntries {
+	param([string]$hostField, $keys)
+	$lines = @()
+	foreach ($t in $keys.Keys) { $lines += "$hostField $t $($keys[$t])" }
+	return $lines
+}
+
+function Write-LfFile {
+	param([string]$path, [string[]]$lines)
+	[IO.File]::WriteAllText($path, (($lines -join "`n") + "`n"),
+		[Text.UTF8Encoding]::new($false))
+}
+
+# Rewrites the synced pin: header kept verbatim except for the
+# provenance block between the pin markers (appended if missing),
+# then one entry per key type for "<hostname>,<ip>".
+function Write-PinnedKnownHosts {
+	param([string]$path, [string[]]$header, [string]$hostField, $keys,
+		[string]$fingerprint)
+	$block = @(
+		$PinBlockBegin,
+		"# Captured $(Get-Date -Format 'yyyy-MM-dd') by phase-a.ps1 Step-HostKeys: the operator",
+		"# confirmed the ed25519 fingerprint out-of-band in the Hetzner web",
+		"# console, and the other key types were read from /etc/ssh/*.pub over",
+		"# an SSH session that accepted only that ed25519 key.",
+		"#   $fingerprint",
+		$PinBlockEnd
+	)
+	$out = [System.Collections.Generic.List[string]]::new()
+	$skipping = $false
+	$placed = $false
+	foreach ($line in $header) {
+		if ($line -eq $PinBlockBegin) {
+			$skipping = $true
+			$out.AddRange([string[]]$block)
+			$placed = $true
+			continue
+		}
+		if ($skipping) {
+			if ($line -eq $PinBlockEnd) { $skipping = $false }
+			continue
+		}
+		$out.Add($line)
+	}
+	if (-not $placed) { $out.AddRange([string[]]$block) }
+	$out.AddRange([string[]](Format-KnownHostsEntries $hostField $keys))
+	Write-LfFile $path @($out)
+}
+
+# Mirrors the verified keys into phase-a's own known_hosts: drops every
+# entry naming one of $dropHosts (the pinned hostname, the new IP, the
+# previously pinned IP), keeps the rest, appends the new entries.
+function Update-MigKnownHosts {
+	param([string]$path, [string[]]$dropHosts, [string]$hostField, $keys)
+	$kept = [System.Collections.Generic.List[string]]::new()
+	if (Test-Path $path) {
+		foreach ($line in (Get-Content $path)) {
+			$first = ($line.Trim() -split '\s+')[0]
+			$named = @($first -split ',' | Where-Object { $dropHosts -contains $_ })
+			if ($named.Count -eq 0) { $kept.Add($line) }
+		}
+	}
+	$kept.AddRange([string[]](Format-KnownHostsEntries $hostField $keys))
+	Write-LfFile $path @($kept)
+}
+
+# Split out so tests can stub it: Read-Host cannot prompt anyone when
+# stdin is redirected (scheduled / piped runs).
+function Test-OperatorInput { return -not [Console]::IsInputRedirected }
+
+function Confirm-HostKeyOutOfBand {
+	param([string]$ip, [string]$fp, [string]$pinnedFp)
+	Write-Host ""
+	Write-Host ("=" * 72) -ForegroundColor Yellow
+	Write-Host "nakama-prod-1 ($ip) presents an SSH host key that is not pinned." -ForegroundColor Yellow
+	if ($pinnedFp) { Write-Host "Currently pinned ed25519: $pinnedFp (expected to differ after a rebuild)" }
+	Write-Host ""
+	Write-Host "  ed25519 fingerprint on the wire:  $fp" -ForegroundColor Yellow
+	Write-Host ""
+	Write-Host "Verify it OUT-OF-BAND before anything trusts it:"
+	Write-Host "  1. https://console.hetzner.com -> project snoringcat-platform ->"
+	Write-Host "     server nakama-prod-1 -> Console (the >_ web console)."
+	Write-Host "  2. Log in as root. No root password on a fresh host? Use the"
+	Write-Host "     server's Rescue tab -> 'Reset root password' first."
+	Write-Host "  3. Run:  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
+	Write-Host "  4. Its SHA256:... must match the fingerprint above exactly."
+	Write-Host ""
+	Write-Host "A mismatch means something other than the new host answered on"
+	Write-Host "$ip. Stop and investigate. Do not confirm."
+	Write-Host ("=" * 72) -ForegroundColor Yellow
+	if (-not (Test-OperatorInput)) {
+		throw ("HostKeys needs an interactive operator to confirm $fp " +
+			"out-of-band. Re-run interactively, or pass -SkipHostKeyPin " +
+			"(scheduled prod jobs then fail until you re-pin).")
+	}
+	$answer = Read-Host "Type 'yes' if the console printed exactly $fp"
+	if ("$answer".Trim() -ne "yes") {
+		throw ("Host key not confirmed; stopped before any secret was " +
+			"copied to the host. If the console showed a different " +
+			"fingerprint, treat it as a possible MITM.")
+	}
+	Note "HostKeys: operator confirmed $fp out-of-band"
+}
+
+function Show-RepinFollowUps {
+	param([string[]]$oldHosts, [string]$ip)
+	Write-Host ""
+	Write-Host "claude-config/jobs/known_hosts now pins $PinnedHostName,$ip." -ForegroundColor Green
+	Write-Host "It reaches the scheduled jobs and the other machine through"
+	Write-Host "claude-config: the desktop's hourly sync-claude-config job commits"
+	Write-Host "and pushes it within the hour. To push it now (and always on the"
+	Write-Host "laptop, which runs no scheduled jobs):"
+	Write-Host "  & `"$ClaudeConfigDir\sync-if-changed.ps1`""
+	Write-Host "Until it is pushed and pulled, prod jobs keep failing host-key checks."
+	# The pin covers the hostname, but jobs that SSH to a hardcoded IP
+	# still point at the old (now dead or reassigned) address.
+	$oldIps = @($oldHosts | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and $_ -ne $ip })
+	foreach ($old in $oldIps) {
+		$hits = @(Get-ChildItem -Path $ClaudeConfigDir -Recurse -File -ErrorAction SilentlyContinue |
+			Where-Object { $_.FullName -notmatch '\\(\.git|status|logs|state|secrets)\\' -and $_.Name -ne "known_hosts" } |
+			Select-String -SimpleMatch $old -List -ErrorAction SilentlyContinue |
+			ForEach-Object { $_.Path })
+		if ($hits.Count -gt 0) {
+			Write-Host ""
+			Write-Host "The host IP changed ($old -> $ip). These claude-config files still" -ForegroundColor Yellow
+			Write-Host "SSH to (or document) the old IP; update them before the jobs recover:" -ForegroundColor Yellow
+			foreach ($h in $hits) { Write-Host "  $h" }
+			Note "HostKeys: $($hits.Count) claude-config file(s) still reference the old IP $old"
+		}
+	}
+}
+
+# --------------------------------------------------------------------
 # Step ordering
 # --------------------------------------------------------------------
 $StepOrder = @(
 	"PulumiSetup", "S3", "PulumiLogin", "Preview", "Up",
-	"WaitBoot", "Postgres", "Nakama", "Verify",
+	"WaitBoot", "HostKeys", "Postgres", "Nakama", "Verify",
 	"Reencrypt", "Complete"
 )
 $StartIdx = $StepOrder.IndexOf($StartAt)
@@ -433,12 +796,16 @@ function Step-Up {
 		# single-host consolidation. Tolerate their absence so
 		# the script keeps working on the consolidated stack and
 		# remains forward-compatible if anyone re-introduces a
-		# split tier later.
-		if ($outProps -contains "postgres_server_id") {
-			$s.infrastructure.hetzner_postgres_server_id = "$($outs.postgres_server_id)"
-		}
-		if ($outProps -contains "postgres_public_ip") {
-			$s.infrastructure.hetzner_postgres_ip = $outs.postgres_public_ip
+		# split tier later. Absent means "no such host": blank the
+		# fields rather than keep a stale value. A pre-consolidation
+		# state.json still named the destroyed postgres-prod-1
+		# (5.78.118.214), so WaitBoot would have polled a dead IP.
+		$pgId = if ($outProps -contains "postgres_server_id") { "$($outs.postgres_server_id)" } else { "" }
+		$pgIp = if ($outProps -contains "postgres_public_ip") { "$($outs.postgres_public_ip)" } else { "" }
+		Set-StateField $s.infrastructure "hetzner_postgres_server_id" $pgId
+		Set-StateField $s.infrastructure "hetzner_postgres_ip" $pgIp
+		if (-not $pgIp) {
+			Log "Stack exports no separate postgres host (single-host stack)"
 		}
 		Save-State $s
 		Note "Stack outputs persisted to state.json"
@@ -447,18 +814,89 @@ function Step-Up {
 
 function Step-WaitBoot {
 	if (-not (Should-Run "WaitBoot")) { return }
-	Note "Step: WaitBoot (cloud-init on both servers)"
+	Note "Step: WaitBoot (cloud-init)"
 	$s = Read-State
-	Wait-CloudInit $s.infrastructure.hetzner_postgres_ip $PostgresKey "postgres-prod-1"
-	Wait-CloudInit $s.infrastructure.hetzner_nakama_ip   $NakamaKey   "nakama-prod-1"
+	$pgIp = Get-PostgresHostIp $s
+	if ($pgIp) {
+		Wait-CloudInit $pgIp $PostgresKey "postgres-prod-1"
+	} else {
+		Log ("WaitBoot: no separate postgres host in state.json " +
+			"(single-host stack); waiting on nakama-prod-1 only")
+	}
+	Wait-CloudInit $s.infrastructure.hetzner_nakama_ip $NakamaKey "nakama-prod-1"
+}
+
+function Step-HostKeys {
+	if (-not (Should-Run "HostKeys")) { return }
+	Note "Step: HostKeys (verify + pin nakama-prod-1's SSH host keys)"
+	if ($SkipHostKeyPin) {
+		$bar = "!" * 72
+		Write-Host ""
+		Write-Host $bar -ForegroundColor Red
+		Write-Host "!! -SkipHostKeyPin: nakama-prod-1's SSH host keys were NOT verified" -ForegroundColor Red
+		Write-Host "!! out-of-band and NOT pinned. This run trusts whichever key" -ForegroundColor Red
+		Write-Host "!! answered first, and EVERY scheduled prod job (prod-liveness-ping," -ForegroundColor Red
+		Write-Host "!! slo-burn-rate, job-watchdog, service-status-sync, backup-restore-" -ForegroundColor Red
+		Write-Host "!! smoke, ...) fails host-key verification against" -ForegroundColor Red
+		Write-Host "!! claude-config/jobs/known_hosts until you re-pin with:" -ForegroundColor Red
+		Write-Host "!!   pwsh -File scripts/phase-a.ps1 -StartAt HostKeys -StopAt HostKeys" -ForegroundColor Red
+		Write-Host $bar -ForegroundColor Red
+		Note "HostKeys SKIPPED (-SkipHostKeyPin): host keys unverified; claude-config/jobs/known_hosts NOT updated"
+		return
+	}
+	$s = Read-State
+	$ip = "$($s.infrastructure.hetzner_nakama_ip)".Trim()
+	if (-not $ip) {
+		throw "state.json has no infrastructure.hetzner_nakama_ip; run the Up step first"
+	}
+	$hostField = "$PinnedHostName,$ip"
+	$edKey = Get-PresentedEd25519Key $ip
+	$edB64 = ($edKey -split ' ')[1]
+	$fp = Get-KeyFingerprint $edB64
+	$pinned = Read-PinnedKnownHosts $PinnedKnownHosts
+	$pinnedEd = $pinned.Keys["ssh-ed25519"]
+	$dropHosts = @($pinned.Hosts) + @($PinnedHostName, $ip)
+
+	# Normal re-run against an unchanged host: nothing to verify.
+	# Still re-mirror into phase-a's own file, which may predate the
+	# pin (it used to hold ed25519 alone, keyed by IP).
+	if ($pinnedEd -eq $edB64 -and $pinned.HostField -eq $hostField) {
+		Update-MigKnownHosts $MigKnownHosts $dropHosts $hostField $pinned.Keys
+		Log "HostKeys: $hostField already pinned ($fp); claude-config/jobs/known_hosts unchanged"
+		return
+	}
+
+	if ($pinnedEd -eq $edB64) {
+		# Same verified identity, different host field (the IP moved
+		# but the keys came along): re-pin without a console check.
+		Log "HostKeys: ed25519 unchanged ($fp); re-pinning '$($pinned.HostField)' as '$hostField'"
+	} else {
+		$pinnedFp = if ($pinnedEd) { Get-KeyFingerprint $pinnedEd } else { "" }
+		Confirm-HostKeyOutOfBand $ip $fp $pinnedFp
+	}
+
+	$keys = Get-HostKeysOverPinnedSession $ip $edKey
+	Write-PinnedKnownHosts $PinnedKnownHosts $pinned.Header $hostField $keys $fp
+	Update-MigKnownHosts $MigKnownHosts $dropHosts $hostField $keys
+	Note ("HostKeys: pinned $hostField ($fp; $(@($keys.Keys) -join ', ')) " +
+		"in claude-config/jobs/known_hosts and $MigKnownHosts")
+	Show-RepinFollowUps @($pinned.Hosts) $ip
 }
 
 function Step-Postgres {
 	if (-not (Should-Run "Postgres")) { return }
 	Note "Step: Postgres compose up"
+	# Needed either way: on the single-host stack Step-Nakama renders
+	# it into /opt/nakama/.env for the postgres compose service.
 	Ensure-Secret "POSTGRES_PASSWORD"
 	$s = Read-State
-	$ip = $s.infrastructure.hetzner_postgres_ip
+	$ip = Get-PostgresHostIp $s
+	if (-not $ip) {
+		Note ("Postgres: SKIPPED, single-host stack (no separate " +
+			"postgres host in the Pulumi outputs). Postgres starts as " +
+			"a compose service in Step-Nakama.")
+		return
+	}
 	Invoke-Checked "ssh mkdir /opt/postgres" {
 		Ssh-Run $ip $PostgresKey "mkdir -p /opt/postgres" | Out-Null
 	}
@@ -494,6 +932,9 @@ function Step-Nakama {
 	if (-not (Should-Run "Nakama")) { return }
 	Note "Step: Nakama + Caddy compose up"
 	foreach ($v in @(
+		# Also ensured by Step-Postgres; repeated so a run that
+		# starts here (-StartAt Nakama) still has it.
+		"POSTGRES_PASSWORD",
 		"NAKAMA_CONSOLE_PASSWORD",
 		"NAKAMA_SERVER_KEY",
 		"NAKAMA_SESSION_ENCRYPTION_KEY",
@@ -754,6 +1195,7 @@ try {
 	Step-Preview
 	Step-Up
 	Step-WaitBoot
+	Step-HostKeys
 	Step-Postgres
 	Step-Nakama
 	Step-Verify
