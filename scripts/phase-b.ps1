@@ -49,6 +49,9 @@ $NakamaKey   = "$MigDir\ssh\nakama"
 $PostgresKey = "$MigDir\ssh\postgres"
 $Kh          = "$MigDir\known_hosts"
 
+# Get-NakamaEnvLines: the /opt/nakama/.env renderer phase-a shares.
+. "$PSScriptRoot\lib\nakama-env.ps1"
+
 $env:PATH = "$HOME\.pulumi\bin;$env:PATH"
 $env:AWS_PROFILE = "hopnbop"
 $env:AWS_REGION  = "us-west-2"
@@ -275,7 +278,10 @@ function Step-NakamaStack {
 	Note "Step: redeploy Nakama compose (single-host, postgres co-tenant)"
 	$s = Read-State
 	$ip = $s.infrastructure.hetzner_nakama_ip
-	$privPg = "10.0.1.20"
+	# The whole file, shared with phase-a. Rendered before anything
+	# touches the host, so a missing value fails the run here.
+	$envLines = Get-NakamaEnvLines -PublicIp $ip `
+		-ComposeFile "$RemoteSrc\nakama\docker-compose.yml"
 
 	# Updated compose + Caddyfile + pg_hba.conf for the postgres
 	# co-tenant.
@@ -289,23 +295,6 @@ function Step-NakamaStack {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\nakama\pg_hba.conf" "/opt/nakama/"
 	}
 
-	# .env: extend with GRAFANA_ADMIN_PASSWORD + DISCORD_WEBHOOK_URL.
-	$envLines = @(
-		"POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD",
-		"POSTGRES_PRIVATE_IP=$privPg",
-		"NAKAMA_CONSOLE_PASSWORD=$env:NAKAMA_CONSOLE_PASSWORD",
-		"NAKAMA_SERVER_KEY=$env:NAKAMA_SERVER_KEY",
-		"NAKAMA_SESSION_ENCRYPTION_KEY=$env:NAKAMA_SESSION_ENCRYPTION_KEY",
-		"NAKAMA_REFRESH_ENCRYPTION_KEY=$env:NAKAMA_REFRESH_ENCRYPTION_KEY",
-		"NAKAMA_HTTP_KEY=$env:NAKAMA_HTTP_KEY",
-		"NAKAMA_CONSOLE_SIGNING_KEY=$env:NAKAMA_CONSOLE_SIGNING_KEY",
-		"GOOGLE_OAUTH_CLIENT_ID=$env:GOOGLE_OAUTH_CLIENT_ID",
-		"GOOGLE_OAUTH_CLIENT_SECRET=$env:GOOGLE_OAUTH_CLIENT_SECRET",
-		"FACEBOOK_APP_ID=$env:FACEBOOK_APP_ID",
-		"FACEBOOK_APP_SECRET=$env:FACEBOOK_APP_SECRET",
-		"GRAFANA_ADMIN_PASSWORD=$env:GRAFANA_ADMIN_PASSWORD",
-		"DISCORD_WEBHOOK_URL=$env:DISCORD_WEBHOOK_URL"
-	)
 	$tmp = New-TemporaryFile
 	Write-LinuxFile $tmp.FullName (($envLines -join "`n") + "`n")
 	Invoke-Checked "scp .env" {

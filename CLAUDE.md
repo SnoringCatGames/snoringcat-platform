@@ -208,6 +208,10 @@ repo root (or the consuming game's submodule path).
   pg-backup, desktop-drain-watch). Both are idempotent with
   `-StartAt`/`-StopAt` step gates. DR procedure and RTO/RPO:
   `PLATFORM_ARCHITECTURE.md` → "Backups and disaster recovery".
+- `lib/nakama-env.ps1` — renders `/opt/nakama/.env` for both
+  phase scripts. A new `${VAR}` in the Nakama `docker-compose.yml`
+  needs an entry here; phase-a and phase-b refuse to run until it
+  has one.
 - `test-google-auth.py`, `platform_smoke_test.gd` — live
   smoke tests for the auth flow and the addon's API client.
 - `probe-runtime-status.ps1` — calls the `runtime_status`

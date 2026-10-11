@@ -754,31 +754,42 @@ login, lobby and matchmaking are what go down.
    (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`). It rewrites
    `claude-config/jobs/known_hosts` and
    `~/.hopnbop-migration/known_hosts`. Then come the compose files,
-   the newest R2 dump restored before Nakama first boots, and
-   verification.
+   the newest R2 dump restored before Nakama first boots, each
+   game's local game-server image pulled, and verification.
 2. Push the re-pinned `known_hosts` through claude-config:
    `& "$HOME\Repositories\claude-config\sync-if-changed.ps1"`. The
    desktop's hourly sync would otherwise push it within the hour, and
    the laptop has no scheduled sync. Until it lands, every scheduled
    prod job fails host-key verification.
-3. If the IP changed, update the claude-config jobs and skills that
-   still SSH to the old IP. HostKeys lists them.
+3. A new IP needs nothing else: the claude-config jobs and skills SSH
+   to `nakama.snoringcat.games`, which Pulumi repoints. HostKeys still
+   lists any claude-config file that names the old IP.
 4. `pwsh -File scripts/phase-b.ps1`: obs configs plus the host
    timers (cost-monitor, geoip-refresh, pg-backup,
    desktop-drain-watch).
 5. Smoke check: the `hopnbop-check-prod` skill.
 
-**Known gap, not in the RTO estimate** (found 2026-10-11 by
-comparing the live `/opt/nakama/.env` with what the scripts render;
-not yet fixed): phase-a and phase-b do not write `EDGEGAP_TOKEN`,
-`EDGEGAP_APP_NAME`, `EDGEGAP_APP_VERSION`, `SIGNALING_DOMAIN`,
-`LOCAL_PUBLIC_IP`, the local port ranges, or `GEOIP_MMDB_PATH` into
-that file. phase-b's NakamaStack step also rewrites it without
-`SIGNALING_HMAC_SECRET`. The runtime lets the process env (empty
-for those keys) override `config.yml`, so by code reading a
-script-built host passes its healthcheck and auth smoke test but
-has the matchmaker allocation hook and the local allocator off
-until those keys are restored by hand.
+**`/opt/nakama/.env`** is rendered whole by
+`scripts/lib/nakama-env.ps1`, which phase-a and phase-b share. It
+writes exactly the variables `docker-compose.yml` reads: secrets and
+the Edgegap app fallbacks from `credentials.env`, `LOCAL_PUBLIC_IP`
+from the Pulumi IP, and the rest static or deliberately blank. The
+run fails if the file and the compose file ever disagree. Until
+2026-10-11 the scripts kept separate partial lists and the live file
+had been completed by hand. A script-built host came up with the
+matchmaker hook and the local allocator off, phase-b's rewrite
+dropped `SIGNALING_HMAC_SECRET`, and a rebuilt Grafana kept its
+default admin password. Checked against prod on 2026-10-11: all 27
+rendered values match what the running containers use.
+
+**Known gap: game-server releases.** The local allocator needs each
+game's `local_image_ref` already on the host. It creates containers
+through the Docker Engine API, which never pulls, and under
+`allocator_mode: hybrid` a failed local allocation fails the match
+(there is no Edgegap fallback). phase-a pulls the images after a
+rebuild, but nothing pulls a new tag when a release bumps
+`local_image_ref`. Until someone runs `docker pull <ref>` on the
+host, every match routed local fails.
 
 ---
 

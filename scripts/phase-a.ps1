@@ -98,6 +98,9 @@ $ClaudeConfigDir  = "$HOME\Repositories\claude-config"
 $PinnedKnownHosts = "$ClaudeConfigDir\jobs\known_hosts"
 $PinnedHostName   = "nakama.snoringcat.games"
 
+# Get-NakamaEnvLines: the /opt/nakama/.env renderer phase-b shares.
+. "$PSScriptRoot\lib\nakama-env.ps1"
+
 $env:PATH = "$HOME\.pulumi\bin;$env:PATH"
 $env:AWS_PROFILE = "hopnbop"
 $env:AWS_REGION  = "us-west-2"
@@ -403,6 +406,50 @@ docker exec -e PGPASSWORD='$env:POSTGRES_PASSWORD' postgres \
 	Note "Restore complete: $count tables in nakama DB (from $key)"
 }
 
+function Sync-LocalGameImages {
+	# Pulls each registered game's local_image_ref onto the host. The
+	# local Docker allocator creates containers through the Engine
+	# API, which never pulls, and under allocator_mode hybrid a failed
+	# local allocation fails the match outright (no Edgegap fallback).
+	# A rebuilt host starts with no images, so without this every
+	# match routed local fails until someone pulls by hand. The images
+	# are public on GHCR, so no registry login is needed. Reads the
+	# games table, so it runs after the restore and Nakama's start.
+	param([string]$ip)
+
+	# Base64 for the same quoting reasons as Invoke-PgRestore. Local
+	# psql connections are trusted (pg_hba.conf), so no password. A
+	# fresh -NoRestore database may not have the games table until the
+	# runtime's first load creates it; that means no games yet.
+	$pullScript = @'
+set -e
+refs=$(docker exec postgres psql -U nakama -d nakama -tA -c "SELECT DISTINCT config->>'local_image_ref' FROM games WHERE coalesce(config->>'local_image_ref', '') <> ''" 2>&1) || {
+  case "$refs" in *'relation "games" does not exist'*) exit 0 ;; esac
+  printf '%s\n' "$refs" >&2
+  exit 3
+}
+for r in $refs; do
+  docker pull -q "$r" >/dev/null
+  echo "$r"
+done
+'@
+	$pullScript = $pullScript -replace "`r`n", "`n"
+	$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pullScript))
+	$pulled = @(Ssh-Run $ip $NakamaKey "echo $b64 | base64 -d | bash")
+	if ($LASTEXITCODE -ne 0) {
+		throw ("Pulling the local game-server images failed (exit " +
+			"$LASTEXITCODE). The local allocator fails its matches until " +
+			"each game's local_image_ref is on the host: docker pull it " +
+			"there by hand, then resume with -StartAt Verify.")
+	}
+	if ($pulled.Count -eq 0) {
+		Note ("Images: no registered game sets local_image_ref yet. Once " +
+			"sync-game-config.ps1 registers one, docker pull it on the host.")
+		return
+	}
+	Note "Images: pulled $($pulled -join ', ')"
+}
+
 # --------------------------------------------------------------------
 # Host-key pinning (Step-HostKeys)
 # --------------------------------------------------------------------
@@ -646,8 +693,9 @@ function Show-RepinFollowUps {
 	Write-Host "laptop, which runs no scheduled jobs):"
 	Write-Host "  & `"$ClaudeConfigDir\sync-if-changed.ps1`""
 	Write-Host "Until it is pushed and pulled, prod jobs keep failing host-key checks."
-	# The pin covers the hostname, but jobs that SSH to a hardcoded IP
-	# still point at the old (now dead or reassigned) address.
+	# The jobs and skills SSH by hostname, which Pulumi repoints, so
+	# they follow a new IP on their own. This catches anything that
+	# still names the old (now dead or reassigned) address.
 	$oldIps = @($oldHosts | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and $_ -ne $ip })
 	foreach ($old in $oldIps) {
 		$hits = @(Get-ChildItem -Path $ClaudeConfigDir -Recurse -File -ErrorAction SilentlyContinue |
@@ -657,7 +705,7 @@ function Show-RepinFollowUps {
 		if ($hits.Count -gt 0) {
 			Write-Host ""
 			Write-Host "The host IP changed ($old -> $ip). These claude-config files still" -ForegroundColor Yellow
-			Write-Host "SSH to (or document) the old IP; update them before the jobs recover:" -ForegroundColor Yellow
+			Write-Host "name the old IP; update them:" -ForegroundColor Yellow
 			foreach ($h in $hits) { Write-Host "  $h" }
 			Note "HostKeys: $($hits.Count) claude-config file(s) still reference the old IP $old"
 		}
@@ -938,19 +986,25 @@ function Step-Nakama {
 		"NAKAMA_CONSOLE_PASSWORD",
 		"NAKAMA_SERVER_KEY",
 		"NAKAMA_SESSION_ENCRYPTION_KEY",
-		"SIGNALING_HMAC_SECRET"
+		"NAKAMA_REFRESH_ENCRYPTION_KEY",
+		"NAKAMA_HTTP_KEY",
+		"NAKAMA_CONSOLE_SIGNING_KEY",
+		"SIGNALING_HMAC_SECRET",
+		# Grafana starts with this stack (Caddy depends on it), and
+		# its first boot fixes the admin password in a fresh DB.
+		"GRAFANA_ADMIN_PASSWORD"
 	)) {
 		Ensure-Secret $v
 	}
 	if (-not $env:SIGNALING_DOMAIN) {
-		# Static value, baked alongside the Pulumi DNS record
-		# `signaling-a` in main.go. Override via env if anyone
-		# ever forks the platform under a different zone.
-		Set-Item Env:SIGNALING_DOMAIN "signaling.snoringcat.games"
+		Set-Item Env:SIGNALING_DOMAIN $DefaultSignalingDomain
 	}
 	$s = Read-State
 	$ip = $s.infrastructure.hetzner_nakama_ip
-	$privPg = "10.0.1.20"
+	# Rendered before anything touches the host, so a missing value
+	# fails the run here rather than booting a half-configured stack.
+	$envLines = Get-NakamaEnvLines -PublicIp $ip `
+		-ComposeFile "$RemoteSrc\nakama\docker-compose.yml"
 
 	Invoke-Checked "ssh mkdir /opt/nakama" {
 		Ssh-Run $ip $NakamaKey "mkdir -p /opt/nakama" | Out-Null
@@ -1020,40 +1074,11 @@ function Step-Nakama {
 	Invoke-Checked "scp geoip-sidecar/ build context" {
 		Scp-Up $ip $NakamaKey "$RemoteSrc\geoip-sidecar" "/opt/nakama/" -Recurse | Out-Null
 	}
-	# Render .env for compose. Docker-compose substitutes
-	# ${VAR} in docker-compose.yml from this file. The
-	# entrypoint references NAKAMA_HTTP_KEY,
-	# NAKAMA_REFRESH_ENCRYPTION_KEY, and
-	# NAKAMA_CONSOLE_SIGNING_KEY via $$VAR (shell escape past
-	# compose's first round of substitution), so they have to
-	# be present here.
-	foreach ($v in @(
-		"NAKAMA_HTTP_KEY",
-		"NAKAMA_REFRESH_ENCRYPTION_KEY",
-		"NAKAMA_CONSOLE_SIGNING_KEY"
-	)) {
-		Ensure-Secret $v
-	}
-	$envLines = @(
-		"POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD",
-		"POSTGRES_PRIVATE_IP=$privPg",
-		"NAKAMA_CONSOLE_PASSWORD=$env:NAKAMA_CONSOLE_PASSWORD",
-		"NAKAMA_SERVER_KEY=$env:NAKAMA_SERVER_KEY",
-		"NAKAMA_SESSION_ENCRYPTION_KEY=$env:NAKAMA_SESSION_ENCRYPTION_KEY",
-		"NAKAMA_REFRESH_ENCRYPTION_KEY=$env:NAKAMA_REFRESH_ENCRYPTION_KEY",
-		"NAKAMA_HTTP_KEY=$env:NAKAMA_HTTP_KEY",
-		"NAKAMA_CONSOLE_SIGNING_KEY=$env:NAKAMA_CONSOLE_SIGNING_KEY",
-		"GOOGLE_OAUTH_CLIENT_ID=$env:GOOGLE_OAUTH_CLIENT_ID",
-		"GOOGLE_OAUTH_CLIENT_SECRET=$env:GOOGLE_OAUTH_CLIENT_SECRET",
-		"FACEBOOK_APP_ID=$env:FACEBOOK_APP_ID",
-		"FACEBOOK_APP_SECRET=$env:FACEBOOK_APP_SECRET",
-		# Shared by the signaling-proxy compose service and
-		# the Nakama runtime hook (which signs URLs the proxy
-		# verifies). MUST match exactly between both.
-		"SIGNALING_HMAC_SECRET=$env:SIGNALING_HMAC_SECRET"
-	)
+	# .env for compose, rendered at the top of this step. LF only:
+	# the old Out-File write ended the file with CRLF, which left a
+	# CR on its last line (compose strips it; shell readers don't).
 	$tmpEnv = New-TemporaryFile
-	($envLines -join "`n") | Out-File -Encoding ASCII -FilePath $tmpEnv.FullName
+	Write-LfFile $tmpEnv.FullName $envLines
 	Invoke-Checked "scp .env" {
 		Scp-Up $ip $NakamaKey $tmpEnv.FullName "/opt/nakama/.env" | Out-Null
 	}
@@ -1107,6 +1132,7 @@ function Step-Nakama {
 		Ssh-Run $ip $NakamaKey "cd /opt/nakama && docker compose up -d nakama" | Out-Null
 	}
 	Note "Nakama + Caddy + signaling-proxy compose up complete"
+	Sync-LocalGameImages $ip
 }
 
 function Step-Verify {
