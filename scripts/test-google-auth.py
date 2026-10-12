@@ -160,7 +160,9 @@ def build_auth_url(client_id: str, state: str, challenge: str) -> str:
             "client_id": client_id,
             "redirect_uri": REDIRECT_URI,
             "response_type": "code",
-            "scope": "openid profile email",
+            # The SDK's scopes: no email, which nothing on the
+            # platform uses.
+            "scope": "openid profile",
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -387,11 +389,22 @@ def main() -> int:
         )
         return 1
     google_claims = jwt_claims(id_token)
+    # Nakama's CheckGoogleToken refuses a token that lacks any of
+    # these; Google documents all four as present in every ID token.
+    missing = [
+        claim for claim in ("iss", "sub", "azp", "aud")
+        if not google_claims.get(claim)
+    ]
     print(
-        f"      id_token for {google_claims.get('email', '?')}"
+        "      id_token"
         f" (aud matches client: {google_claims.get('aud') == client_id},"
+        f" claims Nakama needs missing: {missing or 'none'},"
+        f" email claim present: {'email' in google_claims},"
         f" expires in {token_response.get('expires_in')}s)"
     )
+    if missing:
+        print("      FAIL: Nakama would refuse this id_token")
+        return 1
 
     if args.skip_nakama:
         print()

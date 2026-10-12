@@ -57,12 +57,16 @@ signal merge_completed(
 	provider: String,
 )
 
-## Emitted when data export completes.
+## Emitted when data export completes. Save last_export_json, not a
+## re-encoding of `data`.
 signal export_completed(
 	success: bool,
 	error: String,
 	data: Dictionary,
 )
+
+## Emitted when cancel_account_deletion() completes.
+signal deletion_cancel_completed(success: bool, error: String)
 
 ## Emitted when an ephemeral guest JWT has been
 ## obtained (or failed) for an anonymous player.
@@ -136,6 +140,12 @@ const _MERGE_ENDPOINT := "/auth/merge"
 const _DELETE_ACCOUNT_ENDPOINT := "/auth/account"
 const _EXPORT_ENDPOINT := "/player/export"
 const _POPUP_TIMEOUT_SEC := 300.0
+const _CANCEL_DELETION_RPC := "cancel_account_deletion"
+## OAuth scopes requested from Google, URL-encoded. `openid` gets the
+## ID token, whose `sub` claim is the account id Nakama signs in
+## with, and `profile` its `name` and `picture`. No `email`: nothing
+## on the platform uses one, so the game doesn't ask for it.
+const _GOOGLE_OAUTH_SCOPE := "openid%20profile"
 
 ## Maps Provider enum to string name sent to backend.
 const _PROVIDER_NAMES := {
@@ -152,6 +162,13 @@ const _BROWSER_PROVIDERS := [
 	Provider.GOOGLE,
 	Provider.FACEBOOK,
 ]
+
+## The last export's JSON text, exactly as the server sent it. Set
+## before export_completed(true, ...) fires and cleared when an export
+## starts. Save this rather than re-encoding `data`: Godot's JSON
+## parser turns every number into a float, so a re-encoded export
+## reads 1500.0 for a score of 1500 and rounds long ids.
+var last_export_json := ""
 
 var _http_request: HTTPRequest
 var _tcp_server: TCPServer
@@ -180,6 +197,13 @@ var _unlink_provider_name := ""
 
 # Account deletion state.
 var _is_deleting := false
+var _is_cancelling_deletion := false
+
+# The display name and picture from the ID token of the latest
+# Google sign-in, with the user_id it signed in to, in memory only.
+# A deletion request clears the profile on the server and keeps no
+# copy, so cancel_account_deletion() puts these back.
+var _provider_profile: Dictionary = {}
 
 # Account merge state.
 var _is_merging := false
@@ -395,12 +419,49 @@ func delete_account() -> void:
 	_send_delete_request()
 
 
+## Cancel the signed-in player's pending account deletion. The
+## deletion request cleared the profile on the server and kept no
+## copy, so on success this puts back the display name and profile
+## image from the player's Google sign-in this session, when there
+## was one, and then refreshes the token store's profile from the
+## account. Emits deletion_cancel_completed.
+func cancel_account_deletion() -> void:
+	if _is_cancelling_deletion:
+		return
+	var session := Platform.build_session_from_store()
+	if session == null:
+		deletion_cancel_completed.emit(false, "Not authenticated")
+		return
+	_is_cancelling_deletion = true
+	var rpc_result: NakamaAPI.ApiRpc = (
+		await Platform.get_nakama_client().rpc_async(
+			session, _CANCEL_DELETION_RPC, ""))
+	if rpc_result.is_exception():
+		_is_cancelling_deletion = false
+		deletion_cancel_completed.emit(
+			false, _describe_nakama_exception(rpc_result.get_exception()))
+		return
+	if str(_provider_profile.get("user_id", "")) == session.user_id:
+		await _apply_provider_profile(session, _provider_profile)
+	var profile := await _fetch_account_profile_dict(session)
+	if not profile.is_empty():
+		Platform.token_store.display_name = str(
+			profile.get("display_name", ""))
+		Platform.token_store.profile_image_url = str(
+			profile.get("profile_image_url", ""))
+		Platform.token_store.save_tokens()
+	_is_cancelling_deletion = false
+	deletion_cancel_completed.emit(true, "")
+
+
 ## Export all player data as JSON. Routes through the Nakama
 ## runtime RPC `export_player_data` (registered in
-## snoringcat-platform's runtime/player_data.go).
+## snoringcat-platform's runtime/data_export.go). On success the
+## server's text is in last_export_json.
 func export_player_data() -> void:
 	if _is_exporting:
 		return
+	last_export_json = ""
 
 	if not Platform.token_store.is_token_valid():
 		push_warning(
@@ -430,6 +491,7 @@ func export_player_data() -> void:
 		return
 	var json := JSON.new()
 	if json.parse(rpc_result.payload) == OK and json.data is Dictionary:
+		last_export_json = rpc_result.payload
 		export_completed.emit(true, "", json.data)
 	else:
 		export_completed.emit(
@@ -814,12 +876,12 @@ func _send_auth_request(
 func _send_delete_request() -> void:
 	# Routes through the custom `delete_account` Nakama RPC
 	# (snoringcat-platform runtime/account.go) so the soft-delete-
-	# with-grace-period flow runs: queue audit-trail row, anonymize
-	# display name, cascade-clear friends / groups / presence /
-	# leaderboards / storage, then ban so the existing JWT stops
-	# authenticating. Nakama's built-in DELETE /v2/account would
-	# hard-delete immediately and skip the cascade, leaving stale
-	# rows in friends/groups/storage pointing at a missing user.
+	# with-grace-period flow runs: queue the deletion, clear the
+	# profile, and cascade-clear friends / groups / presence /
+	# leaderboards / storage / notifications / chat. The account
+	# itself is hard-deleted 30 days later unless the player signs
+	# back in and cancels. Nakama's built-in DELETE /v2/account
+	# would hard-delete immediately with no chance to cancel.
 	var session := Platform.build_session_from_store()
 	if session == null:
 		_is_deleting = false
@@ -920,14 +982,14 @@ func _fetch_account_profile_dict(
 
 
 # Compute the linked-providers list from a fresh Nakama
-# ApiAccount: anonymous (devices), email/password, and each
-# OAuth identity that has a non-empty *_id on account.user.
+# ApiAccount: anonymous (devices), and each OAuth identity that has
+# a non-empty *_id on account.user. The account's email is not a
+# provider: the platform offers no email sign-in, and an email on an
+# account only ever came from a provider's profile.
 func _account_to_provider_list(account) -> Array:
 	var out: Array = []
 	if account.devices and account.devices.size() > 0:
 		out.append("anonymous")
-	if account.email and not account.email.is_empty():
-		out.append("email")
 	var u = account.user
 	if u and not u.google_id.is_empty():
 		out.append("google")
@@ -972,6 +1034,9 @@ func _do_provider_auth(body: Dictionary) -> void:
 	var client := Platform.get_nakama_client()
 	var session: NakamaSession
 	var vars := _build_session_vars()
+	# Profile claims from a Google ID token, kept for
+	# cancel_account_deletion() once the session's user_id is known.
+	var provider_profile: Dictionary = {}
 	match provider_name:
 		"google":
 			# Nakama validates Google ID tokens, not OAuth codes.
@@ -983,6 +1048,8 @@ func _do_provider_auth(body: Dictionary) -> void:
 				_emit_failure(
 					"Failed to exchange Google OAuth code for ID token")
 				return
+			provider_profile = _provider_profile_from_claims(
+				_parse_jwt_claims(id_token))
 			session = await client.authenticate_google_async(
 				id_token, null, true, vars)
 		"facebook":
@@ -1006,6 +1073,8 @@ func _do_provider_auth(body: Dictionary) -> void:
 		_emit_failure(_describe_nakama_exception(
 			session.get_exception()))
 		return
+	provider_profile["user_id"] = session.user_id
+	_provider_profile = provider_profile
 	var data := _session_to_response_dict(session, provider_name)
 	# Pick up display_name + avatar_url from Nakama (which got
 	# them from the provider's id_token).
@@ -1094,35 +1163,11 @@ func _do_link(body: Dictionary) -> void:
 	# otherwise keep the auto-generated handle (e.g. "pPALcZnDQj")
 	# instead of the player's real name.
 	if not google_id_token.is_empty():
-		var claims := _parse_jwt_claims(google_id_token)
-		var goog_name := str(claims.get("name", ""))
-		var goog_pic := str(claims.get("picture", ""))
-		if not goog_name.is_empty() or not goog_pic.is_empty():
-			# Nakama's update_account_async treats null as
-			# "leave alone" but "" as "set to empty", so we
-			# pass null for fields we don't want to touch
-			# (and for the provider fields if Google didn't
-			# include them). All params after p_session
-			# default to null per NakamaClient.gd.
-			var name_arg: Variant = (
-				goog_name if not goog_name.is_empty() else null)
-			var pic_arg: Variant = (
-				goog_pic if not goog_pic.is_empty() else null)
-			var update_result: NakamaAsyncResult = (
-				await client.update_account_async(
-					session,
-					null,  # username.
-					name_arg,
-					pic_arg,
-					null,  # lang_tag.
-					null,  # location.
-					null,  # timezone.
-				))
-			if update_result.is_exception():
-				push_warning(
-					"[PlatformAuthApiClient] update_account after link failed:"
-					+ " %s" % _describe_nakama_exception(
-						update_result.get_exception()))
+		var profile := _provider_profile_from_claims(
+			_parse_jwt_claims(google_id_token))
+		await _apply_provider_profile(session, profile)
+		profile["user_id"] = session.user_id
+		_provider_profile = profile
 	# Synthesize a success dict so the downstream handler updates
 	# linked_providers in the token store consistently.
 	var linked: Array = Platform.token_store.linked_providers.duplicate()
@@ -1290,6 +1335,7 @@ func _update_profile_from_response(
 
 func _handle_delete_success() -> void:
 	_is_deleting = false
+	_provider_profile = {}
 	Platform.token_store.clear_tokens()
 	delete_completed.emit(true, "")
 
@@ -1445,7 +1491,7 @@ func _build_google_auth_url(
 		+ "?client_id=%s" % client_id
 		+ "&redirect_uri=%s" % redirect_uri.uri_encode()
 		+ "&response_type=code"
-		+ "&scope=openid%20profile%20email"
+		+ "&scope=%s" % _GOOGLE_OAUTH_SCOPE
 		+ "&state=%s" % state
 		+ "&code_challenge=%s" % challenge
 		+ "&code_challenge_method=S256"
@@ -1454,10 +1500,11 @@ func _build_google_auth_url(
 
 # Parse the payload (claims) section of a JWT without verifying
 # the signature. We use this to pull `name` and `picture` from
-# Google's id_token after link, so we can push them into Nakama's
-# user record (Nakama only auto-fills display_name when it was
+# Google's id_token, so we can push them into Nakama's user record:
+# after a link (Nakama only auto-fills display_name when it was
 # previously empty, so anonymous users who later link Google keep
-# the auto-generated handle without this step). Returns an empty
+# the auto-generated handle without this step), and after a
+# cancelled deletion (cancel_account_deletion). Returns an empty
 # dict if the token isn't a valid 3-segment JWT.
 func _parse_jwt_claims(jwt: String) -> Dictionary:
 	var parts := jwt.split(".")
@@ -1477,6 +1524,48 @@ func _parse_jwt_claims(jwt: String) -> Dictionary:
 	if not (data is Dictionary):
 		return {}
 	return data
+
+
+# The display name and picture a Google ID token's claims carry,
+# under the keys _apply_provider_profile reads.
+func _provider_profile_from_claims(claims: Dictionary) -> Dictionary:
+	return {
+		"display_name": str(claims.get("name", "")),
+		"profile_image_url": str(claims.get("picture", "")),
+	}
+
+
+# Writes a provider profile's display name and picture to the
+# account. Nakama's update_account_async treats null as "leave alone"
+# but "" as "set to empty", so a field the provider didn't send is
+# passed as null. Does nothing when both are empty. A failure only
+# warns: the account works without a profile.
+func _apply_provider_profile(
+	session: NakamaSession,
+	profile: Dictionary,
+) -> void:
+	var display_name := str(profile.get("display_name", ""))
+	var image_url := str(profile.get("profile_image_url", ""))
+	if display_name.is_empty() and image_url.is_empty():
+		return
+	var name_arg: Variant = (
+		display_name if not display_name.is_empty() else null)
+	var image_arg: Variant = (
+		image_url if not image_url.is_empty() else null)
+	var result: NakamaAsyncResult = (
+		await Platform.get_nakama_client().update_account_async(
+			session,
+			null,  # username.
+			name_arg,
+			image_arg,
+			null,  # lang_tag.
+			null,  # location.
+			null,  # timezone.
+		))
+	if result.is_exception():
+		push_warning(
+			"[PlatformAuthApiClient] update_account failed: %s"
+			% _describe_nakama_exception(result.get_exception()))
 
 
 # --------------------------------------------------------------
