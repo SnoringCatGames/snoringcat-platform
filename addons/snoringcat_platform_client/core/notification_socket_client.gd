@@ -102,14 +102,18 @@ func start() -> void:
 	_attempt_connect()
 
 
-## Close the socket and stop reconnecting. Called on logout.
+## Close the socket and stop reconnecting. Called on logout. A connect
+## still in flight is dropped, so a start() for the next session does
+## not wait for it.
 func stop() -> void:
 	_wants_connection = false
+	_is_connecting = false
 	_reconnect_timer.stop()
 	_reconnect_delay_sec = _RECONNECT_INITIAL_DELAY_SEC
 	if _socket != null:
-		_socket.close()
+		var socket := _socket
 		_socket = null
+		socket.close()
 
 
 # --------------------------------------------------------------
@@ -141,25 +145,35 @@ func _attempt_connect() -> void:
 		return
 
 	_is_connecting = true
-	_socket = Nakama.create_socket_from(
+	# Held across the await: stop() may drop _socket meanwhile, and
+	# nakama-godot answers the connect of a freed socket with an error
+	# code instead of a result.
+	var socket: NakamaSocket = Nakama.create_socket_from(
 		Platform.get_nakama_client())
-	_socket.received_notification.connect(
+	_socket = socket
+	socket.received_notification.connect(
 		_on_received_notification)
-	_socket.received_channel_message.connect(
+	socket.received_channel_message.connect(
 		_on_received_channel_message)
-	_socket.closed.connect(_on_socket_closed)
-	_socket.connection_error.connect(
+	socket.closed.connect(_on_socket_closed)
+	socket.connection_error.connect(
 		_on_socket_connection_error)
 
-	var result: NakamaAsyncResult = (
-		await _socket.connect_async(session))
+	var result: Variant = await socket.connect_async(session)
+	if socket != _socket:
+		# stop() dropped this socket while it was connecting, typically
+		# on a sign-out. Any attempt since then has a socket of its own.
+		socket.close()
+		return
 	_is_connecting = false
 
-	if result.is_exception():
-		var ex: NakamaException = result.get_exception()
+	if not (result is NakamaAsyncResult) or result.is_exception():
+		var ex: NakamaException = (
+			result.get_exception() if result is NakamaAsyncResult
+			else null)
 		push_warning(
 			"[NotificationSocket] connect failed: %s"
-			% ex.message)
+			% (ex.message if ex != null else str(result)))
 		# Drop the failed socket so a future _attempt_connect
 		# doesn't see is_connected_to_host()=false on a stale
 		# handle and short-circuit.
