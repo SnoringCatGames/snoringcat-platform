@@ -34,6 +34,21 @@ states its facts, so it stands on its own after the transcript is gone.
   its GitHub Actions spend is a placeholder zero (`cost-monitor.sh:759`
   needs `GITHUB_TOKEN` and `GITHUB_ORG`), and weekly-cost-review quotes
   that zero. (Same report.)
+- **SP9** · `addons/snoringcat_platform_client/core/matchmaker_api_client.gd:653`
+  prints `Preview device_id=%s` to stdout and godot.log. A device id
+  logs that account in, so it is a credential. It matters more once
+  crash reports upload log excerpts (hopnbop
+  `docs/design/crash_report_review.md` point 9). (Session d8031183,
+  2026-10-11.)
+- **SP10** · CLAUDE.md says the `nakama-runtime` workflow runs gofmt; it
+  runs only go vet, go test and staticcheck. Five committed runtime files
+  aren't gofmt-clean (friends_limits.go, runtime_status.go,
+  player_data.go, main.go, per_game_config.go). Format them in their own
+  commit before adding a gofmt gate. (Same session.)
+- **SP11** · CLAUDE.md's "No custom tables" is stale: the per-game config
+  `games` table exists (`newPerGameConfig`, idempotent DDL at
+  InitModule). The crash-report runtime commit (hopnbop H1) should fix it
+  and add the new file to the Runtime modules list. (Same session.)
 
 ## Ideas (not scheduled)
 
