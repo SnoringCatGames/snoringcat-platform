@@ -2,9 +2,13 @@
 # Monthly GeoIP MMDB refresh for the snoringcat-platform Nakama
 # runtime's hybridAllocatorChoice.
 #
-# Source: DB-IP IP-to-Country Lite, MMDB format, MIT-licensed,
-# no signup required. New file published on the 1st of each
-# month at:
+# Source: DB-IP IP-to-Country Lite, MMDB format, no signup
+# required. Licensed CC BY 4.0, not MIT: DB-IP requires the
+# attribution "IP Geolocation by DB-IP", linked to
+# https://db-ip.com. Every game whose matches route through the
+# hybrid allocator uses this data, so each must credit DB-IP (for
+# example on its credits screen, as hopnbop does). New file
+# published on the 1st of each month at:
 #   https://download.db-ip.com/free/dbip-country-lite-<YYYY>-<MM>.mmdb.gz
 #
 # Pulls the current month's file, gunzips, atomically swaps
