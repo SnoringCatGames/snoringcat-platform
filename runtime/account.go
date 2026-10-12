@@ -498,12 +498,12 @@ func cancelAccountDeletionRpcFactory(
 	return func(
 		ctx context.Context,
 		logger runtime.Logger,
-		_ *sql.DB,
+		db *sql.DB,
 		nk runtime.NakamaModule,
 		_ string,
 	) (string, error) {
 		return cancelAccountDeletionRpc(
-			ctx, logger, nk, games)
+			ctx, logger, db, nk, games)
 	}
 }
 
@@ -512,7 +512,9 @@ func cancelAccountDeletionRpcFactory(
 //   1. Reads the original username + display name from the
 //      account_deletion_queue row.
 //   2. Restores them via AccountUpdateId so the user-visible
-//      profile is back to its pre-deletion shape.
+//      profile is back to its pre-deletion shape. An empty
+//      original display name is restored by clearing the
+//      "[deleted]" marker in SQL, which AccountUpdateId can't.
 //   3. Deletes the queue row so the cron stops counting down.
 //
 // Returns INVALID_ARGUMENT (9, FailedPrecondition) when the
@@ -524,6 +526,7 @@ func cancelAccountDeletionRpcFactory(
 func cancelAccountDeletionRpc(
 	ctx context.Context,
 	logger runtime.Logger,
+	db *sql.DB,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
 ) (string, error) {
@@ -587,6 +590,25 @@ func cancelAccountDeletionRpc(
 		// Continue: queue-row delete below is the bit that
 		// stops the cron. A failed restore leaves the user
 		// looking like "[deleted]" but their account is alive.
+	}
+	// AccountUpdateId treats "" as "no change", so it can't put
+	// back an empty display name, and anonymous sign-in leaves
+	// accounts without one. Clear the marker in SQL instead, or
+	// it outlives the cancellation. Only while it still holds
+	// the marker, so a name set during the grace window survives.
+	if record.OriginalDisplayName == "" && db != nil {
+		if _, err := db.ExecContext(
+			ctx,
+			`UPDATE users SET display_name = NULL, update_time = now()
+			 WHERE id = $1::uuid AND display_name = $2`,
+			userID,
+			anonymizedDisplayName,
+		); err != nil {
+			logger.Warn(
+				"cancel_account_deletion clear display name"+
+					" user=%s: %v",
+				userID, err)
+		}
 	}
 
 	if err := nk.StorageDelete(
