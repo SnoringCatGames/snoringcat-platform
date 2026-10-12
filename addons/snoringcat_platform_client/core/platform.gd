@@ -65,6 +65,15 @@ const _NAKAMA_LOG_LEVEL := NakamaLogger.LOG_LEVEL.WARNING
 ## sign-in. See get_version_check_url().
 const VERSION_CHECK_PATH := "/snoringcat/version_check"
 
+## Path of the runtime's public leaderboard route
+## (runtime/leaderboard_public.go): a game's board as the game website
+## shows it, with no session and no key. See
+## get_public_leaderboard_url().
+const PUBLIC_LEADERBOARD_PATH := "/snoringcat/leaderboard"
+
+## The port each URL scheme implies, which a URL leaves out.
+const _DEFAULT_PORTS := {"https": 443, "http": 80}
+
 ## Config key that Platform.initialize refuses. Nakama's runtime HTTP
 ## key authenticates game servers and operator tools as trusted
 ## callers of every runtime RPC, so a client that ships it hands that
@@ -210,8 +219,13 @@ func build_session_from_store() -> NakamaSession:
 ## Returns the public-facing Nakama base URL (e.g.
 ## "https://nakama.snoringcat.games"). Callers that need to hit
 ## raw HTTP endpoints (instead of the SDK) use this to build URLs.
+## A port other than the scheme's default is kept
+## ("http://127.0.0.1:7350" for a local stack); before SDK 0.7.0 it
+## was dropped, so such URLs went to port 80.
 func get_nakama_base_url() -> String:
-	return "%s://%s" % [nakama_scheme, nakama_host]
+	if nakama_port <= 0 or nakama_port == _DEFAULT_PORTS.get(nakama_scheme):
+		return "%s://%s" % [nakama_scheme, nakama_host]
+	return "%s://%s:%d" % [nakama_scheme, nakama_host, nakama_port]
 
 
 ## Returns the URL of the runtime's unauthenticated version check
@@ -221,6 +235,23 @@ func get_nakama_base_url() -> String:
 ## is the RPC's JSON, unwrapped.
 func get_version_check_url() -> String:
 	return get_nakama_base_url() + VERSION_CHECK_PATH
+
+
+## Returns the URL of this game's board `leaderboard_id` on the
+## runtime's public leaderboard route (PUBLIC_LEADERBOARD_PATH),
+## asking for its top `limit` players: the same list the game website
+## shows. GET it with no credential. The reply is
+## {version, game_id, leaderboard, sort_order, operator,
+## next_reset_at, generated_at, entries: [{rank, display_name,
+## score}]}; see PLATFORM_ARCHITECTURE.md "Leaderboards".
+func get_public_leaderboard_url(leaderboard_id: String, limit: int) -> String:
+	return "%s%s?game_id=%s&leaderboard=%s&limit=%d" % [
+		get_nakama_base_url(),
+		PUBLIC_LEADERBOARD_PATH,
+		game_id.uri_encode(),
+		leaderboard_id.uri_encode(),
+		limit,
+	]
 
 
 ## Returns the shared NakamaClient, lazily creating it on first
