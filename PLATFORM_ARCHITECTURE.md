@@ -650,10 +650,24 @@ Default: no upper bound. Lower bound: 0 (true scale-to-zero).
 
 1. Generate new secret in provider dev console (Google /
    Facebook).
-2. Update `nakama.snoringcat.games` Nakama config (env vars).
-3. Restart Nakama.
-4. Old secret remains valid for the provider's grace period
+2. Put it where it is read.
+   - **Google:** the game's token broker, which is the
+     `GOOGLE_OAUTH_CLIENT_SECRET` Pages secret on
+     `hopnbop-website` (hopnbop's
+     `web/functions/api/oauth/google/exchange.js` has the
+     `wrangler` command), and `credentials.env`. Not Nakama: it
+     checks Google ID tokens against Google's public keys, and
+     nothing reads the copy `config.yml` passes into the runtime
+     env.
+   - **Facebook:** the `nakama.snoringcat.games` Nakama config
+     (env vars), then restart Nakama.
+3. Old secret remains valid for the provider's grace period
    (~7 days for Google).
+4. Google: check sign-in with `python scripts/test-google-auth.py`,
+   which goes through the broker as the client does, and with
+   `--direct-google`, which uses the `credentials.env` copy. While
+   the old secret still works, a pass doesn't prove the broker has
+   the new one, so run it again once the old one stops working.
 
 ### Cost monitor
 

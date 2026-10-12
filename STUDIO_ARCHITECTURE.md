@@ -583,7 +583,10 @@ credential rotation."
 - **Used for:**
   - Google OAuth client (web app for Nakama auth):
     `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` in
-    age-encrypted credentials.
+    age-encrypted credentials. The secret in use is the game's
+    token broker's Pages secret, not Nakama's;
+    `scripts/test-google-auth.py` checks sign-in end to end
+    (`PLATFORM_ARCHITECTURE.md` → "Rotate OAuth secrets").
   - Google Analytics 4 (game telemetry, website analytics):
     GA4 property ID `G-TSV2TNLHJ9` (snoringcat.games site).
 - **Cost:** $0 (free tier).

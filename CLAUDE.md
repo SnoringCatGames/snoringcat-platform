@@ -155,6 +155,9 @@ Follows the same conventions as `hopnbop`:
   plugin built from this repo's `runtime/`). It refuses
   non-loopback targets unless `ALLOW_PROD_COMPLIANCE=1`; see the
   suite's README.
+- **Google sign-in**: nothing automated covers it. The suite signs
+  in with device ids, and a Google login needs a person at a
+  browser. `python scripts/test-google-auth.py` checks it by hand.
 
 ## Infra (`infra/`)
 
@@ -219,8 +222,11 @@ repo root (or the consuming game's submodule path).
   phase scripts. A new `${VAR}` in the Nakama `docker-compose.yml`
   needs an entry here; phase-a and phase-b refuse to run until it
   has one.
-- `test-google-auth.py`, `platform_smoke_test.gd` — live
-  smoke tests for the auth flow and the addon's API client.
+- `test-google-auth.py` — interactive check of the whole Google
+  sign-in chain: a real browser login, the game's Pages token
+  broker, then a production Nakama session, as the SDK's desktop
+  sign-in does it. Run it after changing the OAuth client, its
+  redirect URIs, or the broker's secret. Standard library only.
 - `probe-runtime-status.ps1` — calls the `runtime_status`
   RPC on the live Nakama runtime and pretty-prints the
   build_id, registered RPCs, and Edgegap config.
