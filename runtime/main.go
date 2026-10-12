@@ -29,6 +29,14 @@
 // HTTP routes registered (no Nakama auth at all):
 //   - /snoringcat/version_check: version_check for clients that
 //                            have no session yet. See version.go.
+//   - /snoringcat/leaderboard: a game's public leaderboard (rank,
+//                            display name, score), read-only and
+//                            cached, for the game websites. See
+//                            leaderboard_public.go.
+//
+// Leaderboards: every board a registered game declares in its
+// game.yaml is created at boot and on register_game, authoritative
+// (only match_end writes records). See leaderboards.go.
 //
 // RPCs registered:
 //   Operator only (HTTP key AND the GAME_ADMIN_KEY admin_key
@@ -214,6 +222,9 @@ func InitModule(
 	if err != nil {
 		return err
 	}
+	// Create the leaderboards each registered game declares
+	// (match_end writes to them). Failures are logged, not fatal.
+	ensureAllGameLeaderboards(ctx, logger, nk, games)
 
 	// Register the status probe first so the runtime is
 	// diagnosable even if a downstream init step fails or is
@@ -469,6 +480,15 @@ func InitModule(
 		http.MethodGet, http.MethodPost); err != nil {
 		logger.Error(
 			"register HTTP route %s: %v", versionCheckHTTPPath, err)
+	}
+	// The public leaderboard for the game websites: read-only, no
+	// credential, cached. Not fatal, like the route above.
+	if err := initializer.RegisterHttp(
+		publicLeaderboardHTTPPath,
+		publicLeaderboardHTTPHandler(
+			logger, nk, games, newPublicLeaderboardCache())); err != nil {
+		logger.Error(
+			"register HTTP route %s: %v", publicLeaderboardHTTPPath, err)
 	}
 	// Every client-session RPC below reads game_id from the
 	// session vars (set by the BeforeAuthenticate* hooks above)

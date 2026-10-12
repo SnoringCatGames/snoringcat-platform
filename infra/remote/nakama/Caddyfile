@@ -61,6 +61,22 @@ nakama.snoringcat.games {
 		}
 	}
 
+	# Per-IP rate limit on the public leaderboard route (no
+	# credential; runtime/leaderboard_public.go). The runtime already
+	# reads each board from Postgres at most once a minute, so this
+	# guards Nakama's request handling, not the database. A page load
+	# is one request; 60 a minute per IP is far above any person and
+	# stops a scraping loop. The 429 comes from Caddy without CORS
+	# headers, so a browser sees a failed fetch.
+	@public_leaderboard path /snoringcat/leaderboard
+	rate_limit @public_leaderboard {
+		zone public_leaderboard {
+			key {remote_host}
+			events 60
+			window 1m
+		}
+	}
+
 	# Nakama HTTP API + WebSocket realtime endpoint (/ws).
 	# flush_interval -1 disables response buffering — required for
 	# low-latency realtime traffic.

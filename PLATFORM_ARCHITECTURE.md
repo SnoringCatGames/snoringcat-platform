@@ -363,12 +363,12 @@ matchmaker_rules:
                                   # (transport falls back to WebRTC)
   rules: []                       # reserved for future filters
                                   # (skill bands, region pinning, etc.)
-leaderboards:
-  - id: hopnbop_kills_alltime
+leaderboards:                     # created as {game_id}_{id};
+  - id: ffa                       # see "Leaderboards" below
     sort: desc
     operator: best
     reset_schedule: null
-  - id: hopnbop_kills_weekly
+  - id: weekly
     sort: desc
     operator: best
     reset_schedule: '0 0 * * 1'  # Mon midnight UTC
@@ -468,6 +468,10 @@ So each RPC an HTTP-key caller can reach carries its own check:
   answers exactly like the `version_check` RPC. Clients after
   0.47.0 use it (`Platform.get_version_check_url()`), and
   `Platform.initialize` refuses a `nakama_http_key` config entry.
+- **Public leaderboard without a key.** `GET
+  /snoringcat/leaderboard` is the other `RegisterHttp` route: a
+  read-only, cached projection of a board for the game websites
+  (see "Leaderboards").
 - **Caddy's access log masks both keys** in `request.uri`
   (`format filter` in the `Caddyfile`), so neither reaches
   `access.log` or the caddy-access-analytics report.
@@ -477,6 +481,135 @@ can't supply, or return only public data (`version_check`,
 `transport_select`). The header comment of `runtime/main.go` lists
 every RPC by the callers it admits; keep it current when adding
 one.
+
+### Leaderboards
+
+**Declared per game, created by the runtime.** A game lists its
+boards in `game.yaml` under `leaderboards` (`id`, `sort`,
+`operator`, `reset_schedule`). The runtime creates each one in
+Nakama as `{game_id}_{id}` (hopnbop's `ffa` is `hopnbop_ffa`): at
+boot for every registered game, and again after every
+`register_game`, so a new board needs no restart
+(`runtime/leaderboards.go`). `register_game` refuses an invalid
+list (an ID that isn't 1-64 of `[a-z0-9_]`, a duplicate ID, an
+unknown `sort` or `operator`) before it stores anything. When
+Nakama refuses a board (a bad cron, say), the call fails with the
+config already stored; fix `game.yaml` and register again.
+
+Boards are **authoritative**: Nakama refuses record writes from
+client sessions. The only writer is `match_end`, which records each
+matched player's in-match score for an allocated, non-synthetic
+match (see "Runtime keys and RPC auth"). With `sort: desc` and
+`operator: best`, hopnbop's `ffa` keeps each player's best
+single-match score.
+
+**Nakama never changes an existing board.** `LeaderboardCreate` is
+a no-op for an ID that exists, so editing `sort`, `operator` or
+`reset_schedule` does nothing to a live board. The runtime logs
+`leaderboard <id> differs from game.yaml: ...` (sort, operator,
+whether it resets, and whether it is authoritative) at boot and on
+`register_game`. To apply a change, delete the board in the Nakama
+console, which deletes its records, and restart Nakama or register
+again.
+
+**History.** Nothing created boards before 2026-10-12. Production
+had no leaderboard at all, so every `match_end` leaderboard write
+since the migration failed with "leaderboard not found" (logged as
+a warning), `get_player_stats` always answered its unranked
+defaults, and the in-game and website leaderboards were empty.
+
+**Readers:** `get_player_stats`, `export_player_data`, the deletion
+cascade (`delete_account` deletes the caller's record on every
+declared board), the game client (lists records with its session),
+and the public route below.
+
+#### Public leaderboard route
+
+`GET https://nakama.snoringcat.games/snoringcat/leaderboard?game_id=<id>&leaderboard=<board>&limit=<n>`
+(`runtime/leaderboard_public.go`) serves one board to the game
+websites. It is registered with `RegisterHttp`, so Nakama
+authenticates nothing: it needs no session and no key, and a page
+must never send either.
+
+| Parameter | |
+|---|---|
+| `game_id` | Required. A registered game. |
+| `leaderboard` | Required. An ID the game's `leaderboards` declares, without the game prefix (`ffa`). |
+| `limit` | Optional. 1 to 100, default 50. |
+
+A 200 response (`version` is the schema version, bumped only for a
+change existing clients can't read):
+
+```json
+{
+  "version": 1,
+  "game_id": "hopnbop",
+  "leaderboard": "ffa",
+  "sort_order": "desc",
+  "operator": "best",
+  "next_reset_at": null,
+  "generated_at": "2026-10-12T04:09:20Z",
+  "entries": [
+    {"rank": 1, "display_name": "Moonhopper", "score": 4210},
+    {"rank": 2, "display_name": "Bunny McBounce", "score": 3895},
+    {"rank": 2, "display_name": "Pip", "score": 3895},
+    {"rank": 4, "display_name": "Zap", "score": 2750}
+  ]
+}
+```
+
+`sort_order`, `operator` and `next_reset_at` (RFC 3339, null when
+the board never resets) describe the live Nakama board. Errors are
+JSON, `{"version": 1, "error": "<code>", "message": "..."}`: 400
+`missing_game_id`, `missing_leaderboard`, `invalid_limit`; 404
+`unknown_game`, `unknown_leaderboard`; 405 `method_not_allowed`;
+503 `unavailable` (with `Retry-After: 10`). A message never echoes
+the request.
+
+**Privacy.** Per player the route returns exactly three fields:
+`rank`, `display_name` and `score`. Never a user id, username,
+avatar URL, device id, IP address, email, record time or record
+metadata. A player is listed only when all of these hold:
+
+- the account exists and isn't banned (no `disable_time`);
+- it has no `account_deletion_queue` row, so a player in the
+  deletion grace window is hidden whatever their display name says;
+- its display name, trimmed, is neither empty nor `[deleted]`.
+  Anonymous (device-only) accounts have none, so guests are never
+  listed, the same as in the in-game leaderboard;
+- its username doesn't start with `probe-` (the
+  synthetic-match-probe's identities; claude-config's
+  player-metrics-daily uses the same filter).
+
+Linked accounts take their display name from the provider
+(hopnbop's client sets it to the Google profile name when Google is
+linked), so in practice a listed name is the name on the player's
+Google or Facebook account. Ranks count listed players only, and
+equal scores share a rank (1, 2, 2, 4).
+
+**Load and freshness.** Each board is read from Postgres at most
+once a minute, by one request while concurrent ones wait for its
+result: per page of 100 records, one `LeaderboardRecordsList`, one
+`AccountsGetId` and one storage read, and up to 5 pages to find 100
+listable players. Responses carry `Cache-Control: public,
+max-age=60` and `Age`, so a browser keeps a copy only for the rest
+of that minute: a new score or a deletion shows within 60 seconds.
+When a read fails, the last good copy is served for up to 10
+minutes (so a deletion made just before a Postgres outage can stay
+listed that long), then 503. Caddy rate-limits the route to 60
+requests a minute per IP (the `public_leaderboard` zone in
+`infra/remote/nakama/Caddyfile`); that 429 carries no CORS headers.
+
+**CORS.** Every response carries `Access-Control-Allow-Origin: *`
+(Nakama's CORS middleware sets it too, and answers preflights before
+the handler runs), `Cross-Origin-Resource-Policy: cross-origin` and
+`X-Content-Type-Options: nosniff`. GET and HEAD are served, OPTIONS
+answers 204, and anything else gets 405.
+
+**Tests.** `runtime/leaderboard_public_test.go` and
+`runtime/leaderboards_test.go`; compliance `test_public_leaderboard.gd`,
+which puts scores in through the real matchmaker, `register_server`
+and `match_end` path on the mock-deploy stack.
 
 ---
 
@@ -982,6 +1115,7 @@ key and skips the pull with a warning.
 | Service-status queue | `/var/log/snoringcat/service-status.jsonl` on Nakama host (drained daily by the desktop) |
 | Postgres backups | `s3://hopnbop-pulumi-state-r2/pg-backups/` (Cloudflare R2, 7 days) |
 | Crash reports | Nakama storage, collection `crash_reports`, system user (30 days); see "Crash reports" |
+| Leaderboards | Nakama, `{game_id}_{id}` per `game.yaml` `leaderboards` entry; public route `GET /snoringcat/leaderboard`; see "Leaderboards" |
 | Pinned SSH host keys | `claude-config/jobs/known_hosts` (synced; every scheduled job); `~/.hopnbop-migration/known_hosts` (phase-a/b). phase-a's HostKeys step keeps both in step. |
 | Migration plan | `hopnbop/docs/archive/MIGRATION_PLAN.md` |
 | Migration state | `~/.hopnbop-migration/state.json` |

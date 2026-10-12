@@ -141,22 +141,26 @@ func game_id() -> String:
 ##
 ## For HTTP-key RPCs, append "?http_key=..." to the path (Nakama
 ## takes the key as a query parameter, not an Authorization
-## header).
+## header). `extra_headers` are sent as given ("Name: value").
 ##
 ## Returns Dictionary with keys:
 ##   status_code (int), body (Variant: Dictionary/Array/null),
-##   text (String), error (String — empty if no transport error).
+##   text (String), error (String, empty if no transport error),
+##   headers (PackedStringArray of "Name: value"; read one with
+##   header_value()).
 func http_request(
 	method: int,
 	path: String,
 	body: Variant = null,
 	auth: String = "",
+	extra_headers: PackedStringArray = PackedStringArray(),
 ) -> Dictionary:
 	var result: Dictionary = {
 		"status_code": 0,
 		"body": null,
 		"text": "",
 		"error": "",
+		"headers": PackedStringArray(),
 	}
 	var refusal := get_target_refusal()
 	if not refusal.is_empty():
@@ -181,6 +185,7 @@ func http_request(
 			headers.append(h)
 	elif auth.begins_with("bearer:"):
 		headers.append("Authorization: Bearer " + auth.substr(7))
+	headers.append_array(extra_headers)
 
 	var body_str := ""
 	if body != null:
@@ -216,12 +221,24 @@ func http_request(
 		result.error = "transport_error_%d" % rc
 		return result
 	result.status_code = status
+	result.headers = completed[2]
 	result.text = resp_bytes.get_string_from_utf8()
 	if not result.text.is_empty():
 		var json := JSON.new()
 		if json.parse(result.text) == OK:
 			result.body = json.data
 	return result
+
+
+## Returns the value of the response header `name` (matched
+## case-insensitively) from an http_request() result, or "" when
+## the response has none.
+func header_value(result: Dictionary, name: String) -> String:
+	var prefix := name.to_lower() + ":"
+	for line: String in result.get("headers", PackedStringArray()):
+		if line.to_lower().begins_with(prefix):
+			return line.substr(prefix.length()).strip_edges()
+	return ""
 
 
 ## Convenience: GET against the base URL.

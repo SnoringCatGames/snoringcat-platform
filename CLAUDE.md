@@ -259,6 +259,12 @@ Layout:
   session, game servers by HTTP key) and its 30-day prune cron.
   Contract, storage, and SQL recipes: `PLATFORM_ARCHITECTURE.md`
   → "Crash reports".
+- `leaderboards.go` creates the leaderboards each game declares in
+  `game.yaml` (at boot and on `register_game`; authoritative, so
+  only `match_end` writes). `leaderboard_public.go` serves the
+  unauthenticated, cached `/snoringcat/leaderboard` route for the
+  game websites. Contract and privacy rules:
+  `PLATFORM_ARCHITECTURE.md` → "Leaderboards".
 - `runtime_status.go` — read-only build/config probe.
 
 **Required env vars when matchmaker hook is enabled

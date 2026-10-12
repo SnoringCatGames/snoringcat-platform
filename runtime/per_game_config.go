@@ -319,11 +319,14 @@ type registerGameResponse struct {
 // (matchmaker modes, allocator mode, Edgegap app version, legal
 // paths), so the HTTP key alone, which shipped in client builds,
 // must not be enough to call it.
+//
+// It then creates the leaderboards the config declares
+// (leaderboards.go), so a new board exists without a restart.
 func (c *perGameConfig) RegisterGameRpc(
 	ctx context.Context,
 	logger runtime.Logger,
 	_ *sql.DB,
-	_ runtime.NakamaModule,
+	nk runtime.NakamaModule,
 	payload string,
 ) (string, error) {
 	// First, before the payload is parsed: a refused call does no
@@ -344,12 +347,24 @@ func (c *perGameConfig) RegisterGameRpc(
 	if err := validateGameConfig(gc); err != nil {
 		return "", runtime.NewError(err.Error(), 3)
 	}
+	boards, err := parseLeaderboardConfigs([]byte(payload))
+	if err != nil {
+		return "", runtime.NewError(err.Error(), 3)
+	}
 	if err := c.upsert(ctx, gc, []byte(payload)); err != nil {
 		logger.Error(
 			"register_game upsert failed for %q: %v",
 			gc.GameID, err)
 		return "", runtime.NewError(
 			"upsert failed: "+err.Error(), 13)
+	}
+	// The config is stored either way. A board that can't be created
+	// (Nakama refuses its reset_schedule, say) fails the call so the
+	// sync script stops loudly; fix game.yaml and register again.
+	if err := ensureGameLeaderboards(
+		ctx, logger, nk, gc.GameID, boards); err != nil {
+		return "", runtime.NewError(
+			"config stored, but "+err.Error(), 13)
 	}
 	logger.Info(
 		"register_game: %s protocol=%d display=%s",
