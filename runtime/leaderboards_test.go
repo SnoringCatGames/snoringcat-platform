@@ -21,11 +21,11 @@ type leaderboardCreateCall struct {
 	enableRanks   bool
 }
 
-// fakeLeaderboardNk is the slice of NakamaModule the leaderboard
-// code uses: board creation and reads, record listing, account
-// reads, and storage reads. Boards created through it become
-// readable, the way Nakama's cache behaves. Any other method panics
-// through the nil embedded interface.
+// fakeLeaderboardNk is the slice of NakamaModule the leaderboard and
+// player-data code uses: board creation and reads, record listing,
+// account reads, storage reads and lists, and friends. Boards created
+// through it become readable, the way Nakama's cache behaves. Any
+// other method panics through the nil embedded interface.
 type fakeLeaderboardNk struct {
 	runtime.NakamaModule
 
@@ -34,16 +34,24 @@ type fakeLeaderboardNk struct {
 	boards    map[string]*api.Leaderboard
 
 	// records lists each board's records in board order.
-	records   map[string][]*api.LeaderboardRecord
-	accounts  map[string]*api.Account
-	pending   map[string]bool
-	listErr   error
-	listCalls int
-	// listGate, when set, is received from before each listing, so
-	// a test can hold a read open.
+	records  map[string][]*api.LeaderboardRecord
+	accounts map[string]*api.Account
+	pending  map[string]bool
+	listErr  error
+	// listCalls counts page listings (a positive limit); ownerCalls
+	// counts owner-record lookups.
+	listCalls  int
+	ownerCalls int
+	// listGate, when set, is received from before each page listing,
+	// so a test can hold a read open.
 	listGate chan struct{}
-	// listEntered, when set, gets a value as each listing starts.
+	// listEntered, when set, gets a value as each page listing starts.
 	listEntered chan struct{}
+
+	// history holds each user's match_history rows in storage (key)
+	// order; historyErr fails StorageList.
+	history    map[string][]*api.StorageObject
+	historyErr error
 }
 
 func newFakeLeaderboardNk() *fakeLeaderboardNk {
@@ -53,6 +61,7 @@ func newFakeLeaderboardNk() *fakeLeaderboardNk {
 		records:   map[string][]*api.LeaderboardRecord{},
 		accounts:  map[string]*api.Account{},
 		pending:   map[string]bool{},
+		history:   map[string][]*api.StorageObject{},
 	}
 }
 
@@ -109,41 +118,104 @@ func (f *fakeLeaderboardNk) LeaderboardsGetId(
 	return out, nil
 }
 
+// LeaderboardRecordsList behaves like Nakama's: a positive limit
+// returns that page of the whole board whatever the owner filter,
+// and the owners' own records come back separately. An unknown board
+// is ErrLeaderboardNotFound.
 func (f *fakeLeaderboardNk) LeaderboardRecordsList(
 	_ context.Context, id string, ownerIDs []string, limit int,
 	cursor string, _ int64,
 ) ([]*api.LeaderboardRecord, []*api.LeaderboardRecord, string, string,
 	error) {
-	if f.listEntered != nil {
-		f.listEntered <- struct{}{}
+	if limit > 0 {
+		if f.listEntered != nil {
+			f.listEntered <- struct{}{}
+		}
+		if f.listGate != nil {
+			<-f.listGate
+		}
+		f.listCalls++
 	}
-	if f.listGate != nil {
-		<-f.listGate
+	if len(ownerIDs) != 0 {
+		f.ownerCalls++
 	}
-	f.listCalls++
 	if f.listErr != nil {
 		return nil, nil, "", "", f.listErr
 	}
-	if len(ownerIDs) != 0 {
-		panic("the public leaderboard never filters by owner")
-	}
-	start := 0
-	if cursor != "" {
-		start = len(cursor)
+	if _, ok := f.boards[id]; !ok {
+		return nil, nil, "", "", runtime.ErrLeaderboardNotFound
 	}
 	all := f.records[id]
+	var page []*api.LeaderboardRecord
+	next := ""
+	if limit > 0 {
+		start := 0
+		if cursor != "" {
+			start = len(cursor)
+		}
+		if start > len(all) {
+			start = len(all)
+		}
+		end := start + limit
+		if end < len(all) {
+			// The cursor's length is the next offset.
+			next = strings.Repeat("c", end)
+		} else {
+			end = len(all)
+		}
+		page = all[start:end]
+	}
+	var owned []*api.LeaderboardRecord
+	for _, owner := range ownerIDs {
+		for _, record := range all {
+			if record.GetOwnerId() == owner {
+				owned = append(owned, record)
+			}
+		}
+	}
+	return page, owned, next, "", nil
+}
+
+// StorageList pages one user's match_history rows. The cursor's
+// length is the next offset.
+func (f *fakeLeaderboardNk) StorageList(
+	_ context.Context, callerID, userID, collection string, limit int,
+	cursor string,
+) ([]*api.StorageObject, string, error) {
+	if callerID != "" || collection != matchHistoryCollection {
+		panic("unexpected storage list: " + collection)
+	}
+	if f.historyErr != nil {
+		return nil, "", f.historyErr
+	}
+	all := f.history[userID]
+	start := len(cursor)
 	if start > len(all) {
 		start = len(all)
 	}
 	end := start + limit
 	next := ""
 	if end < len(all) {
-		// The cursor's length is the next offset.
 		next = strings.Repeat("c", end)
 	} else {
 		end = len(all)
 	}
-	return all[start:end], nil, next, "", nil
+	return all[start:end], next, nil
+}
+
+func (f *fakeLeaderboardNk) AccountGetId(
+	_ context.Context, userID string,
+) (*api.Account, error) {
+	if account, ok := f.accounts[userID]; ok {
+		return account, nil
+	}
+	return nil, runtime.NewError("account not found", 5)
+}
+
+func (f *fakeLeaderboardNk) FriendsList(
+	context.Context, string, int, *int, string,
+) ([]*api.Friend, string, error) {
+	return nil, "", nil
 }
 
 func (f *fakeLeaderboardNk) AccountsGetId(

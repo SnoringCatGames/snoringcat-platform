@@ -536,7 +536,7 @@ So each RPC an HTTP-key caller can reach carries its own check:
 - **Public leaderboard without a key.** `GET
   /snoringcat/leaderboard` is the other `RegisterHttp` route: a
   read-only, cached projection of a board for the game websites
-  (see "Leaderboards").
+  and the in-game leaderboard (see "Leaderboards").
 - **Caddy's access log masks both keys** in `request.uri`
   (`format filter` in the `Caddyfile`), so neither reaches
   `access.log` or the caddy-access-analytics report.
@@ -583,10 +583,24 @@ since the migration failed with "leaderboard not found" (logged as
 a warning), `get_player_stats` always answered its unranked
 defaults, and the in-game and website leaderboards were empty.
 
-**Readers:** `get_player_stats`, `export_player_data`, the deletion
-cascade (`delete_account` deletes the caller's record on every
-board they have one on, declared or not), the game client (lists
-records with its session), and the public route below.
+**Readers:** the public route below (the game websites and, since
+SDK 0.7.0, the in-game leaderboard, both through
+`Platform.get_public_leaderboard_url`), `get_player_stats` (the
+caller's own record, and their rank from the public route's
+listing), `export_player_data` (the caller's records on every board,
+read from Nakama's `leaderboard_record` table), and the deletion
+cascade (`delete_account` deletes the caller's record on every board
+they have one on, declared or not).
+
+Until 2026-10-12 `get_player_stats` and `export_player_data` read
+`LeaderboardRecordsList`'s first return value, which is the board's
+top page whatever the owner filter, not the owner's records. Once a
+board existed, every player would have been shown the leader's
+score, and a data export would have carried other players' records.
+No export was affected: production's board had no records before
+both were fixed. `get_player_stats` now reads only the second return
+value (the owner's record), and the export reads the player's own
+rows (see "Data export").
 
 #### Public leaderboard route
 
@@ -656,12 +670,15 @@ equal scores share a rank (1, 2, 2, 4).
 once a minute, by one request while concurrent ones wait for its
 result: per page of 100 records, one `LeaderboardRecordsList`, one
 `AccountsGetId` and one storage read, and up to 5 pages to find 100
-listable players. Responses carry `Cache-Control: public,
+listable players. `match_end` invalidates the cache after it
+records scores, so a finished match shows on the next request (one
+extra read per match). Responses carry `Cache-Control: public,
 max-age=60` and `Age`, so a browser keeps a copy only for the rest
-of that minute: a new score or a deletion shows within 60 seconds.
-When a read fails, the last good copy is served for up to 10
-minutes (so a deletion made just before a Postgres outage can stay
-listed that long), then 503. Caddy rate-limits the route to 60
+of that minute: a new score shows on a page within 60 seconds, and a
+deletion (which doesn't invalidate) within two minutes. When a read
+fails, the last good copy is served for up to 10 minutes (so a
+deletion made just before a Postgres outage can stay listed that
+long), then 503. Caddy rate-limits the route to 60
 requests a minute per IP (the `public_leaderboard` zone in
 `infra/remote/nakama/Caddyfile`); that 429 carries no CORS headers.
 
@@ -675,6 +692,51 @@ answers 204, and anything else gets 405.
 `runtime/leaderboards_test.go`; compliance `test_public_leaderboard.gd`,
 which puts scores in through the real matchmaker, `register_server`
 and `match_end` path on the mock-deploy stack.
+
+#### Player stats and match history
+
+Both RPCs take the caller's client session and answer for the game
+the session is signed into.
+
+`get_player_stats` (payload `{}` for the caller, or
+`{"player_id": "<user id>"}`) answers:
+
+```json
+{
+  "player_id": "…",
+  "best_score": 1750,
+  "rank": 7,
+  "rating": 1750,
+  "matches": 2
+}
+```
+
+- `best_score`: the player's own record on the game's `ffa` board
+  (their best single-match score), or null before their first
+  recorded match.
+- `rank`: their rank on the public route's listing, the same number
+  the websites and the in-game leaderboard show, or null when they
+  aren't listed there (no record, anonymous, queued for deletion, a
+  probe, or outside the top 100). It comes from the route's cached
+  read, so it is never computed differently from the list.
+- `rating` and `matches` are **deprecated**, kept for clients that
+  still read them. `rating` was never a rating: it is `best_score`,
+  or 1500 for a player with no record. `matches` is the record's
+  `num_score`, which with `operator: best` counts only the matches
+  that improved the best score, not matches played. Use
+  `get_match_history`'s `totals.matches` for that.
+
+`get_match_history` answers `{"matches": [...], "totals": {"matches",
+"wins", "kills", "bumps"}}`. `matches` holds the caller's newest 50
+`match_history` rows (`match_id`, `ended_at`, `is_winner`, `score`,
+`kills`, `bumps`), newest first; `totals` sums every row, up to
+10,000. Storage keys are request ids, not times, so the runtime
+reads every row and sorts by `ended_at`; before 2026-10-12 it
+returned the first 50 by key, which wasn't the newest.
+
+The game's My Stats screen shows `best_score`, `rank`, the totals
+and the latest ten matches. Tests: `runtime/player_stats_test.go`,
+compliance `test_player_stats.gd` and `test_public_leaderboard.gd`.
 
 ---
 

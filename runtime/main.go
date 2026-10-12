@@ -66,8 +66,8 @@
 //   Client session:
 //   - record_client_ip:    pre-matchmaking IP recorder.
 //   - update_and_get_presence: write own presence + read friends'.
-//   - get_player_stats:    rating + match count.
-//   - get_match_history:   recent matches for the caller.
+//   - get_player_stats:    best score + public rank.
+//   - get_match_history:   recent matches + totals for the caller.
 //   - export_player_data:  GDPR data export: everything stored about
 //                            the caller (data_export.go).
 //   - party_start_matchmaking: leader notifies party members to
@@ -236,6 +236,9 @@ func InitModule(
 	// Create the leaderboards each registered game declares
 	// (match_end writes to them). Failures are logged, not fatal.
 	ensureAllGameLeaderboards(ctx, logger, nk, games)
+	// One cached reader for the public leaderboard: the HTTP route
+	// and get_player_stats rank players from the same read.
+	publicBoards := newPublicLeaderboardReader(logger, nk)
 
 	// Register the status probe first so the runtime is
 	// diagnosable even if a downstream init step fails or is
@@ -443,6 +446,7 @@ func InitModule(
 	lifecycle := &matchLifecycle{
 		edgegap: edgegap,
 		local:   localAllocator,
+		boards:  publicBoards,
 	}
 	if err := addRpc("register_server", lifecycle.RegisterServerRpc); err != nil {
 		return err
@@ -504,8 +508,7 @@ func InitModule(
 	// credential, cached. Not fatal, like the route above.
 	if err := initializer.RegisterHttp(
 		publicLeaderboardHTTPPath,
-		publicLeaderboardHTTPHandler(
-			logger, nk, games, newPublicLeaderboardCache())); err != nil {
+		publicLeaderboardHTTPHandler(publicBoards, games)); err != nil {
 		logger.Error(
 			"register HTTP route %s: %v", publicLeaderboardHTTPPath, err)
 	}
@@ -523,7 +526,7 @@ func InitModule(
 	}
 	if err := addRpc(
 		"get_player_stats",
-		getPlayerStatsRpcFactory(games)); err != nil {
+		getPlayerStatsRpcFactory(games, publicBoards)); err != nil {
 		return err
 	}
 	if err := addRpc(

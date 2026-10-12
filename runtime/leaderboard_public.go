@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/heroiclabs/nakama-common/api"
@@ -37,7 +38,7 @@ import (
 //     whatever its display name says;
 //   - its display name is not delete_account's "[deleted]" marker;
 //   - it has a display name. Anonymous (device-only) accounts have
-//     none, and the in-game leaderboard hides them the same way;
+//     none, so they are never listed;
 //   - its username doesn't start with "probe-", the
 //     synthetic-match-probe's identities (the same filter
 //     claude-config's player-metrics-daily uses).
@@ -46,9 +47,16 @@ import (
 // place. Players with equal scores share a rank (1, 2, 2, 4); within
 // a tie the order is Nakama's.
 //
+// One list everywhere. The game client's in-game leaderboard reads
+// this same route, and get_player_stats takes a player's rank from
+// the same cached read (publicLeaderboardReader), so the website, the
+// game, and a player's own rank always agree.
+//
 // Load. Each (game, leaderboard) pair is read from Postgres at most
 // once per publicLeaderboardCacheTTL, by one request while concurrent
-// ones wait for its result, whatever their limit. A failed read is
+// ones wait for its result, whatever their limit. match_end
+// invalidates the cache after writing scores, so a finished match
+// costs one extra read and shows on the next request. A failed read is
 // retried no more often than publicLeaderboardRetryInterval, and in
 // the meantime the last good copy is served while it is younger than
 // publicLeaderboardStaleTTL. Caddy also rate-limits the route per IP
@@ -160,6 +168,9 @@ type publicLeaderboardSnapshot struct {
 	// entries are the top listed players, ranked, at most
 	// publicLeaderboardMaxLimit.
 	entries []publicLeaderboardEntry
+	// ranks maps each listed player's user id to their rank. It is
+	// never serialized: get_player_stats reads it for the caller.
+	ranks map[string]int64
 }
 
 // publicLeaderboardCache holds one snapshot per board.
@@ -169,6 +180,9 @@ type publicLeaderboardCache struct {
 	retryInterval time.Duration
 	// now is the clock. Tests replace it.
 	now func() time.Time
+	// generation counts invalidations. A snapshot read in an older
+	// generation is out of date, whatever its age.
+	generation atomic.Uint64
 
 	mu      sync.Mutex
 	entries map[string]*publicLeaderboardCacheEntry
@@ -177,9 +191,12 @@ type publicLeaderboardCache struct {
 // publicLeaderboardCacheEntry is one board's slot. mu is held for the
 // whole of a read, which is what makes concurrent requests share it.
 type publicLeaderboardCacheEntry struct {
-	mu          sync.Mutex
-	snapshot    *publicLeaderboardSnapshot
-	lastFailure time.Time
+	mu       sync.Mutex
+	snapshot *publicLeaderboardSnapshot
+	// snapshotGeneration is the cache generation when the snapshot's
+	// read started.
+	snapshotGeneration uint64
+	lastFailure        time.Time
 }
 
 func newPublicLeaderboardCache() *publicLeaderboardCache {
@@ -193,11 +210,12 @@ func newPublicLeaderboardCache() *publicLeaderboardCache {
 }
 
 // get returns key's snapshot, calling read when the cached one is
-// older than ttl. The snapshot is stamped with the time the read
-// started. After a failed read, read isn't called again until
-// retryInterval has passed, and the old snapshot is returned while it
-// is younger than staleTTL. Keys come only from configured boards, so
-// the map stays as small as the number of boards.
+// older than ttl or predates an invalidation. The snapshot is stamped
+// with the time the read started. After a failed read, read isn't
+// called again until retryInterval has passed, and the old snapshot
+// is returned while it is younger than staleTTL. Keys come only from
+// configured boards, so the map stays as small as the number of
+// boards.
 func (c *publicLeaderboardCache) get(
 	key string,
 	read func() (*publicLeaderboardSnapshot, error),
@@ -213,7 +231,9 @@ func (c *publicLeaderboardCache) get(
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	now := c.now()
+	generation := c.generation.Load()
 	if entry.snapshot != nil &&
+		entry.snapshotGeneration == generation &&
 		now.Sub(entry.snapshot.generatedAt) < c.ttl {
 		return entry.snapshot, nil
 	}
@@ -225,6 +245,9 @@ func (c *publicLeaderboardCache) get(
 		if err == nil {
 			fresh.generatedAt = now
 			entry.snapshot = fresh
+			// An invalidation during the read leaves this snapshot
+			// out of date, so the next get reads again.
+			entry.snapshotGeneration = generation
 			entry.lastFailure = time.Time{}
 			return fresh, nil
 		}
@@ -237,12 +260,82 @@ func (c *publicLeaderboardCache) get(
 	return nil, err
 }
 
-// publicLeaderboardHTTPHandler serves publicLeaderboardHTTPPath.
-func publicLeaderboardHTTPHandler(
+// invalidateAll marks every cached snapshot out of date: each board
+// is read afresh on its next request. A failed read can still fall
+// back to the old snapshot (staleTTL).
+func (c *publicLeaderboardCache) invalidateAll() {
+	c.generation.Add(1)
+}
+
+// publicLeaderboardReader reads boards through one shared cache. The
+// public route and get_player_stats both use it, so a player's rank
+// is the same in the game and on the website.
+type publicLeaderboardReader struct {
+	logger runtime.Logger
+	nk     runtime.NakamaModule
+	cache  *publicLeaderboardCache
+}
+
+func newPublicLeaderboardReader(
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
+) *publicLeaderboardReader {
+	return &publicLeaderboardReader{
+		logger: logger,
+		nk:     nk,
+		cache:  newPublicLeaderboardCache(),
+	}
+}
+
+// read returns a board's snapshot, through the cache (see
+// publicLeaderboardCache.get).
+func (p *publicLeaderboardReader) read(
+	nakamaID string,
+) (*publicLeaderboardSnapshot, error) {
+	return p.cache.get(nakamaID, func() (*publicLeaderboardSnapshot, error) {
+		// Not a request's context: every waiting request shares this
+		// read, so one client hanging up must not cancel it.
+		ctx, cancel := context.WithTimeout(
+			context.Background(), publicLeaderboardReadTimeout)
+		defer cancel()
+		snapshot, err := readPublicLeaderboard(ctx, p.nk, nakamaID)
+		if err != nil {
+			p.logger.Warn(
+				"public leaderboard %s: read failed: %v", nakamaID, err)
+		}
+		return snapshot, err
+	})
+}
+
+// invalidate marks every board's cached snapshot out of date, so the
+// next request reads Postgres. match_end calls it after writing
+// scores: a finished match shows on the website, in the game, and in
+// get_player_stats' rank on the next request, not up to
+// publicLeaderboardCacheTTL later.
+func (p *publicLeaderboardReader) invalidate() {
+	p.cache.invalidateAll()
+}
+
+// rankOf returns userID's rank on a board's public listing, and false
+// when they are not listed there (hidden by the listing rules, or
+// outside the top publicLeaderboardMaxLimit) or the board can't be
+// read.
+func (p *publicLeaderboardReader) rankOf(
+	nakamaID string,
+	userID string,
+) (int64, bool) {
+	snapshot, err := p.read(nakamaID)
+	if err != nil {
+		return 0, false
+	}
+	rank, ok := snapshot.ranks[userID]
+	return rank, ok
+}
+
+// publicLeaderboardHTTPHandler serves publicLeaderboardHTTPPath.
+func publicLeaderboardHTTPHandler(
+	boards *publicLeaderboardReader,
 	games *perGameConfig,
-	cache *publicLeaderboardCache,
 ) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
@@ -281,22 +374,7 @@ func publicLeaderboardHTTPHandler(
 				w, status, failure.Error, failure.Message)
 			return
 		}
-		snapshot, err := cache.get(req.nakamaID(),
-			func() (*publicLeaderboardSnapshot, error) {
-				// Not the request's context: every waiting request
-				// shares this read, so one client hanging up must not
-				// cancel it.
-				ctx, cancel := context.WithTimeout(
-					context.Background(), publicLeaderboardReadTimeout)
-				defer cancel()
-				snapshot, err := readPublicLeaderboard(
-					ctx, nk, req.nakamaID())
-				if err != nil {
-					logger.Warn("public leaderboard %s: read failed: %v",
-						req.nakamaID(), err)
-				}
-				return snapshot, err
-			})
+		snapshot, err := boards.read(req.nakamaID())
 		if err != nil {
 			header.Set("Retry-After",
 				strconv.Itoa(int(publicLeaderboardRetryInterval.Seconds())))
@@ -312,7 +390,7 @@ func publicLeaderboardHTTPHandler(
 				"could not encode the leaderboard")
 			return
 		}
-		age := cache.now().Sub(snapshot.generatedAt)
+		age := boards.cache.now().Sub(snapshot.generatedAt)
 		if age < 0 {
 			age = 0
 		}
@@ -443,6 +521,8 @@ func writePublicLeaderboardError(
 // publicLeaderboardCandidate is a record that passed the listing
 // rules, before ranking.
 type publicLeaderboardCandidate struct {
+	// ownerID stays inside the runtime: it keys snapshot.ranks.
+	ownerID     string
 	displayName string
 	score       int64
 	subscore    int64
@@ -499,6 +579,10 @@ func readPublicLeaderboard(
 		listed = listed[:publicLeaderboardMaxLimit]
 	}
 	snapshot.entries = rankPublicLeaderboard(listed)
+	snapshot.ranks = make(map[string]int64, len(listed))
+	for i, candidate := range listed {
+		snapshot.ranks[candidate.ownerID] = snapshot.entries[i].Rank
+	}
 	return snapshot, nil
 }
 
@@ -539,6 +623,7 @@ func listablePublicRecords(
 			continue
 		}
 		kept = append(kept, publicLeaderboardCandidate{
+			ownerID:     owner,
 			displayName: name,
 			score:       record.GetScore(),
 			subscore:    record.GetSubscore(),

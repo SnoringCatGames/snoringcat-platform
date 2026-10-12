@@ -6,13 +6,21 @@ extends GutTest
 ## Contracts (from runtime/player_data.go):
 ##   get_player_stats:
 ##     request:  {player_id?: string}  // defaults to caller
-##     response: {player_id, rating: int, matches: int}
-##     Unranked → rating=1500, matches=0 (NOT a 500 error).
+##     response: {player_id, best_score: int|null, rank: int|null,
+##                rating: int, matches: int}
+##     best_score is the player's own best single-match score and
+##     rank their place on the public leaderboard; both null before
+##     the first recorded match. rating (best_score, or 1500) and
+##     matches (Nakama's num_score) are deprecated. Unranked is NOT
+##     a 500 error.
 ##   get_match_history:
 ##     request:  empty
 ##     response: {matches: [{match_id, ended_at, is_winner,
-##                           score, kills, bumps, ...}]}
-##     Empty list when no history. Most-recent first, capped 50.
+##                           score, kills, bumps, ...}],
+##                totals: {matches, wins, kills, bumps}}
+##     Empty list and zero totals when no history. Newest first,
+##     capped 50; totals cover every match.
+## test_public_leaderboard.gd checks real values after a match.
 ## Auth: Bearer session token.
 
 
@@ -58,19 +66,14 @@ func test_get_player_stats_returns_unranked_defaults_for_new_user() -> void:
 		"inner not a dict: %s" % result.text)
 
 	var stats: Dictionary = result.inner
-	assert_true(
-		stats.has("player_id"),
-		"missing player_id: %s" % str(stats))
-	assert_true(
-		stats.has("rating"),
-		"missing rating: %s" % str(stats))
-	assert_true(
-		stats.has("matches"),
-		"missing matches: %s" % str(stats))
-	# The compliance test account either has no records (fresh)
-	# or has whatever real records the previous compliance runs
-	# left. Both are acceptable; the contract is just "the
-	# fields are present and the call doesn't 5xx."
+	for field in ["player_id", "best_score", "rank", "rating", "matches"]:
+		assert_true(
+			stats.has(field),
+			"missing %s: %s" % [field, str(stats)])
+	# The shared compliance account never plays a match, so it is
+	# unranked: no best score and no rank, null rather than zero.
+	assert_null(stats.get("best_score", 0), "best_score: %s" % str(stats))
+	assert_null(stats.get("rank", 0), "rank: %s" % str(stats))
 
 
 func test_get_player_stats_for_explicit_player_id() -> void:
@@ -123,3 +126,7 @@ func test_get_match_history_returns_array_for_new_user() -> void:
 	assert_true(
 		matches is Array,
 		"matches not an array: %s" % str(result.inner))
+	var totals: Variant = result.inner.get("totals")
+	assert_true(
+		totals is Dictionary and totals.has("matches"),
+		"totals missing: %s" % str(result.inner))

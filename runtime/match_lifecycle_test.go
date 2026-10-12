@@ -261,6 +261,46 @@ func TestMatchEndLegacyMetadataSkipsPlayerCheck(t *testing.T) {
 	}
 }
 
+func TestMatchEndInvalidatesThePublicLeaderboard(t *testing.T) {
+	boards := newPublicLeaderboardReader(testLogger{}, nil)
+	_, err := (&matchLifecycle{boards: boards}).MatchEndRpc(
+		context.Background(), testLogger{}, nil, newMatchNk(testMetadataAB),
+		matchEndPayload(testUserA, testUserA, testUserB))
+	if err != nil {
+		t.Fatalf("match_end: %v", err)
+	}
+	if got := boards.cache.generation.Load(); got != 1 {
+		t.Errorf("cache generation = %d after match_end, want 1", got)
+	}
+}
+
+func TestMatchEndKeepsThePublicLeaderboardCacheWhenNothingIsRecorded(
+	t *testing.T,
+) {
+	// A synthetic probe match records no scores, and a refused call
+	// records nothing: neither may cost a board read.
+	boards := newPublicLeaderboardReader(testLogger{}, nil)
+	lifecycle := &matchLifecycle{boards: boards}
+	synthetic := newMatchNk(testMetadataAB)
+	synthetic.rows[syntheticMatchCollection+"/"+testRequestID] = `{}`
+	if _, err := lifecycle.MatchEndRpc(
+		context.Background(), testLogger{}, nil, synthetic,
+		matchEndPayload(testUserA, testUserA, testUserB)); err != nil {
+		t.Fatalf("synthetic match_end: %v", err)
+	}
+	if len(synthetic.leaderboard) != 0 {
+		t.Fatalf("synthetic match wrote %v", synthetic.leaderboard)
+	}
+	if _, err := lifecycle.MatchEndRpc(
+		context.Background(), testLogger{}, nil, newMatchNk(""),
+		matchEndPayload(testUserA, testUserA)); err == nil {
+		t.Fatal("match_end accepted an unallocated request_id")
+	}
+	if got := boards.cache.generation.Load(); got != 0 {
+		t.Errorf("cache generation = %d, want 0", got)
+	}
+}
+
 func TestRestrictToMatchedPlayers(t *testing.T) {
 	matched := []string{testUserA, testUserB}
 	players := []matchEndPlayer{

@@ -9,12 +9,16 @@ extends GutTest
 ## then the test plays the game server's part: register_server and
 ## match_end with the HTTP key. match_end can write to the board only
 ## because register_game created it from game.yaml (the stack boots
-## with no games registered), so that is covered too.
+## with no games registered), so that is covered too. It then checks
+## that get_player_stats gives each player their own best score and
+## the route's rank, and that get_match_history totals the match.
 ##
-## The route caches each board for 60 seconds, so the data test must
-## be the first request of a run that reaches the cache. The other
-## tests send only requests the route refuses before reading anything,
-## and preflights, which Nakama's CORS middleware answers itself.
+## The route caches each board for 60 seconds, but match_end
+## invalidates that cache, so the data test sees its own scores even
+## when an earlier test (or get_player_stats) has read the board. The
+## other tests send only requests the route refuses before reading
+## anything, and preflights, which Nakama's CORS middleware answers
+## itself.
 
 
 const _Helper = preload(
@@ -272,6 +276,27 @@ func test_lists_ranked_scores_without_credentials() -> void:
 				result.text.contains(value),
 				"the response reveals a %s" % field)
 
+	# get_player_stats agrees with the route: a player's own best
+	# score and their public rank. The deleted player holds the
+	# board's top record, which the runtime used to hand everyone.
+	if alpha_at >= 0:
+		await _assert_player_stats(
+			alpha, base + _SCORE_ALPHA, int(entries[alpha_at].rank))
+	await _assert_player_stats(deleted, base + _SCORE_DELETED, 0)
+	await _assert_player_stats(nameless, base + _SCORE_NAMELESS, 0)
+
+	# get_match_history totals the match for each player.
+	var history: Dictionary = await _helper.session_rpc(
+		"get_match_history", str(alpha.token), {})
+	assert_eq(history.status_code, 200, "get_match_history: %s"
+		% _helper.redact_tokens(history.text))
+	var totals: Variant = (
+		history.inner.get("totals") if history.inner is Dictionary else null)
+	assert_eq(
+		totals,
+		{"matches": 1.0, "wins": 0.0, "kills": 1.0, "bumps": 1.0},
+		"Alpha's totals: %s" % _helper.redact_tokens(history.text))
+
 
 func test_refuses_bad_requests_without_credentials() -> void:
 	if not _helper.is_live_mode():
@@ -399,6 +424,35 @@ func _assert_ranked(entries: Array) -> void:
 			want = int(entries[i - 1].rank)
 		assert_eq(
 			rank, want, "entry %d rank (%s)" % [i, str(entries[i])])
+
+
+## Checks get_player_stats for `user`: their own best score, and
+## their public rank (0 for a player the route doesn't list, which
+## the RPC reports as null).
+func _assert_player_stats(
+	user: Dictionary,
+	best_score: int,
+	rank: int,
+) -> void:
+	var result: Dictionary = await _helper.session_rpc(
+		"get_player_stats", str(user.token), {})
+	assert_eq(result.status_code, 200, "get_player_stats: %s"
+		% _helper.redact_tokens(result.text))
+	if not (result.inner is Dictionary):
+		fail_test("get_player_stats: %s" % _helper.redact_tokens(result.text))
+		return
+	var stats: Dictionary = result.inner
+	assert_eq(
+		int(stats.get("best_score", -1)), best_score,
+		"best_score should be the player's own: %s" % str(stats))
+	if rank > 0:
+		assert_eq(
+			int(stats.get("rank", 0)), rank,
+			"rank should match the public route: %s" % str(stats))
+	else:
+		assert_null(
+			stats.get("rank", 0),
+			"an unlisted player has no public rank: %s" % str(stats))
 
 
 ## Returns the index of the entry listed under `display_name`, or -1.

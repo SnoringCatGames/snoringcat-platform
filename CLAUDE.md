@@ -269,8 +269,10 @@ Layout:
 - `leaderboards.go` creates the leaderboards each game declares in
   `game.yaml` (at boot and on `register_game`; authoritative, so
   only `match_end` writes). `leaderboard_public.go` serves the
-  unauthenticated, cached `/snoringcat/leaderboard` route for the
-  game websites. Contract and privacy rules:
+  unauthenticated, cached `/snoringcat/leaderboard` route that the
+  game websites and the in-game leaderboard both read;
+  `get_player_stats` takes its rank from the same cached listing.
+  Contract, privacy rules, and rate limits:
   `PLATFORM_ARCHITECTURE.md` → "Leaderboards".
 - `runtime_status.go` — read-only build/config probe.
 

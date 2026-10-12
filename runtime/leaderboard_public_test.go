@@ -38,10 +38,13 @@ func (c *testClock) Advance(d time.Duration) {
 }
 
 // publicLeaderboardFixture is a handler over a fake Nakama holding
-// hopnbop's ffa board, with a settable clock.
+// hopnbop's ffa board, with a settable clock. boards is the shared
+// reader, for get_player_stats tests.
 type publicLeaderboardFixture struct {
 	nk      *fakeLeaderboardNk
 	clock   *testClock
+	games   *perGameConfig
+	boards  *publicLeaderboardReader
 	handler http.HandlerFunc
 }
 
@@ -53,15 +56,17 @@ func newPublicLeaderboardFixture(t *testing.T) *publicLeaderboardFixture {
 		Authoritative: true,
 	}
 	clock := &testClock{now: time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)}
-	cache := newPublicLeaderboardCache()
-	cache.now = clock.Now
+	boards := newPublicLeaderboardReader(testLogger{}, nk)
+	boards.cache.now = clock.Now
 	games := newTestGames(t, map[string]string{
 		"hopnbop": hopnbopLeaderboardConfigJSON,
 	})
 	return &publicLeaderboardFixture{
 		nk:      nk,
 		clock:   clock,
-		handler: publicLeaderboardHTTPHandler(testLogger{}, nk, games, cache),
+		games:   games,
+		boards:  boards,
+		handler: publicLeaderboardHTTPHandler(boards, games),
 	}
 }
 
@@ -440,6 +445,59 @@ func TestPublicLeaderboardCachesEachBoardForItsTTL(t *testing.T) {
 	}
 	if f.nk.listCalls != 2 {
 		t.Errorf("listCalls = %d, want 2", f.nk.listCalls)
+	}
+}
+
+func TestPublicLeaderboardInvalidateRereadsInsideTheTTL(t *testing.T) {
+	f := newPublicLeaderboardFixture(t)
+	f.addPlayer("11111111-1111-1111-1111-111111111111", "a", "Alpha", 300)
+	decodePublicLeaderboard(t, f.get(hopnbopQuery))
+
+	// match_end records a score and invalidates: the next request
+	// reads it, well inside the TTL.
+	f.addPlayer("22222222-2222-2222-2222-222222222222", "b", "Bravo", 200)
+	f.clock.Advance(5 * time.Second)
+	f.boards.invalidate()
+	rec := f.get(hopnbopQuery)
+	fresh := decodePublicLeaderboard(t, rec)
+	if len(fresh.Entries) != 2 {
+		t.Errorf("served the invalidated copy: %+v", fresh)
+	}
+	if age := rec.Header().Get("Age"); age != "0" {
+		t.Errorf("Age = %q, want 0", age)
+	}
+
+	// The new copy is cached as usual.
+	f.clock.Advance(5 * time.Second)
+	decodePublicLeaderboard(t, f.get(hopnbopQuery))
+	if f.nk.listCalls != 2 {
+		t.Errorf("listCalls = %d, want 2", f.nk.listCalls)
+	}
+}
+
+func TestPublicLeaderboardInvalidationDuringAReadForcesAnother(
+	t *testing.T,
+) {
+	// A score recorded while a read is in flight may be missing from
+	// it, so that read's copy must not answer the next request.
+	f := newPublicLeaderboardFixture(t)
+	f.addPlayer("11111111-1111-1111-1111-111111111111", "a", "Alpha", 300)
+	f.nk.listGate = make(chan struct{})
+	f.nk.listEntered = make(chan struct{}, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.get(hopnbopQuery)
+	}()
+	<-f.nk.listEntered
+	f.boards.invalidate()
+	close(f.nk.listGate)
+	<-done
+
+	decodePublicLeaderboard(t, f.get(hopnbopQuery))
+	if f.nk.listCalls != 2 {
+		t.Errorf("listCalls = %d, want 2: the copy read across the"+
+			" invalidation was served", f.nk.listCalls)
 	}
 }
 

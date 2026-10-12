@@ -35,9 +35,14 @@ import (
 // "local" or "hybrid". When set, MatchEndRpc / MatchCancelRpc
 // dispatch to it for matches whose match_metadata records
 // AllocatorKind = "local".
+//
+// `boards` is optional: the public leaderboard's cached reader. When
+// set, MatchEndRpc invalidates it after writing scores, so the new
+// results show on the next read instead of up to a minute later.
 type matchLifecycle struct {
 	edgegap *edgegapClient
 	local   *LocalDockerAllocator
+	boards  *publicLeaderboardReader
 }
 
 // stopMatchByKind dispatches Stop to the right backend based on
@@ -514,6 +519,7 @@ func (m *matchLifecycle) MatchEndRpc(
 	if !synthetic {
 		endedAt := nowUnix()
 		historyWrites := make([]*runtime.StorageWrite, 0, len(args.Players))
+		recorded := 0
 		for _, p := range args.Players {
 			if p.UserID == "" {
 				continue
@@ -531,6 +537,8 @@ func (m *matchLifecycle) MatchEndRpc(
 				nil)
 			if err != nil {
 				logger.Warn("leaderboard write for %s: %v", p.UserID, err)
+			} else {
+				recorded++
 			}
 
 			entry := map[string]any{
@@ -555,6 +563,10 @@ func (m *matchLifecycle) MatchEndRpc(
 			if _, err := nk.StorageWrite(ctx, historyWrites); err != nil {
 				logger.Warn("match_history write: %v", err)
 			}
+		}
+		// After the writes, so the next read sees them.
+		if recorded > 0 && m.boards != nil {
+			m.boards.invalidate()
 		}
 	}
 
