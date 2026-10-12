@@ -61,18 +61,29 @@ nakama.snoringcat.games {
 		}
 	}
 
-	# Per-IP rate limit on the public leaderboard route (no
-	# credential; runtime/leaderboard_public.go). The runtime already
-	# reads each board from Postgres at most once a minute, so this
-	# guards Nakama's request handling, not the database. A page load
-	# is one request; 60 a minute per IP is far above any person and
-	# stops a scraping loop. The 429 comes from Caddy without CORS
-	# headers, so a browser sees a failed fetch.
+	# Per-IP rate limits on the two unauthenticated runtime routes.
+	# Both are cheap: the leaderboard is served from a cache the
+	# runtime refills at most once a minute per board (and once after
+	# each match), and the version check is answered from memory. So
+	# the limits only stop a single address from looping, and are
+	# sized for many real players behind one address (a school, a
+	# cafe, a carrier NAT), since the game itself calls both: one
+	# version check per launch, and one leaderboard read each time a
+	# player opens it in game or on the website. A limited request
+	# gets the 429 from handle_errors below.
 	@public_leaderboard path /snoringcat/leaderboard
 	rate_limit @public_leaderboard {
 		zone public_leaderboard {
 			key {remote_host}
-			events 60
+			events 300
+			window 1m
+		}
+	}
+	@version_check path /snoringcat/version_check
+	rate_limit @version_check {
+		zone version_check {
+			key {remote_host}
+			events 600
 			window 1m
 		}
 	}
@@ -84,6 +95,25 @@ nakama.snoringcat.games {
 		flush_interval -1
 		header_up Host {host}
 		header_up X-Real-IP {remote_host}
+	}
+
+	# Rate-limit refusals. caddy-ratelimit answers a request over its
+	# zone's limit by returning a 429 error (with Retry-After already
+	# set), and Caddy routes errors here. Nakama answers every origin,
+	# so its refusals do too: without Access-Control-Allow-Origin a
+	# browser reports a failed fetch, not a 429. The public routes
+	# also get a JSON body in their own error format. Other errors
+	# keep Caddy's default handling.
+	handle_errors 429 {
+		header Access-Control-Allow-Origin "*"
+		@public_routes path /snoringcat/leaderboard /snoringcat/version_check
+		handle @public_routes {
+			header Content-Type application/json
+			header Cache-Control no-store
+			header Cross-Origin-Resource-Policy cross-origin
+			header X-Content-Type-Options nosniff
+			respond `{"version":1,"error":"rate_limited","message":"too many requests; retry after Retry-After seconds"}` 429
+		}
 	}
 }
 

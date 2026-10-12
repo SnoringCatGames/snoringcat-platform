@@ -533,6 +533,8 @@ So each RPC an HTTP-key caller can reach carries its own check:
   answers exactly like the `version_check` RPC. Clients after
   0.47.0 use it (`Platform.get_version_check_url()`), and
   `Platform.initialize` refuses a `nakama_http_key` config entry.
+  Caddy allows 600 requests a minute per IP (the `version_check`
+  zone; see "Leaderboards" → "Rate limit" for the 429).
 - **Public leaderboard without a key.** `GET
   /snoringcat/leaderboard` is the other `RegisterHttp` route: a
   read-only, cached projection of a board for the game websites
@@ -678,9 +680,19 @@ of that minute: a new score shows on a page within 60 seconds, and a
 deletion (which doesn't invalidate) within two minutes. When a read
 fails, the last good copy is served for up to 10 minutes (so a
 deletion made just before a Postgres outage can stay listed that
-long), then 503. Caddy rate-limits the route to 60
-requests a minute per IP (the `public_leaderboard` zone in
-`infra/remote/nakama/Caddyfile`); that 429 carries no CORS headers.
+long), then 503.
+
+**Rate limit.** Caddy allows 300 requests a minute per IP (the
+`public_leaderboard` zone in `infra/remote/nakama/Caddyfile`), sized
+for a school or cafe network where many players share one address;
+the route's own cache already protects Postgres. A refusal is a 429
+with `Retry-After`, `Access-Control-Allow-Origin: *` (so a page sees
+the 429, not a failed fetch) and the route's JSON error shape,
+`{"version": 1, "error": "rate_limited", ...}`. The unauthenticated
+`/snoringcat/version_check` route has its own zone, 600 a minute per
+IP, with the same 429. Until 2026-10-12 the leaderboard allowed 60 a
+minute, its 429 carried no CORS headers, and the version check had
+no limit.
 
 **CORS.** Every response carries `Access-Control-Allow-Origin: *`
 (Nakama's CORS middleware sets it too, and answers preflights before
