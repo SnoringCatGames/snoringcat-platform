@@ -64,39 +64,45 @@ func test_chat_send_then_receive_roundtrip() -> void:
 	if channel == null:
 		sock.close()
 		return
-	if channel.has_method("is_exception"):
-		assert_false(
-			channel.is_exception(),
-			"join_chat raised: %s" % str(channel))
+	assert_false(
+		channel.is_exception(), "join_chat raised: %s" % str(channel))
+	if channel.is_exception():
+		sock.close()
+		return
 
-	var channel_id: String = str(channel.get("id", ""))
+	var channel_id: String = channel.id
 	assert_false(
 		channel_id.is_empty(), "no channel id from join")
 
 	# Send a message + wait for the echo. A short timeout
 	# (3s) is enough — Nakama echoes within a tick or two on
-	# a healthy socket.
+	# a healthy socket. The echo can land before the send's ack
+	# resolves, so record it from a callback connected first. It
+	# writes into a Dictionary because a lambda can't assign to a
+	# captured local.
 	var marker := "compliance-marker-%d" % (
 		Time.get_unix_time_from_system() as int)
-	var send_promise = sock.write_chat_message_async(
+	var echo := {"content": ""}
+	var on_message := func(message: Variant) -> void:
+		var content := str(message.content)
+		if echo.content.is_empty() and content.contains(marker):
+			echo.content = content
+	sock.received_channel_message.connect(on_message)
+
+	var ack: Variant = await sock.write_chat_message_async(
 		channel_id, {"message": marker})
+	assert_false(
+		ack.is_exception(), "write_chat_message raised: %s" % str(ack))
+	await _sock_helper.wait_until(
+		func() -> bool: return not echo.content.is_empty(), 3.0)
+	sock.received_channel_message.disconnect(on_message)
 
-	var got: Variant = await _sock_helper.wait_for_signal_with_timeout(
-		sock, "received_channel_message", 3.0)
-	# Drain the send result so it doesn't dangle.
-	await send_promise
-
-	assert_not_null(
-		got,
-		"received_channel_message did not fire within 3s")
-	if got != null:
-		# `got` is a NakamaAPI.ApiChannelMessage.
-		var content_str: String = str(got.get("content", ""))
-		assert_true(
-			content_str.contains(marker),
-			"echoed message body did not contain marker"
-				+ "; got=%s" % content_str)
+	assert_false(
+		echo.content.is_empty(),
+		"no received_channel_message carrying the marker within 3s")
 
 	# Cleanup: leave the channel + close the socket.
-	await sock.leave_chat_async(channel_id)
+	var left: Variant = await sock.leave_chat_async(channel_id)
+	assert_false(
+		left.is_exception(), "leave_chat raised: %s" % str(left))
 	sock.close()

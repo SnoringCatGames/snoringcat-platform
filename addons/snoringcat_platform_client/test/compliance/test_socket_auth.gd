@@ -88,3 +88,24 @@ func test_socket_rejects_garbage_token() -> void:
 		"socket accepted a token with an invalid signature")
 	if connected:
 		sock.close()
+
+	# Godot logs the refused upgrade as engine errors from
+	# wsl_peer.cpp. They are this test's expected outcome, so mark
+	# them handled, or GUT fails the test for them. Requiring the
+	# 401 among them also proves the server answered and refused the
+	# token. Without it, an unreachable server would pass this test.
+	var saw_401 := false
+	var tracked: Array[String] = []
+	for error in get_errors():
+		tracked.append(str(error.rationale))
+		if not str(error.file).ends_with("wsl_peer.cpp"):
+			continue
+		error.handled = true
+		if error.contains_text("'401'"):
+			saw_401 = true
+	assert_true(
+		saw_401,
+		(
+			"expected the WebSocket upgrade to be refused with HTTP"
+			+ " 401; tracked errors: %s"
+		) % str(tracked))

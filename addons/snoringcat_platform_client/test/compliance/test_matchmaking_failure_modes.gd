@@ -6,13 +6,18 @@ extends GutTest
 ## failure subject — `match_failed` with reason
 ## `protocol_mismatch` (Stage 3.9). This test exercises that
 ## path:
-##   1. Authenticate one anonymous user.
-##   2. Add a min=max=1 matchmaker ticket whose
-##      `client_protocol_version` deliberately mismatches
-##      the registered game's protocol_version.
-##   3. Assert `received_notification` arrives with subject
-##      `match_failed` carrying the documented payload
-##      (reason / expected / got / message).
+##   1. Authenticate two anonymous users: A runs an out-of-date
+##      client, B a current one.
+##   2. Each adds a min=max=2 matchmaker ticket scoped to this
+##      run, so they pair with each other only. A's
+##      `client_protocol_version` deliberately mismatches the
+##      registered game's protocol_version. (Nakama 3.25 rejects
+##      tickets with a minimum count below 2, so this can't be a
+##      one-player match.)
+##   3. Assert both receive `match_failed` with reason
+##      `protocol_mismatch` and the registered `expected`. Only
+##      A's payload carries `got`; each gets a message for its
+##      own side.
 ##   4. Assert NO `match_ready` arrives — the runtime aborts
 ##      before allocating Edgegap, so no deploy is burned.
 ##
@@ -45,7 +50,7 @@ const _SocketHelper = preload(
 ## hopnbop release ever ships protocol_version=999 this
 ## sentinel needs to change.
 const _BOGUS_PROTOCOL_VERSION := "999"
-## How long we wait for the match_failed notification. The
+## How long we wait for the match_failed notifications. The
 ## runtime aborts synchronously inside OnMatchmakerMatched,
 ## so this is sub-second in practice; 8 s upper bound for
 ## CI load.
@@ -58,7 +63,7 @@ const _NO_MATCH_READY_WAIT_SEC := 2.0
 
 var _helper
 var _sock_helper
-var _user: Dictionary = {}
+var _users: Array = []
 
 
 func before_each() -> void:
@@ -69,9 +74,9 @@ func before_each() -> void:
 
 
 func after_each() -> void:
-	if not _user.is_empty():
-		await _helper.delete_one_shot_account(_user)
-		_user = {}
+	for user in _users:
+		await _helper.delete_one_shot_account(user)
+	_users = []
 
 
 func test_protocol_mismatch_emits_match_failed() -> void:
@@ -136,121 +141,112 @@ func test_protocol_mismatch_emits_match_failed() -> void:
 				% expected_protocol
 			+ " sentinel.")
 
-	# Authenticate + connect.
-	var users: Array = await _helper.multi_session_anon(1)
-	if users.size() != 1:
-		pending("multi_session_anon did not return one user")
+	# Authenticate + connect both users.
+	_users = await _helper.multi_session_anon(2)
+	if _users.size() != 2:
+		pending("multi_session_anon did not return two users")
 		return
-	_user = users[0]
-
-	var session: Variant = _sock_helper.session_from_token(
-		str(_user.token))
-	if session == null:
-		pending("Nakama SDK NakamaSession not available")
+	var connection: Dictionary = await _sock_helper.connect_users(_users)
+	if not connection.ok:
+		pending(str(connection.reason))
 		return
-	var sock: Variant = _sock_helper.create_socket()
-	if sock == null:
-		pending("Nakama autoload not registered")
-		return
-	var connected: bool = await _sock_helper.connect_with_timeout(
-		sock, session, 5.0)
-	if not connected:
-		pending(
-			"socket would not connect (covered by"
-			+ " test_socket_auth)")
-		return
+	var stale_sock: Variant = connection.sockets[0]
+	var current_sock: Variant = connection.sockets[1]
 
-	# Wire handlers BEFORE adding the ticket so the abort
-	# notification isn't lost to a connect-order race.
-	var match_failed_payload: Dictionary = {}
-	var match_ready_seen := false
-	var on_notification := func(n):
-		var subj: String = str(n.subject)
-		if subj == "match_failed":
-			# match_failed is flat JSON (Stage 3.9 decision —
-			# different shape than match_ready's double-
-			# encoded `{connection: "<inner-json>"}`).
-			var parsed: Variant = JSON.parse_string(
-				str(n.content))
-			if parsed is Dictionary:
-				match_failed_payload = parsed
-		elif subj == "match_ready":
-			match_ready_seen = true
-	sock.received_notification.connect(on_notification)
+	# Attach BEFORE adding the tickets so the abort notifications
+	# aren't lost to a connect-order race. match_failed is flat
+	# JSON, a Stage 3.9 decision: a different shape from
+	# match_ready's double-encoded `{connection: "<inner-json>"}`.
+	var stale := _SocketHelper.NotificationCapture.new()
+	var current := _SocketHelper.NotificationCapture.new()
+	stale.attach(stale_sock)
+	current.attach(current_sock)
+	var captures: Array = [stale, current]
+	var sockets: Array = [stale_sock, current_sock]
 
-	# Add the ticket. min=max=1 so the matchmaker pool fires
-	# immediately. Bogus client_protocol_version forces the
-	# Stage 3.9 abort branch.
-	var props := _make_props_with_bad_protocol(game_id)
-	var ticket = await sock.add_matchmaker_async(
-		"*", 1, 1, props, {})
-	assert_not_null(ticket, "add_matchmaker_async returned null")
-	if ticket == null:
-		sock.received_notification.disconnect(on_notification)
-		sock.close()
-		return
+	var run_id := "run%dx%d" % [
+		Time.get_unix_time_from_system() as int,
+		randi() % 100000,
+	]
+	var query := "+properties.compliance_run:" + run_id
+	var protocols: Array[String] = [
+		_BOGUS_PROTOCOL_VERSION, str(expected_protocol),
+	]
+	for i in sockets.size():
+		var props := _make_props(game_id, protocols[i], run_id)
+		var ticket: Variant = await sockets[i].add_matchmaker_async(
+			query, 2, 2, props, {})
+		if ticket == null or ticket.is_exception():
+			fail_test(
+				"user %d add_matchmaker failed: %s" % [i, str(ticket)])
+			_close_all(captures, sockets)
+			return
 
-	# Wait for match_failed.
-	var elapsed := 0.0
-	var step := 0.05
-	while match_failed_payload.is_empty() and elapsed < _ABORT_TIMEOUT_SEC:
-		await Engine.get_main_loop().create_timer(step).timeout
-		elapsed += step
+	var both_failed := func() -> bool:
+		return (
+			not stale.match_failed.is_empty()
+			and not current.match_failed.is_empty()
+		)
+	await _sock_helper.wait_until(both_failed, _ABORT_TIMEOUT_SEC)
+	# Belt-and-suspenders: give the runtime time to wrongly fan
+	# out match_ready, so its absence below means something.
+	var any_ready := func() -> bool:
+		return (
+			not stale.match_ready.is_empty()
+			or not current.match_ready.is_empty()
+		)
+	await _sock_helper.wait_until(any_ready, _NO_MATCH_READY_WAIT_SEC)
+	_close_all(captures, sockets)
 
-	assert_false(
-		match_failed_payload.is_empty(),
-		"match_failed notification did not arrive within"
-		+ " %.1fs; runtime hook may not have aborted on"
-			% _ABORT_TIMEOUT_SEC
-		+ " protocol_version mismatch.")
-	if match_failed_payload.is_empty():
-		sock.received_notification.disconnect(on_notification)
-		sock.close()
-		return
-
-	# Contract assertions on the abort payload. Mirror
+	# Contract assertions on the abort payloads. Mirror
 	# fleet_allocator.go::abortProtocolMismatch.
-	assert_eq(
-		str(match_failed_payload.get("reason", "")),
-		"protocol_mismatch",
-		"match_failed.reason was not 'protocol_mismatch'.")
-	assert_eq(
-		int(match_failed_payload.get("expected", 0)),
-		expected_protocol,
-		"match_failed.expected should mirror the registered"
-		+ " game's protocol_version.")
-	# The bogus client is the mismatched player, so `got`
-	# carries the value we sent. Compatible-but-aborted
-	# matched peers (other entries in a multi-player match)
-	# would NOT see `got`; this test only has one entry, so
-	# the mismatched-side payload is what arrives.
-	assert_eq(
-		int(match_failed_payload.get("got", 0)),
-		int(_BOGUS_PROTOCOL_VERSION),
-		"match_failed.got should echo the bogus protocol we"
-		+ " sent.")
-	var message: String = str(
-		match_failed_payload.get("message", ""))
-	assert_false(
-		message.is_empty(),
-		"match_failed.message empty; user-facing copy"
-		+ " absent from the abort.")
+	for side in [["out-of-date", stale], ["current", current]]:
+		var label: String = side[0]
+		var payload: Dictionary = side[1].match_failed
+		assert_false(
+			payload.is_empty(),
+			(
+				"%s client: match_failed did not arrive within"
+				+ " %.1fs; runtime hook may not have aborted on"
+				+ " protocol_version mismatch."
+			) % [label, _ABORT_TIMEOUT_SEC])
+		if payload.is_empty():
+			continue
+		assert_eq(
+			str(payload.get("reason", "")), "protocol_mismatch",
+			"%s client: match_failed.reason: %s"
+				% [label, str(payload)])
+		assert_eq(
+			int(payload.get("expected", 0)), expected_protocol,
+			"%s client: match_failed.expected should mirror the"
+				% label
+			+ " registered game's protocol_version.")
+		assert_false(
+			str(payload.get("message", "")).is_empty(),
+			"%s client: match_failed.message empty; user-facing"
+				% label
+			+ " copy absent from the abort.")
 
-	# Confirm match_ready never arrives (defensive — the
-	# runtime returned "" from OnMatchmakerMatched before
-	# allocation, so nothing should fan out).
-	elapsed = 0.0
-	while not match_ready_seen and elapsed < _NO_MATCH_READY_WAIT_SEC:
-		await Engine.get_main_loop().create_timer(step).timeout
-		elapsed += step
-	assert_false(
-		match_ready_seen,
+	# Only the mismatched player hears what it sent. The
+	# compatible peer's match was aborted on someone else's
+	# account.
+	if not stale.match_failed.is_empty():
+		assert_eq(
+			int(stale.match_failed.get("got", 0)),
+			int(_BOGUS_PROTOCOL_VERSION),
+			"out-of-date client: match_failed.got should echo the"
+			+ " bogus protocol it sent.")
+	if not current.match_failed.is_empty():
+		assert_false(
+			current.match_failed.has("got"),
+			"current client: match_failed should not carry `got`:"
+			+ " %s" % str(current.match_failed))
+
+	assert_true(
+		stale.match_ready.is_empty() and current.match_ready.is_empty(),
 		"match_ready notification arrived after a Stage 3.9"
 		+ " protocol_mismatch abort; runtime hook allocated"
 		+ " an Edgegap deploy it shouldn't have.")
-
-	sock.received_notification.disconnect(on_notification)
-	sock.close()
 
 
 # --------------------------------------------------------------
@@ -258,16 +254,29 @@ func test_protocol_mismatch_emits_match_failed() -> void:
 # --------------------------------------------------------------
 
 
-## Standard matchmaker ticket properties with the protocol
-## version deliberately wrong so the runtime aborts.
-func _make_props_with_bad_protocol(game_id: String) -> Dictionary:
+## Standard matchmaker ticket properties, scoped to this run so
+## only this test's two tickets pair.
+func _make_props(
+	game_id: String,
+	protocol_version: String,
+	run_id: String,
+) -> Dictionary:
 	return {
 		"platform": "native",
 		"player_count": "1",
 		"game_id": game_id,
-		"client_protocol_version": _BOGUS_PROTOCOL_VERSION,
+		"client_protocol_version": protocol_version,
 		"game_mode": "ffa",
+		"compliance_run": run_id,
 	}
+
+
+## Detaches every capture, then closes every socket.
+func _close_all(captures: Array, sockets: Array) -> void:
+	for capture in captures:
+		capture.detach()
+	for sock in sockets:
+		sock.close()
 
 
 ## Mirror NakamaMatchmakerClient's game_id resolver.

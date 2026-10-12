@@ -1,11 +1,15 @@
 extends GutTest
 ## Socket matchmaker surface: add a ticket, get a ticket id
-## back, remove it. We deliberately use min_count=1 so the
-## ticket fires `matchmaker_matched` immediately, exercising
-## the runtime hook (which would catch transport_type and
-## allocation regressions if we asserted on the resulting
-## payload — that's deferred to a separate test once §3 of the
-## test architecture plan ships).
+## back, remove it.
+##
+## The ticket can never match. It needs two players and queries
+## for a property only this run's ticket carries, so the
+## matchmaker hook never fires and nothing is allocated. That
+## keeps this test safe on any target. It used to queue a
+## min=max=1 ticket on the assumption that the allocator no-ops
+## for a single player. It doesn't: a solo match allocates a real
+## deploy outside EDGEGAP_MOCK_DEPLOY. The hook's own paths are
+## covered by the mock-gated test_matchmaking*.gd files.
 
 
 const _Helper = preload(
@@ -54,35 +58,41 @@ func test_matchmaker_add_returns_ticket() -> void:
 			+ " test_socket_auth)")
 		return
 
-	# min_count=1 / max_count=1 so the matchmaker fires
-	# immediately. Use min/max=1 deliberately even though the
-	# game's real flow is 2-4: the test goal is "is the ticket
-	# accepted and does the runtime hook fire", not "match real
-	# players". The matchmaker_matched event might cause an
-	# Edgegap allocation — but with min=max=1 the allocator is
-	# expected to no-op or fail-fast since 1 player isn't a
-	# real match. We tolerate either; the assertion is on
-	# ticket creation, not on what happens after.
+	# min=max=2 plus a query on a property unique to this run: no
+	# other ticket can satisfy it, so this one never matches. The
+	# value stays alphanumeric so the query parser takes it as one
+	# term.
+	var probe_id := "probe%dx%d" % [
+		Time.get_unix_time_from_system() as int,
+		randi() % 100000,
+	]
 	var ticket = await sock.add_matchmaker_async(
-		"*", 1, 1,
-		{"platform": "native", "player_count": "1"},
+		"+properties.compliance_probe:" + probe_id, 2, 2,
+		{
+			"platform": "native",
+			"player_count": "1",
+			"compliance_probe": probe_id,
+		},
 		{},
 		0)
 	assert_not_null(ticket, "add_matchmaker_async returned null")
-	if ticket != null:
-		# NakamaRTAPI.MatchmakerTicket has a `ticket` string
-		# field. (Field name differs across SDK versions; use
-		# get() to be defensive.)
-		var ticket_str: Variant = ticket.get("ticket")
-		if ticket_str == null:
-			ticket_str = ticket.get("ticket_id")
-		assert_true(
-			ticket_str is String and not (ticket_str as String).is_empty(),
-			"ticket id missing on response: %s" % str(ticket))
+	if ticket == null:
+		sock.close()
+		return
+	assert_false(
+		ticket.is_exception(),
+		"add_matchmaker_async raised: %s" % str(ticket))
+	# NakamaRTAPI.MatchmakerTicket carries the id in `ticket`.
+	var ticket_id: String = ticket.ticket
+	assert_false(
+		ticket_id.is_empty(),
+		"ticket id missing on response: %s" % str(ticket))
 
-		# Cancel so we don't leave a dangling ticket. Best-effort
-		# — the socket close on its own would also drop it.
-		if ticket_str is String:
-			await sock.remove_matchmaker_async(ticket_str)
+	if not ticket_id.is_empty():
+		var removed: Variant = await sock.remove_matchmaker_async(
+			ticket_id)
+		assert_false(
+			removed.is_exception(),
+			"remove_matchmaker_async raised: %s" % str(removed))
 
 	sock.close()

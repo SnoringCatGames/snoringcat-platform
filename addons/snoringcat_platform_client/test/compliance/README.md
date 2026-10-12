@@ -5,39 +5,63 @@ submodule bump of `snoringcat-platform`. When a platform change
 breaks a game's expected behavior, the game's CI catches it on
 the bump PR rather than at runtime in production.
 
-The suite targets the **live Nakama backend** at
-`https://nakama.snoringcat.games` by default. Tests hit real
-HTTP endpoints (`/healthcheck`, `/v2/account/*`, `/v2/rpc/*`)
-and assert on the contracts the SDK depends on, including the
-shape of JWTs, the round-trip of profile/settings writes, the
-auth gates on protected routes, and the registration of
-server-to-server runtime RPCs.
+Tests hit real Nakama HTTP endpoints (`/healthcheck`,
+`/v2/account/*`, `/v2/rpc/*`) and the realtime socket, and assert
+on the contracts the SDK depends on, including the shape of JWTs,
+the round-trip of profile/settings writes, the auth gates on
+protected routes, the registration of server-to-server runtime
+RPCs, and the matchmaker hook's notifications.
+
+## Target: a local stack, never production by default
+
+The suite creates accounts, friendships, groups, and storage rows
+on whatever backend it reaches, so it only talks to a loopback
+`PLATFORM_API_URL` (`127.0.0.1`, `localhost`, `::1`). There is no
+default URL. Any other target, production included, also needs
+`ALLOW_PROD_COMPLIANCE=1`. A refused request is never sent: the
+helper push_error()s, which GUT counts as a test failure, so a
+misconfigured run goes red instead of quietly hitting production.
 
 ## Running from a consuming game
 
+In hopnbop, one command builds the runtime plugin, starts a local
+Nakama + Postgres in mock-deploy mode, runs the suite, and tears
+everything down:
+
+```pwsh
+pwsh scripts/local-smoke-test.ps1
+```
+
+See hopnbop's `infra/dev/README.md` for flags and the manual
+steps. To run GUT directly against a stack you already have:
+
 ```bash
+PLATFORM_API_URL=http://127.0.0.1:7350 \
+NAKAMA_SERVER_KEY=defaultkey NAKAMA_HTTP_KEY=defaulthttpkey \
 godot --headless --path . -s addons/gut/gut_cmdln.gd \
     -gdir=res://addons/snoringcat_platform_client/test/compliance \
     -gexit
 ```
 
-The suite reads two env vars for credentials. Without them,
-auth-dependent tests skip with a clear `pending()` message.
-
 | Env var              | What it is                          |
 |----------------------|-------------------------------------|
-| `NAKAMA_SERVER_KEY`  | Used for `Basic` auth on `/v2/account/authenticate/*` (anon sign-in). |
-| `NAKAMA_HTTP_KEY`    | Used as `?http_key=` on `/v2/rpc/*` for server-to-server runtime RPCs. |
-| `PLATFORM_API_URL`   | Optional. Overrides the default base URL (e.g. for a future staging instance). |
+| `PLATFORM_API_URL`   | Required. Base URL of the Nakama under test. Loopback only, unless `ALLOW_PROD_COMPLIANCE=1`. |
+| `ALLOW_PROD_COMPLIANCE` | Set to `1` to allow a non-loopback `PLATFORM_API_URL`, production included. |
+| `NAKAMA_SERVER_KEY`  | Used for `Basic` auth on `/v2/account/authenticate/*` (anon sign-in). Without it, auth-dependent tests `pending()`. |
+| `NAKAMA_HTTP_KEY`    | Used as `?http_key=` on `/v2/rpc/*` for server-to-server runtime RPCs. Without it, those tests `pending()`. |
+
+The matchmaker tests also need the runtime started with
+`EDGEGAP_MOCK_DEPLOY=true` (they read it from `runtime_status`),
+so they never allocate a real Edgegap deploy. They `pending()`
+otherwise.
 
 ## Modes
 
 The suite runs in one of two modes, controlled by
 `PLATFORM_COMPLIANCE_MODE`:
 
-- **`live`** (default) — Tests hit the real Nakama backend.
-  Used by consuming games' submodule-bump CI and the platform
-  repo's hourly synthetic monitor.
+- **`live`** (default) — Tests hit the backend at
+  `PLATFORM_API_URL`.
 - **`mock`** — Reserved for a future phase. `HTTPRequest` will
   be intercepted and responses fixtured from the OpenAPI schema
   for fully offline CI runs. Tests currently `pending()` in
@@ -52,7 +76,7 @@ The suite runs in one of two modes, controlled by
 | Auth (link)     | `test_auth_link.gd`        | Linking a second device to an anon account preserves the user_id; unlinking does not delete the account. |
 | Auth (refresh)  | `test_token_refresh.gd`    | `/v2/account/session/refresh` returns a fresh access+refresh token pair; refresh-derived token unlocks `/v2/account`; garbage tokens rejected without 5xx'ing. |
 | Account         | `test_account.gd`          | `/v2/account` GET returns the user block; `display_name` update round-trips. |
-| Account delete  | `test_account_delete.gd`   | `DELETE /v2/account` removes a one-shot account end-to-end (re-auth fails post-delete). Custom `delete_account` RPC documented but not yet implemented. |
+| Account delete  | `test_account_delete.gd`   | `DELETE /v2/account` removes a one-shot account end-to-end (re-auth fails post-delete). Stage 1.5 soft delete: `delete_account` queues and anonymizes, `get_account_deletion_status` reports it, `cancel_account_deletion` restores the display name (including an empty one) and refuses a second cancel. |
 | Account delete cascade | `test_friends_account_delete_cascade.gd` | Two-user: A↔B mutual, A invokes `delete_account` RPC → B's friend list loses A, A's friend list is empty, A's display_name is `[deleted]`, `get_account_deletion_status` reports `pending=true`. Guards Stage 1.4 friends cascade + Stage 1.5 sign-in-during-grace. |
 | Friends         | `test_friends.gd`          | `/v2/friend` GET returns a well-formed list; add-with-bogus-id rejects without 5xx'ing. |
 | Friends (2-user) | `test_friends_multiuser.gd` | Two real anon accounts: A → request → B accepts → both see each other as FRIEND. Canaries the `multi_session_anon` helper. |
@@ -63,21 +87,23 @@ The suite runs in one of two modes, controlled by
 | Presence (filter) | `test_presence_game_filter.gd` | Three-user visibility check: A↔B mutual, A→C pending. A's presence read sees B but not C, and B's record carries `game_id`. Guards Stage 3.2/3.3 mutual-only filter + game_id field. |
 | Player stats    | `test_player_stats.gd`     | `get_player_stats` (caller + explicit player_id forms; unranked defaults), `get_match_history` (always returns array, never null). |
 | Data export     | `test_data_export.gd`      | `export_player_data` envelope shape (generated_at, account, storage_objects, leaderboard_records, friends); GDPR-required path. |
-| Matchmaking     | `test_matchmaking.gd`      | Matchmaker hook is registered (via `runtime_status`); full socket flow flagged pending. |
-| Matchmaking cancel | `test_matchmaking_cancel_race.gd` | Two scenarios: cancel-before-match (min=max=2 ticket removed → no match_ready), and post-match cancel safety (min=max=1 ticket allocates → cancel on consumed ticket is safe, socket still usable). Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
-| Matchmaking failure | `test_matchmaking_failure_modes.gd` | Stage 3.9 protocol-mismatch path: bogus `client_protocol_version` forces `match_failed` notification with `{reason=protocol_mismatch, expected, got, message}` before any Edgegap allocation. Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
+| Matchmaking     | `test_matchmaking.gd`      | Two players' run-scoped tickets pair; both get `match_ready` naming the same mock deploy, with distinct session ids, ENet transport, a `wss://` signaling URL, and ports. Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
+| Matchmaking cancel | `test_matchmaking_cancel_race.gd` | Two scenarios: a cancelled ticket stays out of the pool (a compatible second ticket doesn't pair with it, then a positive control proves a real pairing fits the window), and post-match cancel safety (cancel on a consumed ticket is safe, socket still usable). Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
+| Matchmaking failure | `test_matchmaking_failure_modes.gd` | Stage 3.9 protocol-mismatch path: an out-of-date client paired with a current one aborts the match before any Edgegap allocation. Both get `match_failed` (`reason=protocol_mismatch`, `expected`, `message`); only the out-of-date one gets `got`. Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
 | Transport sel   | `test_transport_selection.gd` | The WebRTC cross-play transport-selection rule (any `web` → `webrtc`, else `enet`) via the `transport_select` runtime RPC. Catches refactor-induced rule drift without burning real Edgegap allocations. |
 | Match loopback  | `test_match_loopback.gd`   | Server-to-server runtime RPCs (`register_server`, `match_end`, `record_client_ip`) are registered and reject malformed input. |
 | API surface     | `test_api_surface.gd`      | Unauthenticated calls to the SDK's HTTP routes return 401 (catches accidental gate removal). Bare `/v2/rpc/<name>` without an `http_key` does not execute. |
-| Socket auth     | `test_socket_auth.gd`      | Realtime WSS endpoint accepts a valid session and rejects a garbage-signature token. |
-| Socket matchmaker | `test_socket_matchmaker.gd` | `add_matchmaker_async` returns a ticket id; `remove_matchmaker_async` cleans up. |
-| Socket presence | `test_socket_presence.gd`  | `update_status_async` and `follow_users_async` round-trip without errors (powers the online-friends UI). |
+| Socket auth     | `test_socket_auth.gd`      | Realtime WSS endpoint accepts a valid session and refuses a garbage-signature token with HTTP 401 at the upgrade. |
+| Socket matchmaker | `test_socket_matchmaker.gd` | `add_matchmaker_async` returns a ticket id; `remove_matchmaker_async` cleans up. The ticket can never match, so nothing allocates on any target. |
+| Socket presence | `test_socket_presence.gd`  | `update_status_async` succeeds; `follow_users_async` on an online user returns that user's presence. Nothing in the SDK or hopnbop calls these yet. |
 | Socket chat     | `test_socket_chat.gd`      | Join → send → echo round-trip on a room channel. |
 
-Tests use a stable device id (`compliance-anon-fixed-1`) so
-runs reuse the same Nakama account instead of bloating the
+Read-only tests use a stable device id (`compliance-anon-fixed-1`)
+so runs reuse the same Nakama account instead of bloating the
 users table. The `compliance-` prefix lets ops grep + prune
-these later.
+these later. Anything that mutates an account destructively
+(`delete_account`, blocks, matchmaking) uses one-shot accounts
+from `multi_session_anon()` and hard-deletes them in `after_each`.
 
 ## Adding a new test
 
@@ -115,7 +141,29 @@ canonical pattern.
 `compliance_socket_helper.gd` wraps the Nakama SDK's
 `NakamaSocket`. It exposes `session_from_token(jwt)`,
 `create_socket()`, `connect_with_timeout(sock, session, sec)`,
-and `wait_for_signal_with_timeout(obj, name, sec)`. Combine
-with `multi_session_anon` to drive multi-socket fan-out tests
-(party `party_state_changed`, matchmaker, chat). See
-`test_socket_chat.gd` for the single-user pattern.
+`connect_users(users)` (one connected socket per
+`multi_session_anon` user), `wait_until(condition, sec)`,
+`wait_for_signal_with_timeout(obj, name, sec)`, and
+`NotificationCapture`, which records `matchmaker_matched`,
+`match_ready`, `match_failed`, and `party_matchmaking_start` for
+one socket. See `test_matchmaking.gd` for the multi-user pattern
+and `test_socket_chat.gd` for the single-user one.
+
+Rules these tests learned the hard way:
+
+- **Never assign to a captured local in a signal callback.**
+  GDScript lambdas capture locals by value, so `var seen := false`
+  plus `func(): seen = true` only changes the lambda's copy. Write
+  into a Dictionary, an Array, or an object's fields
+  (`NotificationCapture`). The helper used to get this wrong, and
+  every realtime test pended for months without running.
+- **Await every `*_async` call.** Calling a coroutine through a
+  Variant without `await` is a runtime SCRIPT ERROR in Godot 4.7.
+- **Matchmaker tickets need `min_count >= 2`.** Nakama 3.25
+  rejects smaller ones. Pair two one-shot users, and scope their
+  tickets with a run-unique property in the query
+  (`+properties.compliance_run:<id>`) so they can only match each
+  other.
+- **Expected engine errors must be marked handled.** GUT 9.7
+  fails a test on any engine error logged during it. See the
+  refused-upgrade check in `test_socket_auth.gd`.

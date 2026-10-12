@@ -19,26 +19,75 @@ extends Node
 ##   func test_health():
 ##       var result = await _helper.http_get("/healthcheck")
 ##       assert_eq(result.status_code, 200)
+##
+## Target guard: the suite writes accounts, friendships, groups, and
+## storage rows wherever it points, so it only talks to a loopback
+## stack unless told otherwise. PLATFORM_API_URL must be set, and a
+## non-loopback URL also needs ALLOW_PROD_COMPLIANCE=1. A refused
+## request is never sent: it push_error()s, which GUT counts as a
+## test failure, and returns an error result. See
+## get_target_refusal().
 
 
-## Live Nakama base URL. Override via PLATFORM_API_URL env var when
-## targeting a different stack (e.g. a future staging instance).
-const _DEFAULT_BASE_URL := "https://nakama.snoringcat.games"
-const _DEFAULT_TIMEOUT_SEC := 10.0
+## Hosts the suite may target without ALLOW_PROD_COMPLIANCE=1.
+const _LOOPBACK_HOSTS := ["127.0.0.1", "localhost", "::1"]
 ## Nakama's session and refresh tokens are JWTs, whose base64url
 ## header always starts with "eyJ".
 const _JWT_PATTERN := "eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*"
 const _REDACTED_JWT := "<redacted-jwt>"
 
 
-## Returns the live backend URL, overridable via env var so the
-## hourly synthetic monitor and game CIs can target a non-prod URL
-## without code changes.
+## Returns why the suite must not send requests to the configured
+## target, or "" when it may. Static so compliance_socket_helper.gd
+## applies the same rule to the realtime socket.
+static func get_target_refusal() -> String:
+	var url := OS.get_environment("PLATFORM_API_URL").strip_edges()
+	if url.is_empty():
+		return (
+			"PLATFORM_API_URL is not set. The compliance suite no"
+			+ " longer defaults to production Nakama. Run it against"
+			+ " a local stack with scripts/local-smoke-test.ps1 in"
+			+ " the consuming game."
+		)
+	if _LOOPBACK_HOSTS.has(parse_host(url)):
+		return ""
+	if OS.get_environment("ALLOW_PROD_COMPLIANCE") == "1":
+		return ""
+	var message := (
+		"PLATFORM_API_URL=%s is not a loopback stack. The suite"
+		+ " creates accounts, friendships, groups, and storage rows"
+		+ " on its target. Set ALLOW_PROD_COMPLIANCE=1 to run it"
+		+ " there on purpose."
+	)
+	return message % url
+
+
+## Returns the lowercased host of a URL such as
+## `http://127.0.0.1:7350/path` or `ws://[::1]:7350`, without the
+## scheme, port, or path.
+static func parse_host(url: String) -> String:
+	var rest := url.strip_edges()
+	var scheme_end := rest.find("://")
+	if scheme_end >= 0:
+		rest = rest.substr(scheme_end + "://".length())
+	var slash := rest.find("/")
+	if slash >= 0:
+		rest = rest.substr(0, slash)
+	if rest.begins_with("["):
+		var close := rest.find("]")
+		if close > 0:
+			return rest.substr(1, close - 1).to_lower()
+	var colon := rest.rfind(":")
+	if colon >= 0:
+		rest = rest.substr(0, colon)
+	return rest.to_lower()
+
+
+## Returns the configured backend URL (PLATFORM_API_URL). Callers
+## must check get_target_refusal() before sending anything to it;
+## http_request() does.
 func get_base_url() -> String:
-	var override := OS.get_environment("PLATFORM_API_URL")
-	if not override.is_empty():
-		return override
-	return _DEFAULT_BASE_URL
+	return OS.get_environment("PLATFORM_API_URL").strip_edges()
 
 
 ## True when tests should hit the live backend. Default true; flip
@@ -90,6 +139,18 @@ func http_request(
 	body: Variant = null,
 	auth: String = "",
 ) -> Dictionary:
+	var result: Dictionary = {
+		"status_code": 0,
+		"body": null,
+		"text": "",
+		"error": "",
+	}
+	var refusal := get_target_refusal()
+	if not refusal.is_empty():
+		push_error("compliance suite refused to send: " + refusal)
+		result.error = "refused: " + refusal
+		return result
+
 	var http := HTTPRequest.new()
 	# use_threads is REQUIRED in --headless. Without it, the
 	# polling-based completion path never fires.
@@ -119,12 +180,6 @@ func http_request(
 			body_str = str(body)
 
 	var err := http.request(url, headers, method, body_str)
-	var result: Dictionary = {
-		"status_code": 0,
-		"body": null,
-		"text": "",
-		"error": "",
-	}
 	if err != OK:
 		result.error = "http_request_error_%d" % err
 		http.queue_free()
@@ -132,6 +187,12 @@ func http_request(
 
 	var completed: Array = await http.request_completed
 	http.queue_free()
+	# Without this, the caller resumes inside the signal emission
+	# above. When the caller is a test that ends there, GUT frees this
+	# helper and its children at once, freeing the HTTPRequest while it
+	# is still emitting. Resume on the next frame, after queue_free()
+	# has deleted it.
+	await get_tree().process_frame
 	# request_completed signature: (result, response_code,
 	# headers, body).
 	var rc: int = completed[0]

@@ -147,7 +147,11 @@ Follows the same conventions as `hopnbop`:
 - **Client SDK**: GUT, headless. The compliance suite at
   `addons/snoringcat_platform_client/test/compliance/` is the
   contract every consuming game runs in its own CI on submodule
-  bump.
+  bump. Run it locally from hopnbop with
+  `pwsh scripts/local-smoke-test.ps1` (local Nakama + Postgres,
+  plugin built from this repo's `runtime/`). It refuses
+  non-loopback targets unless `ALLOW_PROD_COMPLIANCE=1`; see the
+  suite's README.
 
 ## Infra (`infra/`)
 
