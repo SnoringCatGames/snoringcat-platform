@@ -13,10 +13,10 @@ extends Node
 ##   submits the ticket directly.
 ##
 ## Reads `Platform.{nakama_host, nakama_port, nakama_scheme,
-## nakama_server_key, nakama_http_key, oauth_callback_url,
-## google_token_broker_url, google_oauth_client_id,
-## facebook_oauth_client_id}`, `Platform.token_store`, and the
-## shared `Platform.get_nakama_client()` / `Platform.build_session_
+## nakama_server_key, oauth_callback_url, google_token_broker_url,
+## google_oauth_client_id, facebook_oauth_client_id}`,
+## `Platform.token_store`, and the shared
+## `Platform.get_nakama_client()` / `Platform.build_session_
 ## from_store()` helpers. All must be populated before any auth
 ## method is called (the consuming game's bootstrap ensures this
 ## by calling `Platform.initialize(...)` with the full config).

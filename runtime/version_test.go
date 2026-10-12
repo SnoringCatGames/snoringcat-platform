@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -286,5 +290,147 @@ func TestVersionCheckRpcEmptyPayload(t *testing.T) {
 	}
 	if !resp.IsCompatible {
 		t.Error("client_protocol_version=0 should be compatible")
+	}
+}
+
+// serveVersionCheck runs one request through the unauthenticated
+// HTTP route and decodes the reply.
+func serveVersionCheck(
+	t *testing.T,
+	handler http.HandlerFunc,
+	req *http.Request,
+) (*httptest.ResponseRecorder, versionCheckResponse) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	var resp versionCheckResponse
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode %q: %v", rec.Body.String(), err)
+		}
+	}
+	return rec, resp
+}
+
+// TestVersionCheckHTTPMatchesRpc: the unauthenticated route must
+// answer exactly like the RPC, for GET (query string) and POST (the
+// RPC's JSON body), so clients can move to it without behaving any
+// differently.
+func TestVersionCheckHTTPMatchesRpc(t *testing.T) {
+	games := newTestGames(t,
+		map[string]string{"hopnbop": hopnbopConfigJSON})
+	cfg := versionConfig{GameVersion: "fallback", ProtocolVersion: 99}
+	handler := versionCheckHTTPHandler(cfg, games)
+	rpc := versionCheckRpcFactory(cfg, games)
+
+	args := versionCheckArgs{
+		ClientProtocolVersion: 3,
+		ClientGameVersion:     "0.48.0",
+		GameID:                "hopnbop",
+	}
+	payload, _ := json.Marshal(args)
+	rpcOut, err := rpc(
+		context.Background(), nil, nil, nil, string(payload))
+	if err != nil {
+		t.Fatalf("rpc error: %v", err)
+	}
+	var want versionCheckResponse
+	if err := json.Unmarshal([]byte(rpcOut), &want); err != nil {
+		t.Fatalf("decode rpc reply: %v", err)
+	}
+
+	requests := map[string]*http.Request{
+		"get": httptest.NewRequest(http.MethodGet,
+			versionCheckHTTPPath+"?game_id=hopnbop"+
+				"&client_protocol_version=3"+
+				"&client_game_version=0.48.0", nil),
+		"post": httptest.NewRequest(http.MethodPost,
+			versionCheckHTTPPath, bytes.NewReader(payload)),
+	}
+	for name, req := range requests {
+		t.Run(name, func(t *testing.T) {
+			rec, got := serveVersionCheck(t, handler, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %q",
+					rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct !=
+				"application/json" {
+				t.Errorf("Content-Type = %q", ct)
+			}
+			if cc := rec.Header().Get("Cache-Control"); cc !=
+				"no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", cc)
+			}
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("HTTP reply %s differs from RPC reply %s",
+					gotJSON, wantJSON)
+			}
+			// Client protocol 3 against the registered 2.
+			if got.IsCompatible || got.ProtocolVersion != 2 {
+				t.Errorf("want incompatible protocol 2, got %+v", got)
+			}
+			if got.LegalVersion != "1.1" ||
+				len(got.MatchmakerModes) != 2 {
+				t.Errorf("per-game config not surfaced: %+v", got)
+			}
+		})
+	}
+}
+
+// TestVersionCheckHTTPDefaults: no arguments, or a body that isn't
+// JSON, still gets the env-var defaults, like the RPC.
+func TestVersionCheckHTTPDefaults(t *testing.T) {
+	games := newTestGames(t,
+		map[string]string{"hopnbop": hopnbopConfigJSON})
+	handler := versionCheckHTTPHandler(
+		versionConfig{GameVersion: "0.1.0", ProtocolVersion: 7}, games)
+	requests := map[string]*http.Request{
+		"bare-get": httptest.NewRequest(
+			http.MethodGet, versionCheckHTTPPath, nil),
+		"empty-post": httptest.NewRequest(
+			http.MethodPost, versionCheckHTTPPath, nil),
+		"garbage-post": httptest.NewRequest(
+			http.MethodPost, versionCheckHTTPPath,
+			strings.NewReader("{not json")),
+		"bad-protocol-get": httptest.NewRequest(http.MethodGet,
+			versionCheckHTTPPath+"?client_protocol_version=abc", nil),
+	}
+	for name, req := range requests {
+		t.Run(name, func(t *testing.T) {
+			rec, got := serveVersionCheck(t, handler, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			if got.ProtocolVersion != 7 || got.GameVersion != "0.1.0" ||
+				!got.IsCompatible {
+				t.Errorf("want env defaults, got %+v", got)
+			}
+		})
+	}
+}
+
+func TestVersionCheckHTTPRefusesOversizedBody(t *testing.T) {
+	handler := versionCheckHTTPHandler(
+		versionConfig{}, newTestGames(t, nil))
+	body := strings.Repeat("x", versionCheckMaxBodyBytes+1)
+	req := httptest.NewRequest(
+		http.MethodPost, versionCheckHTTPPath, strings.NewReader(body))
+	rec, _ := serveVersionCheck(t, handler, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", rec.Code)
+	}
+}
+
+func TestVersionCheckHTTPRefusesOtherMethods(t *testing.T) {
+	handler := versionCheckHTTPHandler(
+		versionConfig{}, newTestGames(t, nil))
+	req := httptest.NewRequest(
+		http.MethodDelete, versionCheckHTTPPath, nil)
+	rec, _ := serveVersionCheck(t, handler, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }

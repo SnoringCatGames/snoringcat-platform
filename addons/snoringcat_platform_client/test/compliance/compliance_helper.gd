@@ -127,6 +127,11 @@ func admin_key() -> String:
 	return OS.get_environment("GAME_ADMIN_KEY")
 
 
+## The game_id the suite authenticates with (see _resolve_game_id).
+func game_id() -> String:
+	return _resolve_game_id()
+
+
 ## Generic HTTP request against the configured base URL. Handles
 ## auth via the `auth` argument:
 ##

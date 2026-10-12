@@ -242,6 +242,8 @@ Layout:
 - `match_lifecycle.go` — `register_server` / `match_end` RPCs.
 - `auth.go`, `presence.go`, `version.go`, `player_data.go`,
   `bulk_import.go`, `client_ip.go` — supporting RPCs.
+  `version.go` also serves the unauthenticated
+  `/snoringcat/version_check` HTTP route.
 - `admin_key.go` — the `GAME_ADMIN_KEY` gate for operator-only
   RPCs.
 - `runtime_status.go` — read-only build/config probe.

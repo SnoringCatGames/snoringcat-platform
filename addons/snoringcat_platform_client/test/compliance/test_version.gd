@@ -9,6 +9,11 @@ const _Helper = preload(
 	+ "compliance/compliance_helper.gd"
 )
 
+## The runtime's unauthenticated version-check route: the runtime's
+## versionCheckHTTPPath and the SDK's Platform.VERSION_CHECK_PATH.
+## Spelled out here so the contract is pinned independently of both.
+const _VERSION_CHECK_PATH := "/snoringcat/version_check"
+
 var _helper
 
 
@@ -58,6 +63,39 @@ func test_runtime_version_check_rpc_responds() -> void:
 		result.inner,
 		"version_check returned no inner payload: %s"
 			% result.text)
+
+
+func test_version_check_route_needs_no_credential() -> void:
+	# Clients check their version before sign-in through this
+	# unauthenticated route, so they never need the runtime HTTP
+	# key. It must answer with no session and no key, by GET and by
+	# POST, exactly as the RPC does.
+	if not _helper.is_live_mode():
+		pending("mock mode not yet implemented")
+		return
+	var game_id: String = _helper.game_id()
+	var path := _VERSION_CHECK_PATH
+	var by_get: Dictionary = await _helper.http_get(
+		"%s?game_id=%s" % [path, game_id.uri_encode()])
+	assert_eq(
+		by_get.status_code, 200,
+		"GET %s: %d %s" % [path, by_get.status_code, by_get.text])
+	assert_true(
+		by_get.body is Dictionary
+		and by_get.body.get("protocol_version") is float,
+		"no protocol_version in %s" % by_get.text)
+	var by_post: Dictionary = await _helper.http_post(
+		path, {"game_id": game_id})
+	assert_eq(
+		by_post.status_code, 200,
+		"POST %s: %d %s" % [path, by_post.status_code, by_post.text])
+	assert_eq(by_post.body, by_get.body, "GET and POST disagree")
+	if _helper.http_key().is_empty():
+		return
+	var by_rpc: Dictionary = await _helper.http_key_rpc(
+		"version_check", {"game_id": game_id})
+	assert_eq(by_rpc.status_code, 200, "version_check RPC: %s" % by_rpc.text)
+	assert_eq(by_rpc.inner, by_get.body, "the route and the RPC disagree")
 
 
 func test_runtime_status_reports_edgegap_config() -> void:

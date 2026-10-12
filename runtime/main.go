@@ -26,6 +26,10 @@
 //     notification on every membership change to a `party-`
 //     group. Drives the client's real-time party UI.
 //
+// HTTP routes registered (no Nakama auth at all):
+//   - /snoringcat/version_check: version_check for clients that
+//                            have no session yet. See version.go.
+//
 // RPCs registered:
 //   Operator only (HTTP key AND the GAME_ADMIN_KEY admin_key
 //   query parameter; refused outright while GAME_ADMIN_KEY is
@@ -121,6 +125,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -449,6 +454,17 @@ func InitModule(
 		"version_check",
 		versionCheckRpcFactory(verCfg, games)); err != nil {
 		return err
+	}
+	// The same answer over an unauthenticated HTTP route, so clients
+	// can check their version before sign-in without the HTTP key.
+	// Not fatal: if registration fails, old clients still have the
+	// RPC and new ones treat an unreachable check as compatible.
+	if err := initializer.RegisterHttp(
+		versionCheckHTTPPath,
+		versionCheckHTTPHandler(verCfg, games),
+		http.MethodGet, http.MethodPost); err != nil {
+		logger.Error(
+			"register HTTP route %s: %v", versionCheckHTTPPath, err)
 	}
 	// Every client-session RPC below reads game_id from the
 	// session vars (set by the BeforeAuthenticate* hooks above)

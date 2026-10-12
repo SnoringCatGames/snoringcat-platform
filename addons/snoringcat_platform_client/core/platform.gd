@@ -59,6 +59,21 @@ signal initialized
 ## reports and pasted transcripts.
 const _NAKAMA_LOG_LEVEL := NakamaLogger.LOG_LEVEL.WARNING
 
+## Path of the runtime's unauthenticated version-check route
+## (runtime/version.go). It answers like the version_check RPC but
+## needs no session and no key, so a client can call it before
+## sign-in. See get_version_check_url().
+const VERSION_CHECK_PATH := "/snoringcat/version_check"
+
+## Config key that Platform.initialize refuses. Nakama's runtime HTTP
+## key authenticates game servers and operator tools as trusted
+## callers of every runtime RPC, so a client that ships it hands that
+## power to anyone who unpacks the build. Clients up to SDK 0.5.2
+## took it for the pre-sign-in version check, which now uses
+## VERSION_CHECK_PATH. Dedicated game servers read the key from their
+## environment (NAKAMA_HTTP_KEY) at runtime, never from this config.
+const _REJECTED_HTTP_KEY_CONFIG := "nakama_http_key"
+
 var is_initialized := false
 
 var game_id: String = ""
@@ -66,11 +81,17 @@ var api_base_url: String = ""
 var sdk_version: String = ""
 
 # Nakama connection (Snoring Cat platform infrastructure, not
-# game-specific). Populated from Platform.initialize config.
+# game-specific). Populated from Platform.initialize config. The
+# server key is public by design: it only lets a client call the
+# authenticate endpoints.
 var nakama_host: String = ""
 var nakama_port: int = 443
 var nakama_scheme: String = "https"
 var nakama_server_key: String = ""
+## Deprecated and always empty: Platform.initialize refuses the
+## runtime HTTP key (see _REJECTED_HTTP_KEY_CONFIG). Kept only so
+## game code that still reads it compiles until it moves to
+## get_version_check_url(). Never assign it.
 var nakama_http_key: String = ""
 
 # OAuth surface (game-specific URLs / IDs). Populated from
@@ -130,7 +151,17 @@ func initialize(config: Dictionary) -> void:
 	nakama_port = int(config.get("nakama_port", 443))
 	nakama_scheme = config.get("nakama_scheme", "https")
 	nakama_server_key = config.get("nakama_server_key", "")
-	nakama_http_key = config.get("nakama_http_key", "")
+	if config.has(_REJECTED_HTTP_KEY_CONFIG):
+		# Ignored, loudly. Don't add it back: it would have to be in
+		# the shipped build to be read here.
+		push_error(
+			(
+				"Platform.initialize: '%s' is a server credential"
+				+ " and must not ship in a client. It is ignored."
+				+ " Remove it from the config."
+			)
+			% _REJECTED_HTTP_KEY_CONFIG
+		)
 
 	oauth_callback_url = config.get("oauth_callback_url", "")
 	google_token_broker_url = config.get(
@@ -181,6 +212,15 @@ func build_session_from_store() -> NakamaSession:
 ## raw HTTP endpoints (instead of the SDK) use this to build URLs.
 func get_nakama_base_url() -> String:
 	return "%s://%s" % [nakama_scheme, nakama_host]
+
+
+## Returns the URL of the runtime's unauthenticated version check
+## (VERSION_CHECK_PATH). GET it with game_id,
+## client_protocol_version and client_game_version query
+## parameters, or POST the version_check RPC's JSON body. The reply
+## is the RPC's JSON, unwrapped.
+func get_version_check_url() -> String:
+	return get_nakama_base_url() + VERSION_CHECK_PATH
 
 
 ## Returns the shared NakamaClient, lazily creating it on first

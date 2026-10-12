@@ -63,6 +63,11 @@ via git submodules:
    and RPC auth". Read the current row back with
    `get_game_config` (client session) or `runtime_status`.
 
+   Never put the HTTP key or the admin key in a client build.
+   `Platform.initialize` refuses a `nakama_http_key` config entry,
+   and a pre-sign-in version check goes to
+   `Platform.get_version_check_url()`, which needs no key.
+
    `register_game` **replaces the whole config blob**, so build
    the payload by patching what's already registered rather than
    hand-writing one — a partial payload silently drops live

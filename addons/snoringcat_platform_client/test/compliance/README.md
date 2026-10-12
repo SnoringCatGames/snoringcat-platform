@@ -73,7 +73,7 @@ The suite runs in one of two modes, controlled by
 
 | Subsystem       | Test file                  | Coverage |
 |-----------------|----------------------------|----------|
-| Version         | `test_version.gd`          | `/healthcheck`, `version_check` RPC, `runtime_status` (Edgegap config sanity, no `${...}` placeholders). |
+| Version         | `test_version.gd`          | `/healthcheck`, `version_check` RPC, the unauthenticated `/snoringcat/version_check` route (GET and POST, no key, same answer as the RPC), `runtime_status` (Edgegap config sanity, no `${...}` placeholders). |
 | Admin key       | `test_admin_key.gd`        | `register_game` refuses the HTTP key alone and a wrong `admin_key`, and accepts the right one (stopping at validation, so nothing is written); `runtime_status` reports `admin_key_configured` without the key. |
 | Auth (anon)     | `test_auth_anon.gd`        | Anon device sign-in returns a 3-segment JWT with a user-id claim; token unlocks `/v2/account`. |
 | Auth (link)     | `test_auth_link.gd`        | Linking a second device to an anon account preserves the user_id; unlinking does not delete the account. |

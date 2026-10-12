@@ -462,6 +462,12 @@ So each RPC an HTTP-key caller can reach carries its own check:
   `match_ready`, so with the HTTP key they can still forge bounded
   scores for that match or end it early (`match_cancel`). A
   per-deployment secret handed to the game server would close it.
+- **Version check without a key.** `GET` or `POST
+  /snoringcat/version_check` (`versionCheckHTTPPath`, registered
+  with Nakama's `RegisterHttp`, so Nakama authenticates nothing)
+  answers exactly like the `version_check` RPC. Clients after
+  0.47.0 use it (`Platform.get_version_check_url()`), and
+  `Platform.initialize` refuses a `nakama_http_key` config entry.
 - **Caddy's access log masks both keys** in `request.uri`
   (`format filter` in the `Caddyfile`), so neither reaches
   `access.log` or the caddy-access-analytics report.

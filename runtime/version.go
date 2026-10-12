@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
@@ -48,10 +52,10 @@ type versionCheckResponse struct {
 	MatchmakerQuery      string `json:"matchmaker_query,omitempty"`
 	// MatchmakerModes is the game.yaml `matchmaker_rules.modes`
 	// list, surfaced verbatim so the client can populate a
-	// game-mode picker without authenticating first (version_check
-	// is HTTP-key gated, not session-gated). Empty slice when the
-	// game declares no modes — clients treat that as "single-mode
-	// game; hide the picker". Stage 4.7 / 5.7.
+	// game-mode picker without authenticating first (clients read
+	// it from the unauthenticated versionCheckHTTPPath route).
+	// Empty slice when the game declares no modes — clients treat
+	// that as "single-mode game; hide the picker". Stage 4.7 / 5.7.
 	MatchmakerModes []gameMode `json:"matchmaker_modes,omitempty"`
 	IsCompatible    bool       `json:"is_compatible"`
 }
@@ -64,13 +68,13 @@ type versionCheckResponse struct {
 // keys mirror the game.yaml field names so the per-game-config
 // Raw blob round-trips through register_game without translation.
 type gameMode struct {
-	ID              string `json:"id"`
-	DisplayNameKey  string `json:"display_name_key,omitempty"`
-	DescriptionKey  string `json:"description_key,omitempty"`
-	MinPlayers      int    `json:"min_players,omitempty"`
-	MaxPlayers      int    `json:"max_players,omitempty"`
-	Query           string `json:"query,omitempty"`
-	IsDefault       bool   `json:"is_default,omitempty"`
+	ID             string `json:"id"`
+	DisplayNameKey string `json:"display_name_key,omitempty"`
+	DescriptionKey string `json:"description_key,omitempty"`
+	MinPlayers     int    `json:"min_players,omitempty"`
+	MaxPlayers     int    `json:"max_players,omitempty"`
+	Query          string `json:"query,omitempty"`
+	IsDefault      bool   `json:"is_default,omitempty"`
 }
 
 // versionCheckRpcFactory returns the RPC handler bound to the
@@ -79,6 +83,11 @@ type gameMode struct {
 // but we also surface is_compatible so future logic (forced
 // upgrades, soft deprecation windows) can move server-side
 // without a client rebuild.
+//
+// Callable with the HTTP key or a session. Clients up to 0.47.0
+// call it with the HTTP key before sign-in; newer clients use the
+// unauthenticated versionCheckHTTPPath route below instead, and the
+// synthetic-match probe calls it with its session.
 func versionCheckRpcFactory(
 	cfg versionConfig,
 	games *perGameConfig,
@@ -102,42 +111,137 @@ func versionCheckRpcFactory(
 			// sensible response.
 			_ = json.Unmarshal([]byte(payload), &args)
 		}
-
-		protocolVersion := cfg.ProtocolVersion
-		gameVersion := cfg.GameVersion
-		legalVersion := ""
-		mmMin := 0
-		mmMax := 0
-		mmQuery := ""
-		var modes []gameMode
-		if args.GameID != "" && games != nil {
-			if gc, ok := games.Get(args.GameID); ok {
-				protocolVersion = gc.ProtocolVersion
-				gameVersion = gc.DisplayVersion
-				legalVersion = parseLegalVersionFromConfig(gc)
-				mmMin, mmMax, mmQuery =
-					parseMatchmakerRulesFromConfig(gc)
-				modes = parseModesFromConfig(gc)
-			}
-		}
-
-		compatible := args.ClientProtocolVersion == 0 ||
-			args.ClientProtocolVersion == protocolVersion
-		out, err := json.Marshal(versionCheckResponse{
-			ProtocolVersion:      protocolVersion,
-			GameVersion:          gameVersion,
-			LegalVersion:         legalVersion,
-			MatchmakerMinPlayers: mmMin,
-			MatchmakerMaxPlayers: mmMax,
-			MatchmakerQuery:      mmQuery,
-			MatchmakerModes:      modes,
-			IsCompatible:         compatible,
-		})
+		out, err := json.Marshal(
+			buildVersionCheckResponse(cfg, games, args))
 		if err != nil {
 			return "", err
 		}
 		return string(out), nil
 	}
+}
+
+// buildVersionCheckResponse computes the version_check answer for
+// one request. Shared by the RPC and the unauthenticated HTTP
+// route, so the two can't drift apart.
+func buildVersionCheckResponse(
+	cfg versionConfig,
+	games *perGameConfig,
+	args versionCheckArgs,
+) versionCheckResponse {
+	protocolVersion := cfg.ProtocolVersion
+	gameVersion := cfg.GameVersion
+	legalVersion := ""
+	mmMin := 0
+	mmMax := 0
+	mmQuery := ""
+	var modes []gameMode
+	if args.GameID != "" && games != nil {
+		if gc, ok := games.Get(args.GameID); ok {
+			protocolVersion = gc.ProtocolVersion
+			gameVersion = gc.DisplayVersion
+			legalVersion = parseLegalVersionFromConfig(gc)
+			mmMin, mmMax, mmQuery =
+				parseMatchmakerRulesFromConfig(gc)
+			modes = parseModesFromConfig(gc)
+		}
+	}
+
+	compatible := args.ClientProtocolVersion == 0 ||
+		args.ClientProtocolVersion == protocolVersion
+	return versionCheckResponse{
+		ProtocolVersion:      protocolVersion,
+		GameVersion:          gameVersion,
+		LegalVersion:         legalVersion,
+		MatchmakerMinPlayers: mmMin,
+		MatchmakerMaxPlayers: mmMax,
+		MatchmakerQuery:      mmQuery,
+		MatchmakerModes:      modes,
+		IsCompatible:         compatible,
+	}
+}
+
+// versionCheckHTTPPath is an unauthenticated HTTP route on Nakama's
+// client API port (behind Caddy at https://nakama.snoringcat.games)
+// that answers exactly like the version_check RPC.
+//
+// It exists so clients can check compatibility before sign-in
+// without a credential. Nakama only runs RPCs for a session or the
+// runtime HTTP key, and the HTTP key is a server credential: clients
+// up to 0.47.0 embedded it for this one call, which handed every
+// player (and anyone reading the public repo) the ability to call
+// any RPC as a trusted server. A route registered with RegisterHttp
+// is not authenticated by Nakama at all, which is what we want for
+// a response made of public data (versions, legal version,
+// matchmaker modes). Both GET (query parameters) and POST (the RPC's
+// JSON body) work. It sits outside /v2/ so it can never collide
+// with Nakama's own routes.
+const versionCheckHTTPPath = "/snoringcat/version_check"
+
+// versionCheckMaxBodyBytes caps a POST body. A real request is under
+// 200 bytes; anything near this is not a client.
+const versionCheckMaxBodyBytes = 4096
+
+// versionCheckHTTPHandler serves versionCheckHTTPPath.
+func versionCheckHTTPHandler(
+	cfg versionConfig,
+	games *perGameConfig,
+) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		args, status := parseVersionCheckHTTPArgs(r)
+		if status != http.StatusOK {
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+		out, err := json.Marshal(
+			buildVersionCheckResponse(cfg, games, args))
+		if err != nil {
+			http.Error(
+				w, http.StatusText(http.StatusInternalServerError),
+				http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Versions change on every deploy; never let a proxy or
+		// browser serve a stale answer.
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(out)
+	}
+}
+
+// parseVersionCheckHTTPArgs reads the request arguments from the
+// query string (GET) or the JSON body (POST). Like the RPC, a body
+// that doesn't parse still gets the default response. Returns an
+// HTTP status other than 200 only for a request it refuses outright.
+func parseVersionCheckHTTPArgs(
+	r *http.Request,
+) (versionCheckArgs, int) {
+	args := versionCheckArgs{}
+	switch r.Method {
+	case http.MethodGet:
+		query := r.URL.Query()
+		args.GameID = query.Get("game_id")
+		args.ClientGameVersion = query.Get("client_game_version")
+		if raw := query.Get("client_protocol_version"); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil {
+				args.ClientProtocolVersion = v
+			}
+		}
+	case http.MethodPost:
+		body, err := io.ReadAll(
+			io.LimitReader(r.Body, versionCheckMaxBodyBytes+1))
+		if err != nil {
+			return args, http.StatusBadRequest
+		}
+		if len(body) > versionCheckMaxBodyBytes {
+			return args, http.StatusRequestEntityTooLarge
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			_ = json.Unmarshal(body, &args)
+		}
+	default:
+		return args, http.StatusMethodNotAllowed
+	}
+	return args, http.StatusOK
 }
 
 // parseMatchmakerRulesFromConfig pulls min/max/query from
