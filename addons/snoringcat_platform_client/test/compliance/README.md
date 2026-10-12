@@ -51,6 +51,7 @@ godot --headless --path . -s addons/gut/gut_cmdln.gd \
 | `NAKAMA_SERVER_KEY`  | Used for `Basic` auth on `/v2/account/authenticate/*` (anon sign-in). Without it, auth-dependent tests `pending()`. |
 | `NAKAMA_HTTP_KEY`    | Used as `?http_key=` on `/v2/rpc/*` for server-to-server runtime RPCs. Without it, those tests `pending()`. |
 | `GAME_ADMIN_KEY`     | The runtime's admin key, sent as `?admin_key=` by `test_admin_key.gd`'s accept test. Without it, that one test `pending()`s; the refusal tests don't need it. |
+| `NAKAMA_CONSOLE_URL`, `NAKAMA_CONSOLE_USERNAME`, `NAKAMA_CONSOLE_PASSWORD` | The Nakama console, which `test_crash_report.gd` uses to read a stored report back (no client can read that collection). Same loopback rule as `PLATFORM_API_URL`. Without them, that one test `pending()`s. `local-smoke-test.ps1` sets all three for the dev stack. |
 
 The matchmaker tests also need the runtime started with
 `EDGEGAP_MOCK_DEPLOY=true` (they read it from `runtime_status`),
@@ -90,6 +91,7 @@ The suite runs in one of two modes, controlled by
 | Presence (filter) | `test_presence_game_filter.gd` | Three-user visibility check: A↔B mutual, A→C pending. A's presence read sees B but not C, and B's record carries `game_id`. Guards Stage 3.2/3.3 mutual-only filter + game_id field. |
 | Player stats    | `test_player_stats.gd`     | `get_player_stats` (caller + explicit player_id forms; unranked defaults), `get_match_history` (always returns array, never null). |
 | Data export     | `test_data_export.gd`      | `export_player_data` envelope shape (generated_at, account, storage_objects, leaderboard_records, friends); GDPR-required path. |
+| Crash reports   | `test_crash_report.gd`     | `crash_report` is registered; a session report is stored under the system user with read=0/write=0, no caller id, an ignored `player_id`, and its JWT redacted (read back through the console); a client can't list the collection; an HTTP-key report with role `server` is accepted; wrong role, unknown game, oversized, malformed signature, and non-JSON payloads get 400 (code 3); no auth gets 401; a session user's 6th report in an hour gets 429 (code 8). |
 | Matchmaking     | `test_matchmaking.gd`      | Two players' run-scoped tickets pair; both get `match_ready` naming the same mock deploy, with distinct session ids, ENet transport, a `wss://` signaling URL, and ports. Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
 | Matchmaking cancel | `test_matchmaking_cancel_race.gd` | Two scenarios: a cancelled ticket stays out of the pool (a compatible second ticket doesn't pair with it, then a positive control proves a real pairing fits the window), and post-match cancel safety (cancel on a consumed ticket is safe, socket still usable). Gated on `EDGEGAP_MOCK_DEPLOY=true`. |
 | Matchmaking failure | `test_matchmaking_failure_modes.gd` | Stage 3.9 protocol-mismatch path: an out-of-date client paired with a current one aborts the match before any Edgegap allocation. Both get `match_failed` (`reason=protocol_mismatch`, `expected`, `message`); only the out-of-date one gets `got`. Gated on `EDGEGAP_MOCK_DEPLOY=true`. |

@@ -35,9 +35,12 @@ Required runtime env vars when the matchmaker hook is enabled
   `version_check` RPC; matched against client `config/version`.
 
 Persistent state lives in Postgres (Nakama's standard schema:
-users, friends, leaderboards, storage, parties, etc.). No
-custom tables; the runtime plugin operates on Nakama's
-built-in models via `nk.StorageWrite` and friends.
+users, friends, leaderboards, storage, parties, etc.). There is
+one custom table, `games` (the per-game config registry,
+created by `newPerGameConfig` with idempotent DDL at
+`InitModule`). Everything else goes through Nakama's built-in
+models via `nk.StorageWrite` and friends: crash reports, for
+example, are storage objects owned by the system user.
 
 The previous design (AWS SAM + DynamoDB) was retired in
 Phase F (2026-05-03). For archeology of the original
@@ -246,6 +249,10 @@ Layout:
   `/snoringcat/version_check` HTTP route.
 - `admin_key.go` — the `GAME_ADMIN_KEY` gate for operator-only
   RPCs.
+- `crash_report.go` — the `crash_report` RPC (game clients by
+  session, game servers by HTTP key) and its 30-day prune cron.
+  Contract, storage, and SQL recipes: `PLATFORM_ARCHITECTURE.md`
+  → "Crash reports".
 - `runtime_status.go` — read-only build/config probe.
 
 **Required env vars when matchmaker hook is enabled

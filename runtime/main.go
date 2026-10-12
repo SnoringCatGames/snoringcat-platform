@@ -119,6 +119,10 @@
 //                            clients) then FriendsAdd; re-enforces
 //                            the BeforeAddFriends rate + pending caps
 //                            since a runtime FriendsAdd skips them.
+//   Client session (role "client") or HTTP key (role "server"):
+//   - crash_report:        store one redacted crash or error report
+//                            under the system user, rate-limited;
+//                            pruned after 30 days (crash_report.go).
 package main
 
 import (
@@ -615,6 +619,16 @@ func InitModule(
 	// each row whose scheduled_for has elapsed, and drops the
 	// queue row. See runtime/account_cron.go.
 	startAccountCron(logger, nk)
+
+	// Crash and error reports from game clients (session) and
+	// dedicated game servers (HTTP key), plus the cron that prunes
+	// them after 30 days. See runtime/crash_report.go.
+	if err := addRpc(
+		"crash_report",
+		crashReportRpcFactory(games, newCrashReportLimiter())); err != nil {
+		return err
+	}
+	startCrashReportCron(logger, db, nk)
 
 	logger.Info(
 		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t mock_deploy=%t games=%v)",

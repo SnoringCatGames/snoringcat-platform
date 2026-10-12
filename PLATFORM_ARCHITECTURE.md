@@ -772,6 +772,107 @@ failures.
 - If `service-status-sync` is ever disabled on purpose, disable this
   timer too, or it pages daily.
 
+### Crash reports
+
+Game clients and dedicated game servers report crashes and logged
+errors to the runtime's `crash_report` RPC
+(`runtime/crash_report.go`). hopnbop's sender is
+`src/core/crash_reporter.gd`; see its CLAUDE.md "Crash reporting".
+
+**Callers.** A player calls it through their Nakama session
+(anonymous accounts included) with `role: "client"`. A dedicated
+server calls it with the runtime HTTP key (`?http_key=`, read from
+`NAKAMA_HTTP_KEY` in the container environment) with
+`role: "server"`. Any other pairing is rejected. No admin key is
+involved.
+
+**Payload** (JSON object, at most 16 KiB): `game_id` (must be
+registered), `game_version`, `protocol_version` (a whole number;
+`2.0` is accepted because Godot's JSON round trip produces it),
+`platform` (`[a-z0-9_]{1,16}`, e.g. `windows`, `web`), `os` (at most
+64 bytes), `role`, `message` (one line, at most 512 characters),
+`signature` (16 lowercase hex characters: a hash the game computes
+over the normalized first error lines), and optionally
+`log_excerpt` (at most 12 KiB). Unknown fields are ignored and never
+stored. The response is `{"accepted": true, "id": "<storage key>"}`.
+Errors: 400 (gRPC 3) for any invalid report, which the game drops
+instead of retrying; 429 (gRPC 8) past a rate limit; 500 (gRPC 13)
+when the write fails.
+
+**Privacy.** A report carries no account id, IP address, or device
+id, and the runtime adds none. The caller's user id is used only as
+the key of the in-memory rate limiter, never stored or logged. The
+runtime redacts the message and excerpt again before storing them
+(JWTs, bearer and basic credentials, secret-named and id-named
+parameters and JSON fields such as `device_id=`, signaling-URL
+tokens, UUIDs, home-directory user names, long hex and numeric ids,
+emails, IPv4 addresses), on top of the game's own redaction. Game
+logs from before SDK 0.5.2 carried session and refresh tokens.
+
+**Limits** (in memory, reset when Nakama restarts, which every
+runtime deploy does): 5 reports per hour per session user; 200 per
+UTC day for all HTTP-key callers together; 500 per UTC day overall.
+A rejected or invalid report uses no budget. The first rejection by
+a daily cap each day logs a warning (`crash_report global daily cap
+reached ...`), since a full global cap turns away every player's
+report until midnight UTC. Because the caps reset on restart, the
+prune also enforces a hard cap of 20,000 stored reports (about
+320 MB at the size limit), dropping the oldest.
+
+**Storage.** One object per report in the `crash_reports`
+collection, owned by the system user
+(`00000000-0000-0000-0000-000000000000`), permission read=0 and
+write=0, so no client can read or write one. Keys are the UTC
+receive time plus a random suffix
+(`2026-10-11T18:30:05.123456Z-1a2b3c4d`), so key order is time
+order. The value is the validated payload plus `received_at`. The
+runtime logs one structured line per accepted report
+(`crash_report accepted`, with `signature`, `game_id`,
+`game_version`, `platform`, `role`, and the key).
+
+**Retention.** A goroutine started from `InitModule` (the
+`account_cron.go` mechanism) deletes reports older than 30 days,
+once at boot and then hourly. It walks the system user's objects in
+key order (Nakama lists one owner's storage `ORDER BY read, key`,
+and every report has read=0) and stops at the first one inside the
+window. Then it counts what is left with one read-only SQL query
+and, past 20,000, deletes the oldest.
+
+**Reading reports.** claude-config's daily `prod-health-check`
+reports the last 24 hours (count, new signatures, top signatures)
+and goes yellow on a new signature or a spike. Reports whose
+`platform` is `test` are synthetic (post-deploy probes) and are
+counted apart, never alerted on. To dig in, on the host:
+
+```bash
+docker exec -e PGPASSWORD=<pw> -i postgres psql --no-password \
+  -h 127.0.0.1 -U nakama -d nakama
+```
+
+```sql
+-- The last 24 hours, by signature.
+SELECT value->>'signature' AS signature, count(*) AS reports,
+       string_agg(DISTINCT value->>'game_version', ',') AS versions,
+       string_agg(DISTINCT value->>'platform', ',') AS platforms,
+       max(value->>'message') AS message
+FROM storage
+WHERE collection = 'crash_reports'
+  AND create_time > now() - interval '24 hours'
+GROUP BY 1 ORDER BY reports DESC;
+
+-- One signature's newest report, with its log excerpt.
+SELECT key, value->>'message', value->>'log_excerpt'
+FROM storage
+WHERE collection = 'crash_reports'
+  AND value->>'signature' = '<signature>'
+ORDER BY key DESC LIMIT 1;
+```
+
+Before 2026-10-11 nothing was stored: the RPC did not exist (the
+Phase D rewrite pointed the game at it as "not yet implemented"),
+and the game's reporter returned early on a removed token-store
+lookup.
+
 ### Backups and disaster recovery
 
 **Backups.** `pg-backup.timer` runs nightly at 03:11 UTC: a
@@ -866,6 +967,7 @@ key and skips the pull with a warning.
 | Desktop dead-man deployed | `/opt/snoringcat/desktop-drain-watch/` on Nakama host |
 | Service-status queue | `/var/log/snoringcat/service-status.jsonl` on Nakama host (drained daily by the desktop) |
 | Postgres backups | `s3://hopnbop-pulumi-state-r2/pg-backups/` (Cloudflare R2, 7 days) |
+| Crash reports | Nakama storage, collection `crash_reports`, system user (30 days); see "Crash reports" |
 | Pinned SSH host keys | `claude-config/jobs/known_hosts` (synced; every scheduled job); `~/.hopnbop-migration/known_hosts` (phase-a/b). phase-a's HostKeys step keeps both in step. |
 | Migration plan | `hopnbop/docs/archive/MIGRATION_PLAN.md` |
 | Migration state | `~/.hopnbop-migration/state.json` |
