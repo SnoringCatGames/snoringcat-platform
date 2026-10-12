@@ -185,21 +185,86 @@ permanent on device B), Nakama's link API will error with a
 
 ### Account deletion
 
-Required for GDPR / CCPA / app-store TOS. Implementation:
+Required for GDPR / CCPA / app-store TOS. Implemented in
+`runtime/account.go`, `runtime/account_cron.go`, and
+`runtime/privacy.go`:
 
-1. Player clicks "Delete my account" in settings (double-confirm
-   dialog).
-2. Client calls `delete_account` Nakama RPC.
-3. RPC flow:
-   - Mark `accounts.deletion_scheduled_at = now() + 30 days`.
-   - Anonymize: replace display name with `[deleted]`, scrub
-     email, etc.
-   - Schedule a Nakama cron job for hard-delete after 30 days.
-4. During grace period, player can sign back in to cancel.
-5. After grace: hard-delete from `accounts`, cascade to
-   `friends`, anonymize match-history rows (keep aggregate
-   leaderboard scores anonymized).
-6. Backups are purged in the next post-grace backup cycle.
+1. The player confirms "Delete Account" in settings (a
+   type-the-word confirmation), and the client calls the
+   `delete_account` RPC.
+2. The RPC queues `account_deletion_queue/current` for the player,
+   server-only, holding `{user_id, requested_at, scheduled_for}`
+   and nothing else, and at once clears everything a cancellation
+   doesn't need:
+   - the profile: display name to `[deleted]`, avatar URL, any
+     email that isn't a login credential (in practice every
+     email), language, location, time zone, and metadata;
+   - friends (both directions, blocks included); group
+     memberships (a party the player created is deleted with its
+     settings rows, and in other parties leadership passes on);
+     presence; leaderboard records on every board, declared or
+     not (deleted, not anonymized; the public leaderboard route
+     can serve its cached copy for up to a minute more, see
+     "Public leaderboard route"); every storage object the player
+     owns except the queue row (match history, settings, recent
+     players, the stored IP, ...); the friend code; notifications,
+     both the player's and the ones they sent to others (a friend
+     request names them); sent chat messages, with the group join
+     and leave events Nakama records under the player's id; wallet
+     history; and the rows naming the player in other players'
+     recent-players lists.
+3. What stays for the 30-day grace window is what a sign-back-in
+   cancellation needs: the account row with its sign-in ids
+   (provider ids, device ids, custom id) and Nakama's generated
+   username. `get_account_deletion_status` lets the client prompt
+   at sign-in; `cancel_account_deletion` deletes the queue row and
+   clears the `[deleted]` marker in one transaction and restores
+   nothing (the SDK re-applies the display name and picture from a
+   Google sign-in made in the same session).
+4. While the deletion is pending, the profile stays clear: every
+   sign-in, link, and session refresh re-applies the scrub (a
+   Google sign-in refills an empty avatar from the provider), and
+   so does the hourly account cron, which also strips the profile
+   copy that queue rows written before 2026-10-11 carried.
+5. After 30 days the cron purges the friend code, the recent-
+   players references, and the notifications the player sent,
+   then calls `nk.AccountDeleteId(recorded=
+   true)`: Nakama deletes the account row, cascading devices,
+   storage, notifications, messages, friends, groups, and
+   leaderboard records, and tombstones the user id. Nakama's own
+   `DELETE /v2/account` runs the same reference purge through an
+   after hook.
+6. The nightly `pg_dumpall` keeps 7 days, so deleted data can
+   remain in backups for up to 8 days.
+
+### Data export
+
+`export_player_data` (`runtime/data_export.go`) returns everything
+stored about the caller as indented JSON, format version 2:
+`account` (profile, any email, every sign-in id, the friend code),
+`account_deletion`, `last_ip_address`, `friends` (blocked players
+included), `groups` (with each party's leader, mode, and
+preferences), `leaderboard_records` (every board, read from
+Nakama's table), `storage_objects` (everything the player owns, no
+cap), `notifications`, `chat_messages`, and `wallet_ledger`. A
+section that can't be read fails the whole export rather than
+returning part of it. Crash reports carry no account id
+(`crash_report.go`), so they can't be included. The game saves
+the server's text verbatim (`Platform.auth.last_export_json`): to
+`user://export` on desktop, as a browser download on web.
+
+### Personal data the platform doesn't keep
+
+- **Email.** Clients don't request the email scope (SDK 0.6.0).
+  Every sign-in, link, and session refresh drops an email a
+  provider's profile put on the account (older clients still ask
+  Google for one), and email sign-in and email linking are
+  refused, so none is stored as a credential either.
+- **Client IP, beyond the next match.** `record_client_ip` keeps
+  the latest IP for the matchmaker's server choice, which reads it
+  within seconds and ignores it after an hour; the account cron
+  deletes records older than an hour, so one lives about two
+  hours at most.
 
 ---
 
@@ -520,8 +585,8 @@ defaults, and the in-game and website leaderboards were empty.
 
 **Readers:** `get_player_stats`, `export_player_data`, the deletion
 cascade (`delete_account` deletes the caller's record on every
-declared board), the game client (lists records with its session),
-and the public route below.
+board they have one on, declared or not), the game client (lists
+records with its session), and the public route below.
 
 #### Public leaderboard route
 

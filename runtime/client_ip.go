@@ -15,6 +15,13 @@ import (
 // PermissionRead=1 ("owner read") + PermissionWrite=0 ("server-
 // only write") means only the runtime can mutate it; the user
 // can read their own.
+//
+// Retention: the record only feeds the matchmaker's server choice
+// for the next match, which reads it within seconds, so the account
+// cron deletes records once readClientIP would ignore them
+// (pruneStaleClientIPs). With the hourly cron, a record lives at
+// most about two hours. A deletion request deletes it at once with
+// the rest of the player's storage.
 const (
 	clientIPCollection = "client_ip"
 	clientIPKey        = "latest"
@@ -22,6 +29,10 @@ const (
 	// authenticated days ago, the IP from then is unlikely to
 	// reflect their current location well enough to feed Edgegap.
 	clientIPMaxAgeSec = 3600
+	// clientIPRetentionSec is the age past which the account cron
+	// deletes a record. Never below clientIPMaxAgeSec, or the cron
+	// would delete records the matchmaker still uses.
+	clientIPRetentionSec = clientIPMaxAgeSec
 )
 
 // clientIPRecord is the on-disk shape inside Nakama Storage.
@@ -106,4 +117,25 @@ func readClientIP(
 		return "", nil
 	}
 	return rec.IP, nil
+}
+
+// pruneStaleClientIPs deletes every stored client IP older than
+// clientIPRetentionSec, across all users. Run from the account cron.
+// Reports how many it deleted.
+func pruneStaleClientIPs(ctx context.Context, db *sql.DB) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("no database handle")
+	}
+	result, err := db.ExecContext(
+		ctx,
+		`DELETE FROM storage
+		 WHERE collection = $1
+		   AND update_time < now() - $2::integer * interval '1 second'`,
+		clientIPCollection,
+		clientIPRetentionSec,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

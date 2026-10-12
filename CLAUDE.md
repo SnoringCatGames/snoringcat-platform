@@ -255,6 +255,13 @@ Layout:
   `/snoringcat/version_check` HTTP route.
 - `admin_key.go` — the `GAME_ADMIN_KEY` gate for operator-only
   RPCs.
+- `account.go`, `account_cron.go` — account deletion (immediate
+  scrub, 30-day grace, cancellation) and its hourly cron.
+  `data_export.go` — the `export_player_data` RPC: everything
+  stored about the caller. `privacy.go` — the personal-data rules
+  they share, and hooks that refuse email sign-in and drop provider
+  emails on every sign-in. `PLATFORM_ARCHITECTURE.md` → "Account
+  deletion", "Data export".
 - `crash_report.go` — the `crash_report` RPC (game clients by
   session, game servers by HTTP key) and its 30-day prune cron.
   Contract, storage, and SQL recipes: `PLATFORM_ARCHITECTURE.md`

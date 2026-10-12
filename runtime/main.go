@@ -25,6 +25,14 @@
 //     AfterKickGroupUsers: fan out a party_state_changed
 //     notification on every membership change to a `party-`
 //     group. Drives the client's real-time party UI.
+//   - BeforeAuthenticateEmail / BeforeLinkEmail: refused; the
+//     platform offers no email sign-in, so no email is stored.
+//   - AfterAuthenticate{Device,Google,Facebook,Apple,Steam} /
+//     AfterLink{Google,Facebook,Apple} / AfterSessionRefresh: drop
+//     an email a provider's profile put on the account, and keep a
+//     pending deletion's profile clear (privacy.go).
+//   - AfterDeleteAccount: Nakama's own immediate account delete;
+//     purges the rows that name the player outside their own.
 //
 // HTTP routes registered (no Nakama auth at all):
 //   - /snoringcat/version_check: version_check for clients that
@@ -60,7 +68,8 @@
 //   - update_and_get_presence: write own presence + read friends'.
 //   - get_player_stats:    rating + match count.
 //   - get_match_history:   recent matches for the caller.
-//   - export_player_data:  GDPR data export.
+//   - export_player_data:  GDPR data export: everything stored about
+//                            the caller (data_export.go).
 //   - party_start_matchmaking: leader notifies party members to
 //                            join its realtime party, so the
 //                            leader can submit one matchmaker
@@ -86,14 +95,16 @@
 //                            generated invite code.
 //   - party_transfer_leadership: leader hands the party's lead
 //                            role to another active member.
-//   - delete_account:      soft-delete + cascade (GDPR / CCPA).
+//   - delete_account:      soft-delete + cascade (GDPR / CCPA):
+//                            clears the profile and game data at
+//                            once, hard-deletes after 30 days.
 //   - get_account_deletion_status: check whether the caller has
 //                            an active account_deletion_queue
 //                            row (Stage 1.5). Client polls at
 //                            auth_completed to prompt cancel.
-//   - cancel_account_deletion: restore username + display name
-//                            and drop the queue row before the
-//                            cron fires (Stage 1.5).
+//   - cancel_account_deletion: drop the queue row and the
+//                            "[deleted]" marker before the cron
+//                            fires (Stage 1.5). Restores nothing.
 //   - cancel_matchmaking_allocation: matched player aborts an
 //                            in-flight Edgegap allocation
 //                            mid-poll. Registered alongside the
@@ -281,6 +292,14 @@ func InitModule(
 	// their local party state on receipt, replacing the legacy
 	// polling cadence in party_manager.gd.
 	if err := registerPartyGroupHooks(initializer); err != nil {
+		return err
+	}
+
+	// Personal-data hooks: refuse email sign-in, drop provider
+	// emails and keep pending deletions' profiles clear on every
+	// sign-in, and purge references after Nakama's own account
+	// delete. See runtime/privacy.go.
+	if err := registerPrivacyHooks(initializer); err != nil {
 		return err
 	}
 
@@ -636,9 +655,10 @@ func InitModule(
 
 	// Stage 1.4 hard-delete cron. Scans account_deletion_queue
 	// across all users every hour, calls nk.AccountDeleteId for
-	// each row whose scheduled_for has elapsed, and drops the
-	// queue row. See runtime/account_cron.go.
-	startAccountCron(logger, nk)
+	// each row whose scheduled_for has elapsed, keeps pending
+	// accounts' profiles clear, and deletes stale client IPs. See
+	// runtime/account_cron.go.
+	startAccountCron(logger, db, nk)
 
 	// Crash and error reports from game clients (session) and
 	// dedicated game servers (HTTP key), plus the cron that prunes

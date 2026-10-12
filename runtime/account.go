@@ -7,29 +7,40 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
-// Account self-deletion (GDPR / CCPA / app-store TOS). The flow
-// is soft-delete-with-grace-period per
-// PLATFORM_ARCHITECTURE.md §"Account deletion":
+// Account self-deletion (GDPR / CCPA / app-store TOS). The flow is a
+// soft delete with a grace period, per PLATFORM_ARCHITECTURE.md
+// "Account deletion":
 //
-//   1. Queue a record in `account_deletion_queue` with
-//      `scheduled_for = now + 30d`. The hourly account_cron
-//      consumes elapsed rows by calling nk.AccountDeleteId
-//      (Stage 1.4).
-//   2. Anonymize the user's display name to "[deleted]".
-//   3. Cascade-clear: friends, group memberships, presence,
-//      leaderboards, and user-owned storage.
+//  1. Queue a record in `account_deletion_queue` with
+//     `scheduled_for = now + 30d`. The hourly account_cron hard-
+//     deletes the account once that passes (account_cron.go).
+//  2. Clear everything identifying that a cancellation doesn't
+//     need, at once: the display name becomes "[deleted]"; the
+//     avatar URL, any email, language, location, time zone, and
+//     metadata go (privacy.go); and the cascade below deletes
+//     friends, group memberships, presence, leaderboard records,
+//     user-owned storage (match history, settings, recent players,
+//     the stored IP, ...), the friend code, notifications (received
+//     and sent), sent chat messages, wallet history, and the rows
+//     naming the player in other players' recent-players lists.
 //
-// Sign-in stays available during the grace window so the user
-// can cancel via `cancel_account_deletion` RPC (Stage 1.5).
-// `get_account_deletion_status` lets the client detect the
-// queued state and prompt at auth time. The pre-1.5 design also
-// banned the user via UsersBanId — that was dropped here so the
-// cancellation surface is reachable; the boot-time
-// get_account_deletion_status check is now the gate that
-// surfaces the prompt instead.
+// What stays for the grace window is what a cancellation needs: the
+// account row with its sign-in ids (provider ids, device ids, custom
+// id), so the player can sign back in, and the queue record, which
+// holds only the request and deletion times. While it is pending the
+// account cron and the sign-in hooks keep that profile clear, since
+// a provider sign-in refills an empty avatar (privacy.go).
+//
+// Sign-in stays available during the grace window so the player can
+// cancel via `cancel_account_deletion` (Stage 1.5), which can't put
+// back what was cleared. `get_account_deletion_status` lets the
+// client detect the queued state and prompt at auth time. The pre-
+// 1.5 design also banned the user via UsersBanId; that was dropped so
+// the cancellation surface is reachable.
 
 const (
 	// accountDeletionCollection holds grace-period soft-delete
@@ -40,9 +51,8 @@ const (
 	accountDeletionKey        = "current"
 
 	// accountDeletionGracePeriod is the soft-delete window. The
-	// player can sign back in within this window and the
-	// deletion will be cancelled (cancellation flow not yet
-	// implemented).
+	// player can sign back in within this window and cancel the
+	// deletion.
 	accountDeletionGracePeriod = 30 * 24 * time.Hour
 
 	// anonymizedDisplayName replaces the user's display name on
@@ -57,7 +67,8 @@ const (
 // with `{game_id}_` to match match_lifecycle's writes) instead
 // of a hardcoded list. The legacy bare "ffa" board is always
 // appended so the cascade also scrubs records from before
-// Stage 3.6 prefixing landed.
+// Stage 3.6 prefixing landed. The cascade adds any other board
+// the player has a record on (leaderboardIDsForOwner).
 func leaderboardIDsToScrub(games *perGameConfig) []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -105,6 +116,21 @@ func parseLeaderboardIDs(gc *GameConfig) []string {
 	return out
 }
 
+// mergeLeaderboardIDs appends the ids in extra that base lacks,
+// keeping base's order.
+func mergeLeaderboardIDs(base, extra []string) []string {
+	seen := make(map[string]bool, len(base))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, id := range append(append([]string{}, base...), extra...) {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
 type deleteAccountResp struct {
 	OK           bool   `json:"ok"`
 	UserID       string `json:"user_id"`
@@ -118,30 +144,28 @@ type deleteAccountResp struct {
 // means the caller has no queued row; the other fields are then
 // undefined.
 type accountDeletionStatusResp struct {
-	Pending             bool   `json:"pending"`
-	UserID              string `json:"user_id,omitempty"`
-	RequestedAt         int64  `json:"requested_at,omitempty"`
-	ScheduledFor        int64  `json:"scheduled_for,omitempty"`
-	OriginalUsername    string `json:"original_username,omitempty"`
-	OriginalDisplayName string `json:"original_display_name,omitempty"`
+	Pending      bool   `json:"pending"`
+	UserID       string `json:"user_id,omitempty"`
+	RequestedAt  int64  `json:"requested_at,omitempty"`
+	ScheduledFor int64  `json:"scheduled_for,omitempty"`
 }
 
-// cancelAccountDeletionResp echoes the restored identity so the
-// client can patch its session-store view without round-tripping
-// through AccountGetId. Stage 1.5.
+// cancelAccountDeletionResp confirms a cancellation. Nothing is
+// restored: the profile was cleared when the deletion was requested,
+// and the queue record never kept a copy.
 type cancelAccountDeletionResp struct {
-	OK          bool   `json:"ok"`
-	UserID      string `json:"user_id"`
-	Username    string `json:"username,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
+	OK     bool   `json:"ok"`
+	UserID string `json:"user_id"`
 }
 
+// deletionQueueRecord is the queue row: who and when, nothing else.
+// Rows written before 2026-10-11 also carried original_username and
+// original_display_name; JSON decoding ignores them, and the account
+// cron strips them from stored rows (minimizeDeletionQueueRow).
 type deletionQueueRecord struct {
-	UserID              string `json:"user_id"`
-	RequestedAt         int64  `json:"requested_at"`
-	ScheduledFor        int64  `json:"scheduled_for"`
-	OriginalUsername    string `json:"original_username"`
-	OriginalDisplayName string `json:"original_display_name"`
+	UserID       string `json:"user_id"`
+	RequestedAt  int64  `json:"requested_at"`
+	ScheduledFor int64  `json:"scheduled_for"`
 }
 
 // deleteAccountRpcFactory threads the per-game config store
@@ -189,24 +213,20 @@ func deleteAccountRpc(
 	now := time.Now().UTC()
 	scheduledFor := now.Add(accountDeletionGracePeriod)
 
-	// Capture pre-anonymization identity for the queue record
-	// so a future cancellation flow has the data needed to
-	// restore the original profile.
-	var origUsername, origDisplay string
-	if acc, accErr := nk.AccountGetId(ctx, userID); accErr == nil && acc != nil {
-		origUsername = acc.User.Username
-		origDisplay = acc.User.DisplayName
+	// The friend and group calls below take the username as an
+	// argument. It is only read here, never copied anywhere.
+	username := ""
+	if acc, accErr := nk.AccountGetId(ctx, userID); accErr == nil {
+		username = acc.GetUser().GetUsername()
 	}
 
-	// 1. Queue the soft-delete record (server-only read/write).
-	queueValue := deletionQueueRecord{
-		UserID:              userID,
-		RequestedAt:         now.Unix(),
-		ScheduledFor:        scheduledFor.Unix(),
-		OriginalUsername:    origUsername,
-		OriginalDisplayName: origDisplay,
-	}
-	queueBytes, _ := json.Marshal(queueValue)
+	// 1. Queue the soft-delete record (server-only read/write). It
+	// holds only what the cron and a cancellation need.
+	queueBytes, _ := json.Marshal(deletionQueueRecord{
+		UserID:       userID,
+		RequestedAt:  now.Unix(),
+		ScheduledFor: scheduledFor.Unix(),
+	})
 	if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
 		Collection:      accountDeletionCollection,
 		Key:             accountDeletionKey,
@@ -221,29 +241,17 @@ func deleteAccountRpc(
 			"failed to queue account deletion", 13)
 	}
 
-	// 2. Anonymize display name. Username left intact so the
-	// queue record's `original_username` still matches the
-	// account row Nakama owns. AccountUpdateId treats empty
-	// strings as "no change" for the rest of the fields.
-	if err := nk.AccountUpdateId(
-		ctx,
-		userID,
-		"",                    // username (no change)
-		nil,                   // metadata
-		anonymizedDisplayName, // displayName
-		"",                    // timezone
-		"",                    // location
-		"",                    // langTag
-		"",                    // avatarUrl
-	); err != nil {
-		logger.Warn(
-			"anonymize display name for %s: %v", userID, err)
-		// Continue: queue record is durable.
+	// 2. Clear the profile. Best-effort like the rest of the
+	// cascade: the queue record is durable, and the account cron
+	// re-applies this every hour while the deletion is pending.
+	if err := scrubDeletedAccountProfile(ctx, db, userID); err != nil {
+		logger.Error(
+			"clear profile for deleted account %s: %v", userID, err)
 	}
 
 	// 3a. Friends: pull every entry and delete the relationship
 	// bidirectionally. FriendsDelete handles pending/incoming/
-	// outgoing/mutual states.
+	// outgoing/mutual/blocked states.
 	friendIDs := []string{}
 	cursor := ""
 	for i := 0; i < 10; i++ {
@@ -266,50 +274,15 @@ func deleteAccountRpc(
 	}
 	if len(friendIDs) > 0 {
 		if err := nk.FriendsDelete(
-			ctx, userID, origUsername, friendIDs, nil); err != nil {
+			ctx, userID, username, friendIDs, nil); err != nil {
 			logger.Warn(
 				"delete friends for %s: %v", userID, err)
 		}
 	}
 
-	// 3b. Group memberships. For party-prefixed groups the user
-	// created, also hard-delete the group so it doesn't linger
-	// as a ghost the rest of the party can't escape.
-	groupCursor := ""
-	for i := 0; i < 10; i++ {
-		userGroups, next, gErr := nk.UserGroupsList(
-			ctx, userID, 100, nil, groupCursor)
-		if gErr != nil {
-			logger.Warn(
-				"list groups for delete %s: %v", userID, gErr)
-			break
-		}
-		for _, ug := range userGroups {
-			if ug.Group == nil || ug.Group.Id == "" {
-				continue
-			}
-			if err := nk.GroupUserLeave(
-				ctx, ug.Group.Id, userID, origUsername); err != nil {
-				logger.Warn(
-					"leave group %s for %s: %v",
-					ug.Group.Id, userID, err)
-			}
-			if strings.HasPrefix(
-				ug.Group.Name, partyGroupPrefix) &&
-				ug.Group.CreatorId == userID {
-				if err := nk.GroupDelete(
-					ctx, ug.Group.Id); err != nil {
-					logger.Warn(
-						"delete party group %s: %v",
-						ug.Group.Id, err)
-				}
-			}
-		}
-		if next == "" {
-			break
-		}
-		groupCursor = next
-	}
+	// 3b. Group memberships, listed in full before leaving any so
+	// the pagination cursor can't skip rows.
+	leaveAllGroups(ctx, logger, nk, userID, username)
 
 	// 3c. Presence records — one per game the user has touched,
 	// plus the pre-Stage-3 legacy key for users whose last
@@ -335,8 +308,18 @@ func deleteAccountRpc(
 			"delete presence for %s: %v", userID, err)
 	}
 
-	// 3d. Leaderboard records.
-	for _, lb := range leaderboardIDsToScrub(games) {
+	// 3d. Leaderboard records: every registered game's boards, the
+	// legacy bare board, and any other board the player has a
+	// record on. Through nk rather than SQL so Nakama's rank cache
+	// forgets the player too.
+	boards := leaderboardIDsToScrub(games)
+	if owned, err := leaderboardIDsForOwner(ctx, db, userID); err != nil {
+		logger.Warn(
+			"list leaderboards for delete %s: %v", userID, err)
+	} else {
+		boards = mergeLeaderboardIDs(boards, owned)
+	}
+	for _, lb := range boards {
 		if err := nk.LeaderboardRecordDelete(
 			ctx, lb, userID); err != nil {
 			logger.Warn(
@@ -360,7 +343,8 @@ func deleteAccountRpc(
 	// specific collections without having to enumerate them
 	// first, which matters for compliance: a game that introduces
 	// a new collection shouldn't quietly leak data through GDPR
-	// deletes until someone remembers to update a registry.
+	// deletes until someone remembers to update a registry. This
+	// is also what deletes the stored IP (client_ip).
 	if db != nil {
 		// `user_id` is a UUID column; an explicit ::uuid cast keeps
 		// the WHERE clause type-safe across PG / pgx-driver versions
@@ -377,19 +361,25 @@ func deleteAccountRpc(
 		}
 	}
 
-	// 3f. Friend code. The forward/reverse rows are system-owned
-	// (UserID=""), so the user-owned SQL scrub above does not touch
-	// them; delete them explicitly so the deleted account's code
-	// stops resolving.
-	deleteFriendCode(ctx, logger, nk, userID)
+	// 3f. The friend code, the rows naming the player in other
+	// players' recent-players lists, and the notifications they
+	// sent. None is user-owned, so the scrub above doesn't reach
+	// them.
+	purgeUserReferences(ctx, logger, db, nk, userID)
+
+	// 3g. Notifications, sent chat messages (including the group
+	// join and leave events Nakama records), and wallet history.
+	// These would otherwise wait for the hard delete's cascade.
+	if err := deleteUserActivityRows(ctx, db, userID); err != nil {
+		logger.Warn(
+			"delete notifications and messages for %s: %v",
+			userID, err)
+	}
 
 	// Stage 1.5: no more UsersBanId. The user remains able to
 	// authenticate during the 30-day grace window so the
 	// cancellation flow can prompt them on next sign-in via
 	// get_account_deletion_status + cancel_account_deletion.
-	// The cascade above has already scrubbed the game-visible
-	// state; the queue row + this remaining (anonymized) account
-	// shell is what the cron consumes when the grace elapses.
 
 	logger.Info(
 		"account_deletion soft-deleted user=%s"+
@@ -406,6 +396,112 @@ func deleteAccountRpc(
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
+}
+
+// leaveAllGroups takes the player out of every group. A party the
+// player created is deleted with its settings rows, so it can't
+// linger as a ghost the rest of the party can't escape. In a party
+// they only joined, the remaining members get a leader if the player
+// led it, fresh ready flags, and a party_state_changed notification:
+// what afterLeaveGroupHook does for a player who leaves through the
+// client, which a runtime GroupUserLeave doesn't trigger.
+func leaveAllGroups(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	userID, username string,
+) {
+	memberships := []*api.UserGroupList_UserGroup{}
+	cursor := ""
+	for i := 0; i < 10; i++ {
+		page, next, err := nk.UserGroupsList(
+			ctx, userID, 100, nil, cursor)
+		if err != nil {
+			logger.Warn(
+				"list groups for delete %s: %v", userID, err)
+			break
+		}
+		memberships = append(memberships, page...)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	for _, membership := range memberships {
+		group := membership.GetGroup()
+		groupID := group.GetId()
+		if groupID == "" {
+			continue
+		}
+		isParty := strings.HasPrefix(group.GetName(), partyGroupPrefix)
+		if err := nk.GroupUserLeave(
+			ctx, groupID, userID, username); err != nil {
+			logger.Warn(
+				"leave group %s for %s: %v", groupID, userID, err)
+		}
+		if !isParty {
+			continue
+		}
+		if group.GetCreatorId() == userID {
+			if err := nk.GroupDelete(ctx, groupID); err != nil {
+				logger.Warn(
+					"delete party group %s: %v", groupID, err)
+				continue
+			}
+			deletePartySettingsRows(ctx, logger, nk, groupID)
+			continue
+		}
+		clearPartyReadyRows(ctx, logger, nk, groupID, []string{userID})
+		autoTransferIfLeaderDeparted(ctx, logger, nk, groupID, userID)
+		notifyPartyMembers(
+			ctx, logger, nk, groupID, partyEventLeft, nil)
+	}
+}
+
+// deletePartySettingsRows removes a deleted party's system-owned
+// rows: its leader override, game mode, level and cheat preferences
+// (which record who set them), and its invite code.
+func deletePartySettingsRows(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+) {
+	deletes := []*runtime.StorageDelete{}
+	for _, collection := range []string{
+		partyLeaderCollection,
+		partyModeCollection,
+		partyLevelPrefsCollection,
+		partyCheatPrefsCollection,
+	} {
+		deletes = append(deletes, &runtime.StorageDelete{
+			Collection: collection,
+			Key:        partyID,
+			UserID:     "",
+		})
+	}
+	if err := nk.StorageDelete(ctx, deletes); err != nil {
+		logger.Warn(
+			"delete settings of party %s: %v", partyID, err)
+	}
+	reverse, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+		Collection: partyInviteCodeCollection,
+		Key:        partyInviteCodeReverseKey(partyID),
+		UserID:     "",
+	}})
+	if err != nil {
+		logger.Warn(
+			"read invite code of party %s: %v", partyID, err)
+		return
+	}
+	for _, obj := range reverse {
+		var parsed struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal([]byte(obj.GetValue()), &parsed)
+		deleteStalePartyInviteCode(
+			ctx, logger, nk, parsed.Code, partyID)
+	}
 }
 
 // getAccountDeletionStatusRpcFactory threads the per-game config
@@ -479,12 +575,10 @@ func getAccountDeletionStatusRpc(
 		return string(out), nil
 	}
 	out, _ := json.Marshal(accountDeletionStatusResp{
-		Pending:             true,
-		UserID:              userID,
-		RequestedAt:         record.RequestedAt,
-		ScheduledFor:        record.ScheduledFor,
-		OriginalUsername:    record.OriginalUsername,
-		OriginalDisplayName: record.OriginalDisplayName,
+		Pending:      true,
+		UserID:       userID,
+		RequestedAt:  record.RequestedAt,
+		ScheduledFor: record.ScheduledFor,
 	})
 	return string(out), nil
 }
@@ -507,27 +601,25 @@ func cancelAccountDeletionRpcFactory(
 	}
 }
 
-// cancelAccountDeletionRpc resurrects the caller's account
-// during the grace window:
-//   1. Reads the original username + display name from the
-//      account_deletion_queue row.
-//   2. Restores them via AccountUpdateId so the user-visible
-//      profile is back to its pre-deletion shape. An empty
-//      original display name is restored by clearing the
-//      "[deleted]" marker in SQL, which AccountUpdateId can't.
-//   3. Deletes the queue row so the cron stops counting down.
+// cancelAccountDeletionRpc keeps the caller's account during the
+// grace window. In one transaction (cancelPendingDeletion) it
+// deletes the queue row, so the cron stops counting down, and clears
+// the "[deleted]" display name marker, so the player doesn't look
+// deleted to everyone. The rest of the profile was cleared at the
+// request and the queue record kept no copy, so nothing else comes
+// back; the SDK refills the name and picture from the provider the
+// player just signed in with.
 //
-// Returns INVALID_ARGUMENT (9, FailedPrecondition) when the
-// caller has no pending deletion (caller asked to cancel
-// nothing) so the client UI can show "your account isn't
-// scheduled for deletion" cleanly.
+// Returns FAILED_PRECONDITION (9) when the caller has no pending
+// deletion (caller asked to cancel nothing) so the client UI can
+// show "your account isn't scheduled for deletion" cleanly.
 //
 // Stage 1.5.
 func cancelAccountDeletionRpc(
 	ctx context.Context,
 	logger runtime.Logger,
 	db *sql.DB,
-	nk runtime.NakamaModule,
+	_ runtime.NakamaModule,
 	games *perGameConfig,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
@@ -537,106 +629,32 @@ func cancelAccountDeletionRpc(
 	if _, err := requireGameID(ctx, games); err != nil {
 		return "", err
 	}
-	reads, err := nk.StorageRead(
-		ctx,
-		[]*runtime.StorageRead{{
-			Collection: accountDeletionCollection,
-			Key:        accountDeletionKey,
-			UserID:     userID,
-		}},
-	)
+	if db == nil {
+		return "", runtime.NewError(
+			"failed to cancel account deletion", 13)
+	}
+	scheduledFor, cancelled, err := cancelPendingDeletion(
+		ctx, db, userID)
 	if err != nil {
 		logger.Error(
-			"cancel_account_deletion read user=%s: %v",
-			userID, err)
-		return "", err
+			"cancel_account_deletion user=%s: %v", userID, err)
+		return "", runtime.NewError(
+			"failed to cancel account deletion", 13)
 	}
-	if len(reads) == 0 {
+	if !cancelled {
 		return "", runtime.NewError(
 			"no pending account deletion to cancel", 9)
-	}
-	record := deletionQueueRecord{}
-	if err := json.Unmarshal(
-		[]byte(reads[0].Value), &record); err != nil {
-		// Treat as "no row" — clearer for the caller than
-		// returning an internal error for a corrupt audit row
-		// they didn't cause.
-		logger.Warn(
-			"cancel_account_deletion: malformed row user=%s: %v",
-			userID, err)
-		return "", runtime.NewError(
-			"no pending account deletion to cancel", 9)
-	}
-
-	// Restore the pre-anonymization profile. AccountUpdateId
-	// treats empty strings as "no change", so we only push the
-	// fields we actually captured. If the queue row lacked an
-	// original username (pre-Stage-1.4 audit shape), we leave
-	// the field alone.
-	if err := nk.AccountUpdateId(
-		ctx,
-		userID,
-		record.OriginalUsername,
-		nil,
-		record.OriginalDisplayName,
-		"",
-		"",
-		"",
-		"",
-	); err != nil {
-		logger.Warn(
-			"cancel_account_deletion restore user=%s: %v",
-			userID, err)
-		// Continue: queue-row delete below is the bit that
-		// stops the cron. A failed restore leaves the user
-		// looking like "[deleted]" but their account is alive.
-	}
-	// AccountUpdateId treats "" as "no change", so it can't put
-	// back an empty display name, and anonymous sign-in leaves
-	// accounts without one. Clear the marker in SQL instead, or
-	// it outlives the cancellation. Only while it still holds
-	// the marker, so a name set during the grace window survives.
-	if record.OriginalDisplayName == "" && db != nil {
-		if _, err := db.ExecContext(
-			ctx,
-			`UPDATE users SET display_name = NULL, update_time = now()
-			 WHERE id = $1::uuid AND display_name = $2`,
-			userID,
-			anonymizedDisplayName,
-		); err != nil {
-			logger.Warn(
-				"cancel_account_deletion clear display name"+
-					" user=%s: %v",
-				userID, err)
-		}
-	}
-
-	if err := nk.StorageDelete(
-		ctx,
-		[]*runtime.StorageDelete{{
-			Collection: accountDeletionCollection,
-			Key:        accountDeletionKey,
-			UserID:     userID,
-		}},
-	); err != nil {
-		logger.Error(
-			"cancel_account_deletion delete row user=%s: %v",
-			userID, err)
-		return "", err
 	}
 
 	logger.Info(
 		"account_deletion cancelled user=%s"+
 			" (was scheduled_for=%s)",
 		userID,
-		time.Unix(record.ScheduledFor, 0).Format(time.RFC3339))
+		time.Unix(scheduledFor, 0).UTC().Format(time.RFC3339))
 
-	resp := cancelAccountDeletionResp{
-		OK:          true,
-		UserID:      userID,
-		Username:    record.OriginalUsername,
-		DisplayName: record.OriginalDisplayName,
-	}
-	out, _ := json.Marshal(resp)
+	out, _ := json.Marshal(cancelAccountDeletionResp{
+		OK:     true,
+		UserID: userID,
+	})
 	return string(out), nil
 }

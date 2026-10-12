@@ -36,6 +36,9 @@ const _LOOPBACK_HOSTS := ["127.0.0.1", "localhost", "::1"]
 const _JWT_PATTERN := "eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*"
 const _REDACTED_JWT := "<redacted-jwt>"
 
+# The console session token, signed in on first use.
+var _console_token := ""
+
 
 ## Returns why the suite must not send requests to the configured
 ## target, or "" when it may. Static so compliance_socket_helper.gd
@@ -498,6 +501,85 @@ func session_rpc(
 	return result
 
 
+## Returns why tests must not use the Nakama console, or "" when
+## they may. The console reads and writes data no client can reach
+## (any account's email, for one), so it needs NAKAMA_CONSOLE_URL,
+## NAKAMA_CONSOLE_USERNAME, and NAKAMA_CONSOLE_PASSWORD, and follows
+## the same loopback rule as PLATFORM_API_URL. local-smoke-test.ps1
+## sets all three for the dev stack.
+func get_console_refusal() -> String:
+	var url := console_url()
+	if url.is_empty():
+		return (
+			"NAKAMA_CONSOLE_URL not set (local-smoke-test.ps1 sets it)")
+	if (
+		not _LOOPBACK_HOSTS.has(parse_host(url))
+		and OS.get_environment("ALLOW_PROD_COMPLIANCE") != "1"
+	):
+		return (
+			"NAKAMA_CONSOLE_URL=%s is not loopback; set"
+			+ " ALLOW_PROD_COMPLIANCE=1 to use it"
+		) % url
+	return ""
+
+
+## The Nakama console's base URL (NAKAMA_CONSOLE_URL), or "".
+func console_url() -> String:
+	return (
+		OS.get_environment("NAKAMA_CONSOLE_URL").strip_edges().rstrip("/"))
+
+
+## Reads an account through the console: the full api.Account,
+## including the email and device ids a client's /v2/account would
+## also show, for any user. Returns {} on failure.
+func console_get_account(user_id: String) -> Dictionary:
+	var result := await console_request(
+		HTTPClient.METHOD_GET, "/v2/console/account/" + user_id, "")
+	if result.status_code != 200 or not (result.body is Dictionary):
+		return {}
+	var account: Variant = result.body.get("account", {})
+	return account if account is Dictionary else {}
+
+
+## Updates an account through the console, which can set fields no
+## client may (email, custom_id) and bypasses the runtime's hooks.
+## `fields` uses console.UpdateAccountRequest's names. Returns
+## whether the console accepted it.
+func console_update_account(user_id: String, fields: Dictionary) -> bool:
+	var result := await console_request(
+		HTTPClient.METHOD_POST,
+		"/v2/console/account/" + user_id,
+		JSON.stringify(fields),
+	)
+	return result.status_code >= 200 and result.status_code < 300
+
+
+## Sends one console API request, signing in first. Refuses (with
+## push_error, a test failure) per get_console_refusal(). Returns
+## {status_code, body, text}.
+func console_request(method: int, path: String, body: String) -> Dictionary:
+	var result := {"status_code": 0, "body": null, "text": ""}
+	var refusal := get_console_refusal()
+	if not refusal.is_empty():
+		push_error("compliance suite refused the console: " + refusal)
+		return result
+	if _console_token.is_empty():
+		var login := await _console_http(
+			HTTPClient.METHOD_POST,
+			"/v2/console/authenticate",
+			JSON.stringify({
+				"username": OS.get_environment("NAKAMA_CONSOLE_USERNAME"),
+				"password": OS.get_environment("NAKAMA_CONSOLE_PASSWORD"),
+			}),
+			"",
+		)
+		if login.body is Dictionary:
+			_console_token = str(login.body.get("token", ""))
+		if _console_token.is_empty():
+			return login
+	return await _console_http(method, path, body, _console_token)
+
+
 ## Returns `text` with every JWT replaced by a placeholder. Use it
 ## on any response body an assertion message embeds: GUT prints the
 ## message on failure, and at -glog=2 and above on success too, and
@@ -526,3 +608,36 @@ func decode_jwt_claims(token: String) -> Dictionary:
 	if not (json.data is Dictionary):
 		return {}
 	return json.data
+
+
+func _console_http(
+	method: int,
+	path: String,
+	body: String,
+	bearer_token: String,
+) -> Dictionary:
+	var result := {"status_code": 0, "body": null, "text": ""}
+	var http := HTTPRequest.new()
+	# use_threads is required in --headless (see http_request).
+	http.use_threads = true
+	add_child(http)
+	var headers := PackedStringArray([
+		"Content-Type: application/json",
+		"Accept: application/json",
+	])
+	if not bearer_token.is_empty():
+		headers.append("Authorization: Bearer " + bearer_token)
+	if http.request(console_url() + path, headers, method, body) != OK:
+		http.queue_free()
+		return result
+	var completed: Array = await http.request_completed
+	http.queue_free()
+	# Resume after the signal finishes emitting (see http_request).
+	await get_tree().process_frame
+	result.status_code = int(completed[1])
+	result.text = (completed[3] as PackedByteArray).get_string_from_utf8()
+	if not result.text.is_empty():
+		var json := JSON.new()
+		if json.parse(result.text) == OK:
+			result.body = json.data
+	return result
