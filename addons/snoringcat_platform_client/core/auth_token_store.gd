@@ -138,8 +138,11 @@ func store_from_response(data: Dictionary) -> void:
 	profile_image_url = data.get(
 		"profile_image_url", ""
 	)
-	linked_providers.clear()
+	# Copy the list before clearing ours, in case data holds this very
+	# array.
 	var lp: Array = data.get("linked_providers", [])
+	lp = lp.duplicate()
+	linked_providers.clear()
 	for p in lp:
 		linked_providers.append(str(p))
 	save_tokens()

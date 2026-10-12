@@ -859,7 +859,11 @@ func _session_to_response_dict(
 		"is_anonymous": provider_name == "anonymous",
 		# Backfilled later via NakamaClient.get_account_async.
 		"display_name": Platform.token_store.display_name,
-		"linked_providers": Platform.token_store.linked_providers,
+		# A copy: the store clears its own list before refilling it
+		# from this dict, so passing the list itself emptied it on
+		# every refresh.
+		"linked_providers": (
+			Platform.token_store.linked_providers.duplicate()),
 		"rating": Platform.token_store.rating,
 		"consent_accepted_at": Platform.token_store.consent_accepted_at,
 		"consent_legal_version": (
@@ -1189,10 +1193,12 @@ func _handle_auth_success(data: Dictionary) -> void:
 				str(server_protocol),
 			)
 
-	# Update linked providers from response.
+	# Update linked providers from response. Copy the list before
+	# clearing the store's, in case it is the store's own array.
 	if data.has("linked_providers"):
-		Platform.token_store.linked_providers.clear()
 		var lp: Array = data.get("linked_providers", [])
+		lp = lp.duplicate()
+		Platform.token_store.linked_providers.clear()
 		for p in lp:
 			Platform.token_store.linked_providers.append(
 				str(p)
