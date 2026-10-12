@@ -51,12 +51,20 @@ extends PlatformScreen
 signal lobby_navigation_requested
 
 ## Emitted synchronously before forcing anonymous login (e.g.
-## preview mode secondary clients, auth refresh failure).
+## preview mode secondary clients, a rejected session refresh).
 ## Listeners should clear any game-side caches that persist
 ## across logins so the new anonymous identity starts clean.
 ## The addon clears its own Platform.* caches after the emit
 ## returns.
 signal force_anonymous_state_reset_requested
+
+## Emitted, just before lobby_navigation_requested, when the stored
+## session could not be refreshed for a reason that may be transient
+## (network error, timeout, 5xx, a response that isn't from Nakama).
+## The session is kept, and the auth client keeps retrying in the
+## background. Listeners can tell the player that online features
+## are unavailable for now.
+signal continued_offline(error: String)
 
 var _is_authenticating := false
 var _navigator: PlatformScreenFocusNavigator
@@ -265,21 +273,32 @@ func _on_login_completed(
 
 func _on_auto_refresh_completed(
 	success: bool,
-	_error: String,
+	error: String,
 ) -> void:
 	if success:
 		_emit_lobby_navigation()
-	else:
-		# Refresh failed. Show login buttons.
-		force_anonymous_state_reset_requested.emit()
-		Platform.token_store.clear_tokens()
-		Platform.friends.cached_friends.clear()
-		Platform.friends.cached_sent_requests.clear()
-		Platform.friends.cached_incoming_requests.clear()
-		Platform.presence.cached_online_ids.clear()
-		_show_buttons()
-		_build_focusable_list()
-		_navigator.prime()
+		return
+	# The auth client clears the token store only when Nakama
+	# rejects the refresh token (PlatformAuthApiClient.refresh_token).
+	# For any other failure (network error, timeout, 5xx, a response
+	# that isn't from Nakama) it keeps the session and retries in the
+	# background, so a dropped connection must not sign the player
+	# out here either: continue with the stored session.
+	if not Platform.token_store.refresh_token.is_empty():
+		continued_offline.emit(error)
+		_emit_lobby_navigation()
+		return
+	# Rejected: the player is signed out. Clear what the old session
+	# left behind and offer sign-in.
+	force_anonymous_state_reset_requested.emit()
+	Platform.token_store.clear_tokens()
+	Platform.friends.cached_friends.clear()
+	Platform.friends.cached_sent_requests.clear()
+	Platform.friends.cached_incoming_requests.clear()
+	Platform.presence.clear_cache()
+	_show_buttons()
+	_build_focusable_list()
+	_navigator.prime()
 
 
 func _on_status_changed(status: String) -> void:
