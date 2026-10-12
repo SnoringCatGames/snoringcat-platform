@@ -25,6 +25,14 @@ extends Node
 ## Emitted on successful authentication.
 signal auth_completed(success: bool, error: String)
 
+## Emitted when this client signs the player out on its own: Nakama
+## rejected the stored refresh token (invalid or expired, account
+## banned or gone), and the token store has been cleared. Fires right
+## after that refresh's auth_completed(false, error), so code awaiting
+## the refresh finishes first. Not emitted when game code clears the
+## token store itself. Games send the player back to sign-in.
+signal signed_out(error: String)
+
 ## Emitted when account linking completes.
 signal link_completed(
 	success: bool,
@@ -290,7 +298,8 @@ func get_guest_jwt() -> void:
 ## token. Emits auth_completed when done. If Nakama
 ## rejects the refresh token (invalid or expired,
 ## account banned or gone), the token store is
-## cleared first, which leaves the player signed out.
+## cleared first, which leaves the player signed out,
+## and signed_out follows auth_completed.
 func refresh_token() -> void:
 	if _is_refreshing:
 		return
@@ -1334,14 +1343,14 @@ func _check_auto_refresh() -> void:
 ## Finishes a failed session refresh. `refresh_token_used` is the
 ## refresh token the attempt read from the store.
 ##
-## A rejected token signs the player out, as PlatformAuthScreen
-## does when its boot-time refresh fails: the cleared store no
-## longer needs_refresh(), so _check_auto_refresh stops, and the
-## next auth screen offers sign-in. The store is left alone if a
-## newer sign-in replaced the token while the request was in
-## flight. Any other failure backs off before the next automatic
-## attempt. Explicit refresh_token() calls skip the backoff: their
-## callers await auth_completed, so they must get an answer.
+## A rejected token signs the player out: the cleared store no
+## longer needs_refresh(), so _check_auto_refresh stops, the next
+## auth screen offers sign-in, and signed_out tells the game, after
+## auth_completed. The store is left alone if a newer sign-in
+## replaced the token while the request was in flight. Any other
+## failure backs off before the next automatic attempt. Explicit
+## refresh_token() calls skip the backoff: their callers await
+## auth_completed, so they must get an answer.
 ##
 ## Reports through auth_completed directly. _emit_failure would
 ## hand a background refresh failure to whichever link / unlink /
@@ -1352,6 +1361,7 @@ func _handle_refresh_failure(
 	refresh_token_used: String,
 ) -> void:
 	_is_refreshing = false
+	var is_signed_out := false
 	if is_token_rejected:
 		push_warning(
 			"[PlatformAuthApiClient] Refresh token rejected: %s"
@@ -1360,6 +1370,7 @@ func _handle_refresh_failure(
 		_reset_refresh_backoff()
 		if Platform.token_store.refresh_token == refresh_token_used:
 			Platform.token_store.clear_tokens()
+			is_signed_out = true
 	else:
 		push_warning(
 			(
@@ -1375,6 +1386,8 @@ func _handle_refresh_failure(
 			_REFRESH_RETRY_MAX_DELAY_SEC,
 		)
 	auth_completed.emit(false, error)
+	if is_signed_out:
+		signed_out.emit(error)
 
 
 func _reset_refresh_backoff() -> void:
