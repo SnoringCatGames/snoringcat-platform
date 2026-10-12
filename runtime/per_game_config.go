@@ -15,10 +15,11 @@ import (
 // Per-game configuration store.
 //
 // Each consuming game ships a `game.yaml` at its repo root. On
-// release, the game's CI calls the `register_game` RPC (server-
-// to-server, HTTP-key gated) with the YAML content converted to
-// JSON; the runtime upserts the row into the `games` table and
-// refreshes its in-process cache. Downstream RPCs (presence,
+// release, the game's deploy tooling calls the `register_game` RPC
+// (server-to-server, HTTP key plus GAME_ADMIN_KEY; see
+// admin_key.go) with the YAML content converted to JSON; the
+// runtime upserts the row into the `games` table and refreshes its
+// in-process cache. Downstream RPCs (presence,
 // matchmaking, leaderboards, version_check) consume the cached
 // values via the perGameConfig.Get/List API.
 //
@@ -55,10 +56,10 @@ CREATE TABLE IF NOT EXISTS games (
 // (matchmaker_rules, leaderboards, legal, ...) without
 // per-key plumbing.
 type GameConfig struct {
-	SchemaVersion   int    `json:"schema_version"`
-	GameID          string `json:"game_id"`
-	DisplayName     string `json:"display_name"`
-	EdgegapAppSlug  string `json:"edgegap_app_slug"`
+	SchemaVersion  int    `json:"schema_version"`
+	GameID         string `json:"game_id"`
+	DisplayName    string `json:"display_name"`
+	EdgegapAppSlug string `json:"edgegap_app_slug"`
 	// EdgegapAppVersion is the registered Edgegap version tag
 	// (e.g. "v8") to allocate against. Stage 3.7 reads this
 	// per-match from the games cache so the runtime no longer
@@ -107,14 +108,19 @@ type perGameConfig struct {
 	db    *sql.DB
 	mu    sync.RWMutex
 	games map[string]*GameConfig
+	// admin guards register_game. Nil refuses every write, so a
+	// store built without one (tests, a future caller) fails
+	// closed rather than open.
+	admin *adminGate
 }
 
 // newPerGameConfig ensures the table exists and warms the cache
 // from whatever's already in Postgres. Returns a usable store
-// even when the table is empty.
+// even when the table is empty. `admin` gates register_game.
 func newPerGameConfig(
 	ctx context.Context,
 	db *sql.DB,
+	admin *adminGate,
 ) (*perGameConfig, error) {
 	if _, err := db.ExecContext(ctx, gamesTableDDL); err != nil {
 		return nil, fmt.Errorf("ensure games table: %w", err)
@@ -122,6 +128,7 @@ func newPerGameConfig(
 	c := &perGameConfig{
 		db:    db,
 		games: map[string]*GameConfig{},
+		admin: admin,
 	}
 	if err := c.Refresh(ctx); err != nil {
 		return nil, fmt.Errorf("warm games cache: %w", err)
@@ -306,9 +313,12 @@ type registerGameResponse struct {
 }
 
 // RegisterGameRpc accepts a game.yaml-shaped JSON payload and
-// upserts it into the `games` table. Server-to-server only —
-// game registration is part of the platform's deploy surface,
-// not a client capability.
+// upserts it into the `games` table. Operator-only: it needs the
+// HTTP key and the GAME_ADMIN_KEY `admin_key` query parameter
+// (admin_key.go). The payload replaces the game's whole config
+// (matchmaker modes, allocator mode, Edgegap app version, legal
+// paths), so the HTTP key alone, which shipped in client builds,
+// must not be enough to call it.
 func (c *perGameConfig) RegisterGameRpc(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -316,7 +326,10 @@ func (c *perGameConfig) RegisterGameRpc(
 	_ runtime.NakamaModule,
 	payload string,
 ) (string, error) {
-	if err := requireServerToServer(ctx); err != nil {
+	// First, before the payload is parsed: a refused call does no
+	// work, and its error says only that the key was refused.
+	if err := c.admin.authorize(ctx, "register_game"); err != nil {
+		logger.Warn("register_game refused: %v", err)
 		return "", err
 	}
 	if payload == "" {

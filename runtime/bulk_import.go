@@ -8,10 +8,12 @@ package main
 //
 // Originally driven by docs/archive/migrate_ddb_to_nakama.py
 // (Phase E one-shot, AWS-era) via the HTTP gateway with
-// `?http_key=...`. The HTTP key is a Nakama runtime config
-// value (set in infra/remote/nakama/docker-compose.yml). The
-// RPC remains gated behind BULK_IMPORT_ENABLED=true so a
-// future game can reuse it for its own migration.
+// `?http_key=...`. Two gates now: the RPC is registered only
+// while BULK_IMPORT_ENABLED=true (so a future game can reuse it
+// for its own migration), and every call also needs the
+// GAME_ADMIN_KEY `admin_key` query parameter (admin_key.go). It
+// writes storage and leaderboard records for any user, and the
+// HTTP key alone shipped in client builds.
 //
 // Payload shape:
 //   { "type": "<players|friends|...>",
@@ -42,16 +44,33 @@ type bulkImportResponse struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-func bulkImportRpc(
+// bulkImportRpcFactory binds the admin-key gate into the RPC.
+func bulkImportRpcFactory(admin *adminGate) func(
+	context.Context, runtime.Logger, *sql.DB,
+	runtime.NakamaModule, string,
+) (string, error) {
+	return func(
+		ctx context.Context,
+		logger runtime.Logger,
+		_ *sql.DB,
+		nk runtime.NakamaModule,
+		payload string,
+	) (string, error) {
+		if err := admin.authorize(ctx, "bulk_import"); err != nil {
+			logger.Warn("bulk_import refused: %v", err)
+			return "", err
+		}
+		return bulkImport(ctx, logger, nk, payload)
+	}
+}
+
+// bulkImport runs one authorized bulk_import batch.
+func bulkImport(
 	ctx context.Context,
 	logger runtime.Logger,
-	db *sql.DB,
 	nk runtime.NakamaModule,
 	payload string,
 ) (string, error) {
-	if err := requireServerToServer(ctx); err != nil {
-		return "", err
-	}
 	req := bulkImportRequest{}
 	if err := json.Unmarshal([]byte(payload), &req); err != nil {
 		return "", runtime.NewError(

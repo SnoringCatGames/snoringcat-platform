@@ -38,6 +38,7 @@ steps. To run GUT directly against a stack you already have:
 ```bash
 PLATFORM_API_URL=http://127.0.0.1:7350 \
 NAKAMA_SERVER_KEY=defaultkey NAKAMA_HTTP_KEY=defaulthttpkey \
+GAME_ADMIN_KEY=defaultadminkey \
 godot --headless --path . -s addons/gut/gut_cmdln.gd \
     -gdir=res://addons/snoringcat_platform_client/test/compliance \
     -gexit
@@ -49,6 +50,7 @@ godot --headless --path . -s addons/gut/gut_cmdln.gd \
 | `ALLOW_PROD_COMPLIANCE` | Set to `1` to allow a non-loopback `PLATFORM_API_URL`, production included. |
 | `NAKAMA_SERVER_KEY`  | Used for `Basic` auth on `/v2/account/authenticate/*` (anon sign-in). Without it, auth-dependent tests `pending()`. |
 | `NAKAMA_HTTP_KEY`    | Used as `?http_key=` on `/v2/rpc/*` for server-to-server runtime RPCs. Without it, those tests `pending()`. |
+| `GAME_ADMIN_KEY`     | The runtime's admin key, sent as `?admin_key=` by `test_admin_key.gd`'s accept test. Without it, that one test `pending()`s; the refusal tests don't need it. |
 
 The matchmaker tests also need the runtime started with
 `EDGEGAP_MOCK_DEPLOY=true` (they read it from `runtime_status`),
@@ -72,6 +74,7 @@ The suite runs in one of two modes, controlled by
 | Subsystem       | Test file                  | Coverage |
 |-----------------|----------------------------|----------|
 | Version         | `test_version.gd`          | `/healthcheck`, `version_check` RPC, `runtime_status` (Edgegap config sanity, no `${...}` placeholders). |
+| Admin key       | `test_admin_key.gd`        | `register_game` refuses the HTTP key alone and a wrong `admin_key`, and accepts the right one (stopping at validation, so nothing is written); `runtime_status` reports `admin_key_configured` without the key. |
 | Auth (anon)     | `test_auth_anon.gd`        | Anon device sign-in returns a 3-segment JWT with a user-id claim; token unlocks `/v2/account`. |
 | Auth (link)     | `test_auth_link.gd`        | Linking a second device to an anon account preserves the user_id; unlinking does not delete the account. |
 | Auth (refresh)  | `test_token_refresh.gd`    | `/v2/account/session/refresh` returns a fresh access+refresh token pair; refresh-derived token unlocks `/v2/account`; garbage tokens rejected without 5xx'ing. |

@@ -54,6 +54,10 @@ function Get-NakamaEnvLines {
 		"NAKAMA_REFRESH_ENCRYPTION_KEY",
 		"NAKAMA_HTTP_KEY",
 		"NAKAMA_CONSOLE_SIGNING_KEY",
+		# Gates register_game and bulk_import on top of the HTTP key,
+		# which shipped in client builds. Only deploy tooling holds it
+		# (credentials.env, the GAME_ADMIN_KEY GitHub secret).
+		"GAME_ADMIN_KEY",
 		"GOOGLE_OAUTH_CLIENT_ID",
 		"GOOGLE_OAUTH_CLIENT_SECRET",
 		"FACEBOOK_APP_ID",

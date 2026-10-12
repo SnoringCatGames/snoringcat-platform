@@ -27,20 +27,28 @@
 //     group. Drives the client's real-time party UI.
 //
 // RPCs registered:
-//   Server-to-server (HTTP-key gated):
+//   Operator only (HTTP key AND the GAME_ADMIN_KEY admin_key
+//   query parameter; refused outright while GAME_ADMIN_KEY is
+//   unset; see admin_key.go):
+//   - register_game:       upsert a game's per_game_config row.
+//   - bulk_import:         Phase E migration RPC. Also only
+//                            registered while BULK_IMPORT_ENABLED.
+//   Server-to-server (HTTP key; the key shipped in clients up to
+//   0.47.0, so each of these checks its own integrity):
 //   - register_server:     game server checks in after boot.
 //   - match_end:           game server posts match results.
-//   - bulk_import:         Phase E migration RPC.
+//   - match_cancel:        game server tears a match down (client
+//                            sessions too, for synthetic matches).
 //   - runtime_status:      read-only probe of build + config.
-//   - record_client_ip:    pre-matchmaking IP recorder.
-//   - register_game:       upsert a game's per_game_config row.
-//   Client session:
+//   HTTP key or session:
 //   - version_check:       client/server compatibility check.
+//   - transport_select:    pure function; compliance probe.
+//   Client session:
+//   - record_client_ip:    pre-matchmaking IP recorder.
 //   - update_and_get_presence: write own presence + read friends'.
 //   - get_player_stats:    rating + match count.
 //   - get_match_history:   recent matches for the caller.
 //   - export_player_data:  GDPR data export.
-//   - transport_select:    pick ENet vs WebRTC vs WebSocket.
 //   - party_start_matchmaking: leader notifies party members to
 //                            join its realtime party, so the
 //                            leader can submit one matchmaker
@@ -176,13 +184,24 @@ func InitModule(
 	appName := env["EDGEGAP_APP_NAME"]
 	appVersion := env["EDGEGAP_APP_VERSION"]
 
+	// Operator-only RPCs (register_game, bulk_import) need
+	// GAME_ADMIN_KEY on top of the HTTP key. Unset is not an init
+	// failure: the runtime loads and serves everything else, and
+	// those two refuse every call until the key is set.
+	adminKey := newAdminGate(env[adminKeyEnvVar])
+	if !adminKey.isConfigured() {
+		logger.Warn(
+			adminKeyEnvVar + " is not set: register_game and" +
+				" bulk_import refuse every call until it is.")
+	}
+
 	// Per-game config store. Created first so both the auth hooks
 	// and every stateful RPC can validate game_id against it. The
 	// DDL is idempotent (CREATE TABLE IF NOT EXISTS) and the cache
 	// warm is fast on an empty table, so this is cheap to run at
 	// every plugin reload. Fatal on failure — every game-scoped
 	// RPC below assumes the store is readable.
-	games, err := newPerGameConfig(ctx, db)
+	games, err := newPerGameConfig(ctx, db, adminKey)
 	if err != nil {
 		return err
 	}
@@ -201,6 +220,7 @@ func InitModule(
 		EdgegapTokenSet:      edgegapToken != "",
 		EdgegapMockDeploy:    mockDeploy,
 		MatchmakerHookActive: matchmakerHookEnabled,
+		AdminKeyConfigured:   adminKey.isConfigured(),
 		RegisteredRpcs:       &registered,
 		Games:                &games,
 	})
@@ -394,21 +414,22 @@ func InitModule(
 	if err := addRpc("match_cancel", lifecycle.MatchCancelRpc); err != nil {
 		return err
 	}
-	// Phase E migration RPC. Gated behind BULK_IMPORT_ENABLED
-	// because the HTTP key is now in client builds, and this
-	// RPC is a write-anywhere primitive that would let any
-	// attacker forge storage records / leaderboard entries.
-	// Set the env var on the Nakama host only while running the
-	// migration script; unset + restart afterwards.
+	// Phase E migration RPC: a write-anywhere primitive (storage
+	// records and leaderboard entries for any user). Registered
+	// only while BULK_IMPORT_ENABLED=true, and every call also
+	// needs GAME_ADMIN_KEY, because the HTTP key alone shipped in
+	// client builds. Set the env var on the Nakama host only while
+	// running a migration; unset + restart afterwards.
 	if env["BULK_IMPORT_ENABLED"] == "true" {
-		if err := addRpc("bulk_import", bulkImportRpc); err != nil {
+		if err := addRpc(
+			"bulk_import", bulkImportRpcFactory(adminKey)); err != nil {
 			return err
 		}
 		logger.Warn(
-			"bulk_import RPC is REGISTERED — open write access" +
-				" to anyone with NAKAMA_HTTP_KEY. Unset" +
-				" BULK_IMPORT_ENABLED and restart when the" +
-				" migration is done.")
+			"bulk_import RPC is REGISTERED: write access to any" +
+				" user's storage for callers holding the HTTP key" +
+				" and GAME_ADMIN_KEY. Unset BULK_IMPORT_ENABLED and" +
+				" restart when the migration is done.")
 	}
 	// Pre-matchmaking client IP recorder. The client calls this
 	// right before joining the matchmaker so fleet_allocator can
@@ -564,7 +585,8 @@ func InitModule(
 		return err
 	}
 
-	// Per-game config RPCs.
+	// Per-game config RPCs. register_game checks GAME_ADMIN_KEY
+	// itself (games holds the gate), so no wrapper is needed here.
 	if err := addRpc("register_game", games.RegisterGameRpc); err != nil {
 		return err
 	}
@@ -710,4 +732,3 @@ func parseEnvInt(env map[string]string, key string, def int) int {
 	}
 	return v
 }
-

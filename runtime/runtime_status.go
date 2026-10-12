@@ -24,17 +24,21 @@ var BuildTime = "unknown"
 // `runtime_status` RPC. Adding fields is fine; renaming or
 // removing them is a breaking change for the desktop probe.
 type runtimeStatusResponse struct {
-	BuildID            string   `json:"build_id"`
-	BuildTime          string   `json:"build_time"`
-	ServerUnixTime     int64    `json:"server_unix_time"`
-	EdgegapAppName     string   `json:"edgegap_app_name"`
-	EdgegapAppVersion  string   `json:"edgegap_app_version"`
-	EdgegapTokenSet    bool     `json:"edgegap_token_set"`
+	BuildID           string `json:"build_id"`
+	BuildTime         string `json:"build_time"`
+	ServerUnixTime    int64  `json:"server_unix_time"`
+	EdgegapAppName    string `json:"edgegap_app_name"`
+	EdgegapAppVersion string `json:"edgegap_app_version"`
+	EdgegapTokenSet   bool   `json:"edgegap_token_set"`
 	// EdgegapMockDeploy is true when the runtime is short-
 	// circuiting real Edgegap allocations (Stage 8.13). MUST be
 	// false in production; the daily prod-health-check job
 	// alerts on a true value.
-	EdgegapMockDeploy  bool     `json:"edgegap_mock_deploy"`
+	EdgegapMockDeploy bool `json:"edgegap_mock_deploy"`
+	// AdminKeyConfigured is true when GAME_ADMIN_KEY is set, i.e.
+	// register_game and bulk_import can be called at all. Only the
+	// boolean is ever reported, never the key.
+	AdminKeyConfigured bool     `json:"admin_key_configured"`
 	RegisteredRpcs     []string `json:"registered_rpcs"`
 	RegisteredHooks    []string `json:"registered_hooks"`
 	RegisteredGames    []string `json:"registered_games"`
@@ -62,6 +66,7 @@ type runtimeStatusConfig struct {
 	EdgegapTokenSet      bool
 	EdgegapMockDeploy    bool
 	MatchmakerHookActive bool
+	AdminKeyConfigured   bool
 	RegisteredRpcs       *[]string
 	Games                **perGameConfig
 }
@@ -108,16 +113,17 @@ func statusRpcFactory(cfg runtimeStatusConfig) func(
 			games = (*cfg.Games).GameIDs()
 		}
 		resp := runtimeStatusResponse{
-			BuildID:           BuildID,
-			BuildTime:         BuildTime,
-			ServerUnixTime:    time.Now().Unix(),
-			EdgegapAppName:    cfg.EdgegapAppName,
-			EdgegapAppVersion: cfg.EdgegapAppVersion,
-			EdgegapTokenSet:   cfg.EdgegapTokenSet,
-			EdgegapMockDeploy: cfg.EdgegapMockDeploy,
-			RegisteredRpcs:    rpcs,
-			RegisteredHooks:   hooks,
-			RegisteredGames:   games,
+			BuildID:            BuildID,
+			BuildTime:          BuildTime,
+			ServerUnixTime:     time.Now().Unix(),
+			EdgegapAppName:     cfg.EdgegapAppName,
+			EdgegapAppVersion:  cfg.EdgegapAppVersion,
+			EdgegapTokenSet:    cfg.EdgegapTokenSet,
+			EdgegapMockDeploy:  cfg.EdgegapMockDeploy,
+			AdminKeyConfigured: cfg.AdminKeyConfigured,
+			RegisteredRpcs:     rpcs,
+			RegisteredHooks:    hooks,
+			RegisteredGames:    games,
 		}
 		out, err := json.Marshal(resp)
 		if err != nil {

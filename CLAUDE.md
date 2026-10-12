@@ -242,6 +242,8 @@ Layout:
 - `match_lifecycle.go` — `register_server` / `match_end` RPCs.
 - `auth.go`, `presence.go`, `version.go`, `player_data.go`,
   `bulk_import.go`, `client_ip.go` — supporting RPCs.
+- `admin_key.go` — the `GAME_ADMIN_KEY` gate for operator-only
+  RPCs.
 - `runtime_status.go` — read-only build/config probe.
 
 **Required env vars when matchmaker hook is enabled
@@ -253,6 +255,14 @@ Layout:
 
 When the hook is disabled (`EDGEGAP_TOKEN` unset), the runtime
 still loads and registers RPCs, just without fleet allocation.
+
+**`GAME_ADMIN_KEY`** gates the operator-only `register_game` and
+`bulk_import` RPCs on top of the HTTP key (`admin_key.go`). Unset
+is not an init failure: the runtime loads, and those two refuse
+every call. The HTTP key shipped in client builds up to 0.47.0, so
+never let it alone authorize anything platform-wide, and never put
+either key in a client. `PLATFORM_ARCHITECTURE.md` → "Runtime keys
+and RPC auth" has the model.
 
 **Build (locally):**
 ```bash

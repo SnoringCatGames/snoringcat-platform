@@ -19,6 +19,12 @@
 # caddy-access-analytics job can read it over SSH. Caddy's json
 # encoder emits ts (epoch float), duration, status, and request.uri,
 # which is exactly what that job parses. Rolled to keep disk bounded.
+#
+# The filter masks the keys Nakama RPC callers put in the query
+# string: http_key (game servers, ops scripts, clients up to 0.47.0)
+# and admin_key (register_game). request.uri is logged verbatim
+# otherwise, and caddy-access-analytics reports the top URIs, so an
+# unmasked key would land in its report.
 (accesslog) {
 	log {
 		output file /var/log/caddy/access.log {
@@ -26,7 +32,15 @@
 			roll_keep 5
 			roll_keep_for 336h
 		}
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace http_key REDACTED
+					replace admin_key REDACTED
+				}
+			}
+		}
 	}
 }
 

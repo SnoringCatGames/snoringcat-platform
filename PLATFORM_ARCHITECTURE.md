@@ -391,8 +391,8 @@ in-process cache from whatever rows are already there. The
 runtime does NOT read `game.yaml` files from the filesystem —
 the Nakama container has no access to game repos. Instead, each
 game's deploy pipeline POSTs its `game.yaml` (converted to JSON)
-to the server-to-server `register_game` RPC, which upserts the
-row and refreshes the cache.
+to the operator-only `register_game` RPC, which upserts the row
+and refreshes the cache.
 
 ```sql
 CREATE TABLE games (
@@ -413,9 +413,10 @@ Sync flow:
    `game.yaml`, validates required fields locally, converts to
    JSON.
 2. POSTs to
-   `https://nakama.../v2/rpc/register_game?http_key=...&unwrap=true`
-   with the JSON as body.
-3. Runtime `register_game` handler (server-to-server gated)
+   `https://nakama.../v2/rpc/register_game?http_key=...&admin_key=...&unwrap=true`
+   with the JSON as body. `admin_key` is the runtime's
+   `GAME_ADMIN_KEY` (next section).
+3. Runtime `register_game` handler (HTTP key plus admin key)
    unmarshals, re-validates, upserts via `INSERT ... ON CONFLICT
    ... DO UPDATE`, then refreshes the in-process cache entry.
 4. Clients read public projections via `get_game_config`.
@@ -423,6 +424,44 @@ Sync flow:
 Runtime modules read from the cache (refreshed on each
 `register_game` write — no TTL today; a future background
 refresh could pick up out-of-band Postgres edits).
+
+### Runtime keys and RPC auth
+
+Nakama runs a runtime RPC for one of two callers: a player's
+session, or anyone presenting the runtime HTTP key
+(`--runtime.http_key`, `?http_key=`). An RPC sees which one by
+whether `RUNTIME_CTX_USER_ID` is set; `requireClientSession` and
+`requireServerToServer` (`runtime/auth.go`) gate on that.
+
+**The HTTP key is not a secret you can lean on.** hopnbop clients
+embedded it from 2026-05-02 through 0.47.0, for one pre-sign-in
+`version_check` call, in a public repo. Treat it as known until it
+is rotated, and assume any HTTP-key caller might be hostile.
+
+| Key | Who holds it | Where it lives |
+|---|---|---|
+| `NAKAMA_HTTP_KEY` | game servers (`register_server`, `match_end`, `match_cancel`), ops probes (`runtime_status`), clients up to 0.47.0 (`version_check`) | `credentials.env`; `/opt/nakama/.env`; the Edgegap app version's env (`game-server.yml` registers it); the local allocator passes it to its containers; GitHub secret `NAKAMA_HTTP_KEY` |
+| `GAME_ADMIN_KEY` | the operator's deploy tooling only (`register_game`, `bulk_import`) | `credentials.env`; `/opt/nakama/.env` (rendered by `scripts/lib/nakama-env.ps1`); GitHub secret `GAME_ADMIN_KEY` in each game repo |
+
+So each RPC an HTTP-key caller can reach carries its own check:
+
+- **`register_game` and `bulk_import`** need both keys: the HTTP
+  key, and `GAME_ADMIN_KEY` as the `admin_key` query parameter,
+  compared in constant time (`runtime/admin_key.go`). Fail
+  closed: while `GAME_ADMIN_KEY` is unset they refuse every call
+  (HTTP 400, "GAME_ADMIN_KEY is not set"), and the rest of the
+  runtime runs normally. `runtime_status` reports
+  `admin_key_configured` (a boolean, never the key). A missing or
+  wrong key is HTTP 401; a client session is 403.
+- **Caddy's access log masks both keys** in `request.uri`
+  (`format filter` in the `Caddyfile`), so neither reaches
+  `access.log` or the caddy-access-analytics report.
+
+The rest either need a player's session, which the HTTP key alone
+can't supply, or return only public data (`version_check`,
+`transport_select`). The header comment of `runtime/main.go` lists
+every RPC by the callers it admits; keep it current when adding
+one.
 
 ---
 

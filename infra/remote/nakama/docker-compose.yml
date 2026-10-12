@@ -73,6 +73,11 @@ services:
       NAKAMA_REFRESH_ENCRYPTION_KEY: ${NAKAMA_REFRESH_ENCRYPTION_KEY}
       NAKAMA_HTTP_KEY: ${NAKAMA_HTTP_KEY}
       NAKAMA_CONSOLE_SIGNING_KEY: ${NAKAMA_CONSOLE_SIGNING_KEY}
+      # Operator-only key for the register_game and bulk_import RPCs,
+      # on top of the HTTP key (runtime/admin_key.go). Never shipped
+      # in a client or a game server. Blank means those RPCs refuse
+      # every call.
+      GAME_ADMIN_KEY: ${GAME_ADMIN_KEY}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
       FACEBOOK_APP_ID: ${FACEBOOK_APP_ID}

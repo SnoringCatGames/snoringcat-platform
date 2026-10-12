@@ -998,6 +998,9 @@ function Step-Nakama {
 		"NAKAMA_REFRESH_ENCRYPTION_KEY",
 		"NAKAMA_HTTP_KEY",
 		"NAKAMA_CONSOLE_SIGNING_KEY",
+		# register_game / bulk_import refuse every call without it,
+		# so a rebuilt host couldn't take a game.yaml sync.
+		"GAME_ADMIN_KEY",
 		"SIGNALING_HMAC_SECRET",
 		# Grafana starts with this stack (Caddy depends on it), and
 		# its first boot fixes the admin password in a fresh DB.

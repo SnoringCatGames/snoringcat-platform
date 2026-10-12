@@ -54,12 +54,14 @@ via git submodules:
 
 3. **Register your game**: your game needs a row in the runtime's
    Postgres `games` table before the backend will accept sign-in
-   attempts with your `game_id`. Upsert it via the
-   server-to-server `register_game` RPC (HTTP-key auth), passing
-   a `game.yaml`-shaped JSON payload; the accepted fields are the
-   `GameConfig` struct in `runtime/per_game_config.go`. Read the
-   current row back with `get_game_config` (client session) or
-   `runtime_status`.
+   attempts with your `game_id`. Upsert it via the operator-only
+   `register_game` RPC, passing a `game.yaml`-shaped JSON
+   payload; the accepted fields are the `GameConfig` struct in
+   `runtime/per_game_config.go`. It takes the runtime HTTP key
+   (`?http_key=`) **and** the runtime's `GAME_ADMIN_KEY` as
+   `?admin_key=`; see `PLATFORM_ARCHITECTURE.md` → "Runtime keys
+   and RPC auth". Read the current row back with
+   `get_game_config` (client session) or `runtime_status`.
 
    `register_game` **replaces the whole config blob**, so build
    the payload by patching what's already registered rather than

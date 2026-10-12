@@ -119,6 +119,14 @@ func http_key() -> String:
 	return OS.get_environment("NAKAMA_HTTP_KEY")
 
 
+## The runtime's GAME_ADMIN_KEY, which register_game and bulk_import
+## need on top of the HTTP key. Read from the GAME_ADMIN_KEY env var
+## (scripts/local-smoke-test.ps1 sets the dev stack's value). Empty
+## when unset.
+func admin_key() -> String:
+	return OS.get_environment("GAME_ADMIN_KEY")
+
+
 ## Generic HTTP request against the configured base URL. Handles
 ## auth via the `auth` argument:
 ##
@@ -426,6 +434,29 @@ func http_key_rpc(
 	var path := (
 		"/v2/rpc/%s?http_key=%s&unwrap=true"
 		% [rpc_name, key])
+	var result: Dictionary = await http_post(path, body)
+	result.inner = result.body
+	return result
+
+
+## Like http_key_rpc, plus an `admin_key` query parameter, for the
+## operator-only RPCs (register_game, bulk_import). Pass the key to
+## send; tests probing the refusal paths pass wrong ones on purpose.
+func admin_key_rpc(
+	rpc_name: String,
+	key: String,
+	body: Variant = null,
+) -> Dictionary:
+	var runtime_http_key := http_key()
+	if runtime_http_key.is_empty():
+		return {
+			"status_code": 0, "body": null, "text": "",
+			"error": "NAKAMA_HTTP_KEY env var not set",
+			"inner": null,
+		}
+	var path := (
+		"/v2/rpc/%s?http_key=%s&admin_key=%s&unwrap=true"
+		% [rpc_name, runtime_http_key.uri_encode(), key.uri_encode()])
 	var result: Dictionary = await http_post(path, body)
 	result.inner = result.body
 	return result
