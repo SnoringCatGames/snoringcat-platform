@@ -27,10 +27,12 @@ signal auth_completed(success: bool, error: String)
 
 ## Emitted when this client signs the player out on its own: Nakama
 ## rejected the stored refresh token (invalid or expired, account
-## banned or gone), and the token store has been cleared. Fires right
-## after that refresh's auth_completed(false, error), so code awaiting
-## the refresh finishes first. Not emitted when game code clears the
-## token store itself. Games send the player back to sign-in.
+## banned or gone), or the stored one could not be used, and the
+## token store's session has been cleared. The player's consent stays
+## stored (PlatformAuthTokenStore.clear_session). Fires right after
+## that refresh's auth_completed(false, error), so code awaiting the
+## refresh finishes first. Not emitted when game code clears the token
+## store itself. Games send the player back to sign-in.
 signal signed_out(error: String)
 
 ## Emitted when account linking completes.
@@ -321,9 +323,10 @@ func get_guest_jwt() -> void:
 ## Refresh the current JWT using the stored refresh
 ## token. Emits auth_completed when done. If Nakama
 ## rejects the refresh token (invalid or expired,
-## account banned or gone), the token store is
-## cleared first, which leaves the player signed out,
-## and signed_out follows auth_completed.
+## account banned or gone), the stored session is
+## cleared first, keeping the player's consent, which
+## leaves the player signed out, and signed_out
+## follows auth_completed.
 func refresh_token() -> void:
 	if _is_refreshing:
 		return
@@ -1336,6 +1339,7 @@ func _update_profile_from_response(
 func _handle_delete_success() -> void:
 	_is_deleting = false
 	_provider_profile = {}
+	# Forgets the player's consent too, unlike an automatic sign-out.
 	Platform.token_store.clear_tokens()
 	delete_completed.emit(true, "")
 
@@ -1392,11 +1396,13 @@ func _check_auto_refresh() -> void:
 ## A rejected token signs the player out: the cleared store no
 ## longer needs_refresh(), so _check_auto_refresh stops, the next
 ## auth screen offers sign-in, and signed_out tells the game, after
-## auth_completed. The store is left alone if a newer sign-in
-## replaced the token while the request was in flight. Any other
-## failure backs off before the next automatic attempt. Explicit
-## refresh_token() calls skip the backoff: their callers await
-## auth_completed, so they must get an answer.
+## auth_completed. The player did not ask for this sign-out, so the
+## store keeps their consent (PlatformAuthTokenStore.clear_session).
+## The store is left alone if a newer sign-in replaced the token
+## while the request was in flight. Any other failure backs off
+## before the next automatic attempt. Explicit refresh_token() calls
+## skip the backoff: their callers await auth_completed, so they must
+## get an answer.
 ##
 ## Reports through auth_completed directly. _emit_failure would
 ## hand a background refresh failure to whichever link / unlink /
@@ -1415,7 +1421,7 @@ func _handle_refresh_failure(
 		)
 		_reset_refresh_backoff()
 		if Platform.token_store.refresh_token == refresh_token_used:
-			Platform.token_store.clear_tokens()
+			Platform.token_store.clear_session()
 			is_signed_out = true
 	else:
 		push_warning(

@@ -148,7 +148,9 @@ func store_from_response(data: Dictionary) -> void:
 	save_tokens()
 
 
-## Delete all stored auth state.
+## Delete all stored auth state, consent included, and the auth file.
+## For a sign-out the player asked for and for account deletion: whoever
+## plays next on this device has to consent again.
 func clear_tokens() -> void:
 	jwt_token = ""
 	refresh_token = ""
@@ -166,6 +168,24 @@ func clear_tokens() -> void:
 	DirAccess.remove_absolute(
 		ProjectSettings.globalize_path(_auth_file_path)
 	)
+
+
+## Delete the stored session and account but keep the player's consent
+## (consent_accepted_at and consent_legal_version), for a sign-out the
+## player did not ask for: Nakama rejected the refresh token, or the
+## stored one cannot be used. The same player signs back in without
+## consenting again, unless the legal version has changed since. The
+## auth file is left holding the consent alone, or deleted when there
+## is no consent to keep.
+func clear_session() -> void:
+	var kept_accepted_at := consent_accepted_at
+	var kept_legal_version := consent_legal_version
+	clear_tokens()
+	if kept_accepted_at <= 0:
+		return
+	consent_accepted_at = kept_accepted_at
+	consent_legal_version = kept_legal_version
+	save_tokens()
 
 
 ## Persist current auth state to encrypted file.

@@ -289,9 +289,10 @@ func _on_auto_refresh_completed(
 		_emit_lobby_navigation()
 		return
 	# Rejected: the player is signed out. Clear what the old session
-	# left behind and offer sign-in.
+	# left behind and offer sign-in. The player's consent stays: they
+	# did not ask to be signed out.
 	force_anonymous_state_reset_requested.emit()
-	Platform.token_store.clear_tokens()
+	Platform.token_store.clear_session()
 	Platform.friends.cached_friends.clear()
 	Platform.friends.cached_sent_requests.clear()
 	Platform.friends.cached_incoming_requests.clear()
