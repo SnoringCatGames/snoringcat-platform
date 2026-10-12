@@ -453,6 +453,15 @@ So each RPC an HTTP-key caller can reach carries its own check:
   runtime runs normally. `runtime_status` reports
   `admin_key_configured` (a boolean, never the key). A missing or
   wrong key is HTTP 401; a client session is 403.
+- **`match_end`** writes results only for a `request_id` that has
+  both a server registration and the `match_metadata` row the
+  matchmaker hook wrote at allocation, and only for the users that
+  row says were matched (`user_ids`). `register_server` accepts
+  any `request_id`, so the registration alone proves nothing. What
+  remains: a player in a match learns its `request_id` from
+  `match_ready`, so with the HTTP key they can still forge bounded
+  scores for that match or end it early (`match_cancel`). A
+  per-deployment secret handed to the game server would close it.
 - **Caddy's access log masks both keys** in `request.uri`
   (`format filter` in the `Caddyfile`), so neither reaches
   `access.log` or the caddy-access-analytics report.

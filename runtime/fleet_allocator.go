@@ -35,10 +35,12 @@ const syntheticMatchCollection = "synthetic_matches"
 
 // matchMetadataCollection holds per-match runtime context the
 // game server doesn't supply when it calls match_end (game_id,
-// allocation timestamp). Written by fleet_allocator after the
-// Edgegap deploy succeeds; read by match_end to scope the
-// leaderboard write per game; deleted by match_end/match_cancel
-// alongside server_registrations cleanup.
+// allocation timestamp, matched users). Written by fleet_allocator
+// after the deploy succeeds; read by match_end to scope the
+// leaderboard write per game and to refuse results for matches the
+// runtime never allocated; deleted by match_end/match_cancel
+// alongside server_registrations cleanup. System-owned rows that no
+// RPC lets a caller write, which is what makes them trustworthy.
 const matchMetadataCollection = "match_metadata"
 
 // matchMetadata is the per-match metadata payload written at
@@ -53,6 +55,12 @@ type matchMetadata struct {
 	// geo decision. Empty means "edgegap" (pre-multi-backend
 	// matches and the bootstrap path both omit the field).
 	AllocatorKind string `json:"allocator_kind,omitempty"`
+	// UserIDs are the Nakama users the matchmaker put in this
+	// match. match_end records results only for these users, so a
+	// caller holding the HTTP key can't write leaderboard or
+	// history rows for anyone else. Empty on rows written before
+	// the field existed; match_end then skips the check.
+	UserIDs []string `json:"user_ids,omitempty"`
 }
 
 // signSignalingURL builds a "wss://<domain>/connect/<token>"
@@ -1148,14 +1156,16 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	}
 
 	// Persist per-match metadata (game_id, allocated_at,
-	// allocator_kind) so match_end can scope leaderboard writes
-	// per game without trusting the game server to know its own
-	// game_id, and so MatchEndRpc dispatches Stop to the backend
-	// that allocated this match (edgegap vs local).
+	// allocator_kind, user_ids) so match_end can scope leaderboard
+	// writes per game without trusting the game server to know its
+	// own game_id, refuses results for users who weren't matched
+	// here, and dispatches Stop to the backend that allocated this
+	// match (edgegap vs local).
 	metaBytes, _ := json.Marshal(matchMetadata{
 		GameID:        matchGameID,
 		AllocatedAt:   time.Now().Unix(),
 		AllocatorKind: allocatorKind,
+		UserIDs:       matchedUserIDs,
 	})
 	if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
 		Collection:      matchMetadataCollection,

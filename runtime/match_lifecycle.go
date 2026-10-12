@@ -17,11 +17,13 @@ import (
 // otherwise. Game servers must call them with `?http_key=...`
 // (the value of NAKAMA_HTTP_KEY on the Nakama host).
 //
-// As of the gamelift-removal cleanup, NAKAMA_HTTP_KEY is also
-// embedded in client builds (so pre-auth `version_check` can
-// run without a session). That makes server-to-server gating
-// alone insufficient — these RPCs add their own integrity
-// checks below to prevent forged calls from polluting state.
+// The HTTP key shipped in client builds up to 0.47.0 (for the
+// pre-auth `version_check`), so treat it as public: server-to-
+// server gating alone proves nothing. These RPCs add their own
+// integrity checks below to keep forged calls from polluting
+// state. match_end only records results for a request_id the
+// allocator itself recorded in match_metadata, and only for the
+// users it matched into that request.
 //
 // `edgegap` is optional: it's nil when the matchmaker hook is
 // disabled (no EDGEGAP_TOKEN). When set, MatchEndRpc uses it to
@@ -214,38 +216,106 @@ func clampPlayerStats(p *matchEndPlayer) {
 	}
 }
 
-// readMatchMetadata returns the per-match metadata fleet_allocator
-// stashed when the deploy was created. Empty metadata (no row, or
-// unreadable row) returns the zero value with no error — the caller
-// falls back to legacy behavior (bare leaderboard ID, etc.).
+// lookupMatchMetadata returns the per-match metadata
+// fleet_allocator stashed when the deploy was created, and whether
+// a row exists. A storage error comes back as err so the caller can
+// fail retryably. A row that exists but won't decode counts as
+// found with zero-value metadata: only the runtime writes these
+// rows, so a bad one is a bug to log, not a forgery.
+func lookupMatchMetadata(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	requestID string,
+) (matchMetadata, bool, error) {
+	rows, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
+		Collection: matchMetadataCollection,
+		Key:        requestID,
+	}})
+	if err != nil {
+		return matchMetadata{}, false, err
+	}
+	if len(rows) == 0 {
+		return matchMetadata{}, false, nil
+	}
+	out := matchMetadata{}
+	if err := json.Unmarshal(
+		[]byte(rows[0].Value), &out); err != nil {
+		logger.Warn(
+			"match metadata decode for %s: %v",
+			requestID, err)
+		return matchMetadata{}, true, nil
+	}
+	return out, true, nil
+}
+
+// readMatchMetadata is the best-effort form of lookupMatchMetadata
+// for teardown paths. No row, or an unreadable one, returns the
+// zero value: the caller falls back to legacy behavior (stop via
+// Edgegap, etc.).
 func readMatchMetadata(
 	ctx context.Context,
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	requestID string,
 ) matchMetadata {
-	out := matchMetadata{}
-	rows, err := nk.StorageRead(ctx, []*runtime.StorageRead{{
-		Collection: matchMetadataCollection,
-		Key:        requestID,
-	}})
+	out, _, err := lookupMatchMetadata(ctx, logger, nk, requestID)
 	if err != nil {
 		logger.Warn(
 			"match metadata read for %s: %v",
 			requestID, err)
-		return out
-	}
-	if len(rows) == 0 {
-		return out
-	}
-	if err := json.Unmarshal(
-		[]byte(rows[0].Value), &out); err != nil {
-		logger.Warn(
-			"match metadata decode for %s: %v",
-			requestID, err)
 		return matchMetadata{}
 	}
 	return out
+}
+
+// restrictToMatchedPlayers drops match_end entries for users the
+// allocator didn't match into the request, and returns the dropped
+// user IDs. Entries with an empty user_id are kept: the writes skip
+// them anyway, exactly as before this check existed.
+//
+// Dropping rather than rejecting the whole call matters because the
+// user IDs come from each client's own declaration to the game
+// server. One client claiming someone else's ID shouldn't void the
+// match for everyone.
+func restrictToMatchedPlayers(
+	players []matchEndPlayer,
+	matchedUserIDs []string,
+) ([]matchEndPlayer, []string) {
+	matched := make(map[string]bool, len(matchedUserIDs))
+	for _, id := range matchedUserIDs {
+		matched[id] = true
+	}
+	kept := make([]matchEndPlayer, 0, len(players))
+	var dropped []string
+	for _, p := range players {
+		if p.UserID == "" || matched[p.UserID] {
+			kept = append(kept, p)
+			continue
+		}
+		dropped = append(dropped, p.UserID)
+	}
+	return kept, dropped
+}
+
+// hasReportedUser reports whether any entry names a user.
+func hasReportedUser(players []matchEndPlayer) bool {
+	for _, p := range players {
+		if p.UserID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// includesUser reports whether userID has an entry in players.
+func includesUser(players []matchEndPlayer, userID string) bool {
+	for _, p := range players {
+		if p.UserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // isSyntheticMatch returns true when fleet_allocator persisted a
@@ -281,11 +351,19 @@ func isSyntheticMatch(
 //
 // Hardening:
 //   - The request_id MUST correspond to an active server
-//     registration; otherwise the call is rejected. This forces
-//     a forger to first call register_server (also hardened) for
-//     a request_id Edgegap actually allocated, which they don't
-//     control.
-//   - winner_id, when non-empty, must be one of the players.
+//     registration; otherwise the call is rejected.
+//   - It MUST also have a match_metadata row, which only the
+//     allocator writes. register_server takes any request_id
+//     from anyone holding the HTTP key, so the registration alone
+//     doesn't prove a real allocation; the metadata row does. A
+//     request_id without one is rejected without side effects.
+//   - Results are recorded only for users the matchmaker matched
+//     into this request (metadata.UserIDs). Other entries are
+//     dropped; a call that names only outsiders is rejected
+//     without side effects, so the real server's match_end still
+//     goes through afterwards.
+//   - winner_id, when non-empty, must be one of the players. A
+//     winner who was dropped above is cleared.
 //   - Per-player score/kills/bumps are bounded so a tampered
 //     payload can't flood the leaderboard with int64-max scores.
 //   - Storage delete of the registration is what makes match_end
@@ -295,6 +373,12 @@ func isSyntheticMatch(
 //     synthetic_matches collection) skip leaderboard/history
 //     writes so the synthetic-match-probe job doesn't pollute
 //     real player stats.
+//
+// What remains: a player in a match learns its request_id from
+// match_ready, so with the HTTP key they can still report forged
+// scores (within the bounds) for that one match's players, or end
+// it early. Closing that needs a per-deployment secret that the
+// allocator hands the game server and match_end checks.
 func (m *matchLifecycle) MatchEndRpc(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -332,6 +416,27 @@ func (m *matchLifecycle) MatchEndRpc(
 			5)
 	}
 
+	// Verify the allocator recorded this request_id. A read error
+	// is INTERNAL (HTTP 500), which the game server retries once.
+	metadata, allocated, err := lookupMatchMetadata(
+		ctx, logger, nk, args.RequestID)
+	if err != nil {
+		logger.Error(
+			"match_end: match metadata read for %s: %v",
+			args.RequestID, err)
+		return "", runtime.NewError("match metadata read failed", 13)
+	}
+	if !allocated {
+		logger.Warn(
+			"match_end rejected: request_id=%s has a server"+
+				" registration but no allocation record (a forged"+
+				" register_server, or the allocator's metadata"+
+				" write failed)",
+			args.RequestID)
+		return "", runtime.NewError(
+			"unknown request_id (no allocation record)", 5)
+	}
+
 	// Validate winner_id and bound per-player stats.
 	playerIDs := make(map[string]bool, len(args.Players))
 	for _, p := range args.Players {
@@ -345,6 +450,33 @@ func (m *matchLifecycle) MatchEndRpc(
 			args.WinnerID)
 		return "", runtime.NewError(
 			"winner_id must be one of the reported players", 3)
+	}
+	// Keep only users the matchmaker put in this match. Metadata
+	// written before UserIDs existed skips the check; those
+	// matches end within the deploy's max duration.
+	if len(metadata.UserIDs) > 0 {
+		kept, dropped := restrictToMatchedPlayers(
+			args.Players, metadata.UserIDs)
+		if len(dropped) > 0 {
+			logger.Warn(
+				"match_end: request_id=%s dropped %d player(s) not"+
+					" matched into it: %v",
+				args.RequestID, len(dropped), dropped)
+			if !hasReportedUser(kept) {
+				return "", runtime.NewError(
+					"no reported player was matched into this"+
+						" request", 3)
+			}
+			args.Players = kept
+			if args.WinnerID != "" &&
+				!includesUser(kept, args.WinnerID) {
+				logger.Warn(
+					"match_end: request_id=%s winner %s was not"+
+						" matched into it; recording no winner",
+					args.RequestID, args.WinnerID)
+				args.WinnerID = ""
+			}
+		}
 	}
 	for i := range args.Players {
 		p := &args.Players[i]
@@ -369,13 +501,9 @@ func (m *matchLifecycle) MatchEndRpc(
 	}
 
 	// Per-match metadata gives us the game_id fleet_allocator
-	// observed at allocation time. Missing metadata (pre-Stage-3.6
-	// match, or a metadata write that lost to a Postgres blip)
-	// falls back to a bare leaderboard ID so the match still
-	// records — better to write to the legacy board than to drop
-	// a real player's result.
-	metadata := readMatchMetadata(
-		ctx, logger, nk, args.RequestID)
+	// observed at allocation time. A match whose players cast no
+	// game_id vote (pre-Stage-3.10 clients) has an empty one and
+	// falls back to the bare leaderboard ID.
 	leaderboardID := gameScopedLeaderboardID(metadata.GameID, "ffa")
 
 	// Write leaderboard records and a per-user match_history row
