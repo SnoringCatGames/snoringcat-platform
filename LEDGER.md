@@ -15,7 +15,7 @@ states its facts, so it stands on its own after the transcript is gone.
 - **SP70** · Match rows are listable by any signed-in player. Verified
   on the local stack; production runs the same runtime tree (the 10-12
   deploy of c4c7413), so it applies there too (S; batch 2; hopnbop
-  `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4, section 7 row 2)
+  `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4, section 7 row 2). Levi, 2026-10-14: ship PermissionRead 0 without a production check; Urgent as part of the takeover chain (with SP27 and hopnbop H41).
 - **SP27** · Session ids can be computed (G1.2): random per-slot tokens
   and a token-to-user-id map; lands before H41 (M; batch 2; hopnbop
   `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4)
