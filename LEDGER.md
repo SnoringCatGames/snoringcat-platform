@@ -12,10 +12,6 @@ states its facts, so it stands on its own after the transcript is gone.
 
 ## Urgent
 
-- **SP70** · Match rows are listable by any signed-in player. Verified
-  on the local stack; production runs the same runtime tree (the 10-12
-  deploy of c4c7413), so it applies there too (S; batch 2; hopnbop
-  `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4, section 7 row 2). Levi, 2026-10-14: ship PermissionRead 0 without a production check; Urgent as part of the takeover chain (with SP27 and hopnbop H41).
 - **SP27** · Session ids can be computed (G1.2): random per-slot tokens
   and a token-to-user-id map; lands before H41 (M; batch 2; hopnbop
   `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4)
@@ -71,10 +67,6 @@ states its facts, so it stands on its own after the transcript is gone.
   `sdk:test/compliance/test_party_invite_flow.gd:136-140` with it, since
   it accepts the join. Urgent candidate (report section 7 row 1) (M to
   L; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
-- **SP26** · The local port pool leaks a UDP/TCP pair per match. Latent:
-  about 16 to 17 weeks to exhaustion with no real players (verify item
-  0) (S; batch 1; hopnbop `docs/design/H37_systems_audit.md` 3.3, 0.1
-  row 8)
 - **SP33** · Any member can pull everyone into a match load (M; batch 2;
   hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP41** · A failed `delete_account` is reported as a failed sign-in
@@ -245,6 +237,17 @@ states its facts, so it stands on its own after the transcript is gone.
   `docs/design/H37_systems_audit.md` 3.5, 2.2)
 
 ## Done
+
+- **SP70** · Match rows listable by any signed-in player. Fixed:
+  PermissionRead 0 on `server_registrations`, `match_metadata`
+  and `synthetic_matches` writes; server-side reads unaffected.
+  Rows written before the fix keep their old permission until
+  they expire. New Go test asserts the registration row is 0/0.
+  Runtime deploy still required (nakama-runtime workflow).
+- **SP26** · Local port pool leaked a UDP/TCP pair per match.
+  Fixed: allocations record their pair by request_id and Stop
+  releases it (idempotent); Go test covers release and reuse.
+  Both done 2026-10-14, batch 1.
 
 - **SP1** · The host's `pg-backup.sh` predated ba6c421's double-ping
   guard. Done 2026-10-11: phase-b's PgBackup step redeployed the repo

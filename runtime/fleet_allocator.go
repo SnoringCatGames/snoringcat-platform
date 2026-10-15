@@ -1146,7 +1146,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			Collection:      syntheticMatchCollection,
 			Key:             deploy.RequestID,
 			Value:           `{"synthetic":true}`,
-			PermissionRead:  2,
+			PermissionRead:  0, // server-only; SP70.
 			PermissionWrite: 0,
 		}}); err != nil {
 			logger.Warn(
@@ -1171,7 +1171,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		Collection:      matchMetadataCollection,
 		Key:             deploy.RequestID,
 		Value:           string(metaBytes),
-		PermissionRead:  2,
+		PermissionRead:  0, // server-only; SP70.
 		PermissionWrite: 0,
 	}}); err != nil {
 		logger.Warn(

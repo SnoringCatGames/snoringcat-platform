@@ -332,6 +332,34 @@ func TestRestrictToMatchedPlayers(t *testing.T) {
 	}
 }
 
+// SP70: server_registrations holds a live server's IP, port and
+// FQDN. The row must be server-only (PermissionRead 0): with
+// PermissionRead 2 any signed-in player could list match rows and
+// find a running server to connect to.
+func TestRegisterServerWritesServerOnlyRow(t *testing.T) {
+	nk := &fakeMatchNk{rows: map[string]string{}}
+	payload := `{"request_id":"` + testRequestID +
+		`","server_ip":"203.0.113.9","server_port":4433,` +
+		`"server_fqdn":"srv.example"}`
+	if _, err := (&matchLifecycle{}).RegisterServerRpc(
+		context.Background(), testLogger{}, nil, nk, payload,
+	); err != nil {
+		t.Fatalf("register_server: %v", err)
+	}
+	if len(nk.writes) != 1 {
+		t.Fatalf("writes = %d, want 1", len(nk.writes))
+	}
+	w := nk.writes[0]
+	if w.Collection != "server_registrations" {
+		t.Fatalf("collection = %q, want server_registrations",
+			w.Collection)
+	}
+	if w.PermissionRead != 0 || w.PermissionWrite != 0 {
+		t.Fatalf("permissions read/write = %d/%d, want 0/0 (SP70)",
+			w.PermissionRead, w.PermissionWrite)
+	}
+}
+
 func TestMatchMetadataUserIDsRoundTrip(t *testing.T) {
 	out, _ := json.Marshal(matchMetadata{GameID: "hopnbop"})
 	if strings.Contains(string(out), "user_ids") {

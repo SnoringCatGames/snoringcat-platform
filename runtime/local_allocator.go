@@ -79,6 +79,12 @@ type LocalDockerAllocator struct {
 	// ranges. Locking is per-allocator so concurrent matchmaker
 	// hooks can't race on the same port.
 	ports *localPortPool
+	// allocMu guards allocPorts, the request_id -> port pair
+	// map Stop releases through (SP26). The pair cannot be
+	// recovered from Docker after the container stops, so it
+	// is recorded at allocation time.
+	allocMu sync.Mutex
+	allocPorts map[string][2]int
 	// http is a Docker-socket-aware HTTP client. Reused across
 	// requests to keep socket connections alive.
 	http *http.Client
@@ -315,6 +321,7 @@ func (l *LocalDockerAllocator) Allocate(
 			"server didn't register: %w", err)
 	}
 
+	l.trackPorts(requestID, udpPort, tcpPort)
 	return deploy, status, nil
 }
 
@@ -326,13 +333,10 @@ func (l *LocalDockerAllocator) Stop(
 ) error {
 	containerName := "match-" + requestID
 	// Best-effort container shutdown; the container's AutoRemove
-	// at create time cleans up the runtime state. After stop we
-	// can't recover the udp/tcp ports from Docker (the bindings
-	// are gone with the container), so we leak them until the
-	// runtime restarts. Acceptable: the pool default is 100 each,
-	// and matches are short-lived. A future tightening would
-	// look up the port bindings via /containers/{id}/json before
-	// stopping.
+	// at create time cleans up the runtime state. The port pair
+	// recorded at allocation time is released below (SP26):
+	// before this, Stop leaked one pair per match and the pool
+	// (100 pairs by default) ran dry after 100 local matches.
 	if err := l.dockerStopContainer(ctx, containerName, 5); err != nil {
 		// 404 is fine (already stopped/missing). Other errors
 		// log but don't escalate — match_lifecycle's caller
@@ -342,7 +346,36 @@ func (l *LocalDockerAllocator) Stop(
 			return err
 		}
 	}
+	l.releasePortsFor(requestID)
 	return nil
+}
+
+// trackPorts records the port pair an allocation is using so
+// Stop can release it later.
+func (l *LocalDockerAllocator) trackPorts(requestID string, udp, tcp int) {
+	l.allocMu.Lock()
+	defer l.allocMu.Unlock()
+	if l.allocPorts == nil {
+		l.allocPorts = map[string][2]int{}
+	}
+	l.allocPorts[requestID] = [2]int{udp, tcp}
+}
+
+// releasePortsFor returns a tracked pair to the pool. It reports
+// whether a pair was tracked; unknown or already-released
+// requests are a no-op so Stop stays idempotent.
+func (l *LocalDockerAllocator) releasePortsFor(requestID string) bool {
+	l.allocMu.Lock()
+	pair, ok := l.allocPorts[requestID]
+	if ok {
+		delete(l.allocPorts, requestID)
+	}
+	l.allocMu.Unlock()
+	if !ok {
+		return false
+	}
+	l.ports.release(pair[0], pair[1])
+	return true
 }
 
 // localPortPool tracks available host-side UDP+TCP port pairs.

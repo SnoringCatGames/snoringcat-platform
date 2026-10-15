@@ -174,7 +174,7 @@ func (m *matchLifecycle) RegisterServerRpc(
 		Collection:      "server_registrations",
 		Key:             args.RequestID,
 		Value:           string(value),
-		PermissionRead:  2,
+		PermissionRead:  0, // server-only; SP70.
 		PermissionWrite: 0, // server-only writes; runtime overrides.
 	}})
 	if err != nil {
