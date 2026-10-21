@@ -204,3 +204,4 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP73** · Guest upgrade links onto the device account (hopnbop H57/H62): link starts the guest session, clears is_anonymous, maps Nakama link errors (PROVIDER_CONFLICT/LAST_PROVIDER); dead merge flow removed. Done in a8de879 (2026-10-20).
 - **SP74** · Generated display names also for device/custom account creation (hopnbop H101). Done in bca5a69 (2026-10-20).
 - **SP75** · Export/delete start the guest session first (hopnbop H58). Done in 4914f54 (2026-10-20).
+- **SP76** · match_history rows carry level_id (hopnbop H49). Done in aa60b94 (2026-10-20).
