@@ -201,3 +201,4 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 - **SP26** · Local port pool leaked a UDP/TCP pair per match; allocations now record their pair by request_id and Stop releases it (idempotent), with a Go test. Done 2026-10-14 (batch 1).
 - **SP72** · Spawn names captured at match end (hopnbop H59): match_end indices stored on leaderboard records + recent_players rows; public board returns them for client localization. Done in e5538cc (2026-10-20).
+- **SP73** · Guest upgrade links onto the device account (hopnbop H57/H62): link starts the guest session, clears is_anonymous, maps Nakama link errors (PROVIDER_CONFLICT/LAST_PROVIDER); dead merge flow removed. Done in a8de879 (2026-10-20).
