@@ -68,3 +68,9 @@ entries go at the bottom.
 
 - **SP11** · CLAUDE.md's "No custom tables" was stale. Done in 6081b82
   (2026-10-11).
+## SP27 (Done 2026-10-20)
+
+- **SP27** · Session ids could be computed (G1.2). Fixed:
+  random per-slot tokens (crypto/rand); EXPECTED_SESSION_TOKENS
+  carries the token-to-user map to the server; hopnbop H41
+  enforces. Done in 886aa10 (2026-10-20).

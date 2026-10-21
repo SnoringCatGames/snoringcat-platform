@@ -18,9 +18,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Urgent
 
-- **SP27** · Session ids can be computed (G1.2): random per-slot tokens
-  and a token-to-user-id map; lands before H41 (M; batch 2; hopnbop
-  `docs/design/H37_systems_audit.md` 3.3, 0.1 row 4)
 
 ## Waiting on Levi
 
