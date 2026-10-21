@@ -191,6 +191,7 @@ type matchHistoryEntry struct {
 	Score      int            `json:"score"`
 	Kills      int            `json:"kills"`
 	Bumps      int            `json:"bumps"`
+	LevelID    string         `json:"level_id,omitempty"`
 	OtherStats map[string]any `json:"other_stats,omitempty"`
 }
 

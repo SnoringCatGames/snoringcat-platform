@@ -577,6 +577,12 @@ func (m *matchLifecycle) MatchEndRpc(
 				"kills":     p.Kills,
 				"bumps":     p.Bumps,
 			}
+			// The level the match was played on (H49); the
+			// game server reports it in match_stats.
+			if levelID, ok := args.Stats["level_id"].(string);
+				ok && levelID != "" {
+				entry["level_id"] = levelID
+			}
 			value, _ := json.Marshal(entry)
 			historyWrites = append(historyWrites, &runtime.StorageWrite{
 				Collection:      "match_history",

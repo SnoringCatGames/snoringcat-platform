@@ -484,3 +484,46 @@ func TestClampPlayerStats(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchEndHistoryCarriesLevelID(t *testing.T) {
+	// The game server reports the level in match_stats (H49);
+	// the history row must keep it.
+	args := matchEndArgs{
+		RequestID: testRequestID,
+		WinnerID:  testUserA,
+		Players: []matchEndPlayer{
+			{UserID: testUserA, Score: 10, Kills: 1},
+		},
+		Stats: map[string]any{
+			"duration_sec": 95.0,
+			"level_id":     "level_2",
+		},
+	}
+	payload, _ := json.Marshal(args)
+	nk := newMatchNk(testMetadataAB)
+	if _, err := (&matchLifecycle{}).MatchEndRpc(
+		context.Background(), testLogger{}, nil, nk,
+		string(payload)); err != nil {
+		t.Fatalf("match_end: %v", err)
+	}
+	found := false
+	for _, w := range nk.writes {
+		if w.Collection != "match_history" {
+			continue
+		}
+		found = true
+		var entry struct {
+			LevelID string `json:"level_id"`
+		}
+		if err := json.Unmarshal(
+			[]byte(w.Value), &entry); err != nil {
+			t.Fatalf("decode history row: %v", err)
+		}
+		if entry.LevelID != "level_2" {
+			t.Errorf("level_id = %q, want level_2", entry.LevelID)
+		}
+	}
+	if !found {
+		t.Fatal("no match_history row written")
+	}
+}
