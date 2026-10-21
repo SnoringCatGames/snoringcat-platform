@@ -60,9 +60,11 @@ func pickDisplayWord(words []string) (string, error) {
 	return words[n.Int64()], nil
 }
 
-// assignGeneratedNameOnCreate replaces a just-created social
-// account's provider-supplied display name with a generated
-// one. A failure only warns: the account must still sign in.
+// assignGeneratedNameOnCreate gives a just-created account a
+// generated display name (H59), replacing any provider-supplied
+// one. Device and custom accounts supply none, so without this
+// they would keep an empty name (H101). A failure only warns:
+// the account must still sign in.
 func assignGeneratedNameOnCreate(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -91,8 +93,7 @@ func assignGeneratedNameOnCreate(
 }
 
 // registerDisplayNameHooks wires the after-authenticate hooks
-// for every provider that can supply a profile name at account
-// creation.
+// for every auth path that can create an account.
 func registerDisplayNameHooks(
 	initializer runtime.Initializer,
 ) error {
@@ -123,6 +124,28 @@ func registerDisplayNameHooks(
 			ctx context.Context, logger runtime.Logger,
 			_ *sql.DB, nk runtime.NakamaModule,
 			out *api.Session, _ *api.AuthenticateAppleRequest,
+		) error {
+			return assignGeneratedNameOnCreate(
+				ctx, logger, nk, out.GetCreated())
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateDevice(
+		func(
+			ctx context.Context, logger runtime.Logger,
+			_ *sql.DB, nk runtime.NakamaModule,
+			out *api.Session, _ *api.AuthenticateDeviceRequest,
+		) error {
+			return assignGeneratedNameOnCreate(
+				ctx, logger, nk, out.GetCreated())
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateCustom(
+		func(
+			ctx context.Context, logger runtime.Logger,
+			_ *sql.DB, nk runtime.NakamaModule,
+			out *api.Session, _ *api.AuthenticateCustomRequest,
 		) error {
 			return assignGeneratedNameOnCreate(
 				ctx, logger, nk, out.GetCreated())
