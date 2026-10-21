@@ -35,7 +35,7 @@ import (
 //
 // Container env mirrors the Edgegap deploy contract so the same
 // Godot binary works on both backends:
-//   - EXPECTED_PLAYER_COUNT, EXPECTED_SESSION_IDS, TRANSPORT_TYPE,
+//   - EXPECTED_PLAYER_COUNT, EXPECTED_SESSION_IDS, EXPECTED_SESSION_TOKENS, TRANSPORT_TYPE,
 //     SIGNALING_PORT, IS_PROBE_MATCH (passed through from
 //     deployReq.EnvVars)
 //   - ARBITRIUM_PUBLIC_IP, ARBITRIUM_PORT_GAME_EXTERNAL (mirrors

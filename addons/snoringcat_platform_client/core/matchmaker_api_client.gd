@@ -70,6 +70,10 @@ const _PARTY_WAIT_POLL_SEC := 0.25
 
 
 var _socket: NakamaSocket = null
+## Account the live socket authenticated as (H15). A socket
+## left over from a previous account must never carry the
+## next account's tickets or party calls.
+var _socket_auth_user_id := ""
 var _ticket: String = ""
 var _is_searching := false
 var _elapsed_timer: Timer = null
@@ -269,6 +273,7 @@ func cleanup() -> void:
 	if _socket != null:
 		_socket.close()
 		_socket = null
+	_socket_auth_user_id = ""
 
 
 ## Open the matchmaker socket if it isn't already up. Returns true
@@ -286,7 +291,15 @@ func cleanup() -> void:
 ## calling — the session resolution reads the former.
 func ensure_socket() -> bool:
 	if _socket != null and _socket.is_connected_to_host():
-		return true
+		# H15: a live socket still signed in as a previous
+		# account (log-out skipped, or a sign-in landed over
+		# a guest) is closed and rebuilt for the current one.
+		var current_user := _socket_user_id()
+		if (not current_user.is_empty()
+				and _socket_auth_user_id != current_user):
+			cleanup()
+		else:
+			return true
 
 	# Resolve the Nakama session for the socket. Either the
 	# per-instance preview device session or the standard
@@ -322,6 +335,7 @@ func ensure_socket() -> bool:
 			"Nakama socket connect failed: %s"
 			% connect_ex.message)
 		return false
+	_socket_auth_user_id = str(session.user_id)
 	return true
 
 

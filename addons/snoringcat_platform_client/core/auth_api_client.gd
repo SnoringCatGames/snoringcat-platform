@@ -1160,11 +1160,9 @@ func _do_link(body: Dictionary) -> void:
 		_emit_failure(_describe_nakama_exception(
 			result.get_exception()))
 		return
-	# Force display_name + avatar_url to the Google identity. Nakama
-	# only auto-fills these on link when the existing values are
-	# empty, so anonymous accounts that later link Google would
-	# otherwise keep the auto-generated handle (e.g. "pPALcZnDQj")
-	# instead of the player's real name.
+	# Pick up the Google avatar on link. The display name is
+	# never taken from the provider (H59): accounts keep the
+	# generated name they were created with.
 	if not google_id_token.is_empty():
 		var profile := _provider_profile_from_claims(
 			_parse_jwt_claims(google_id_token))
@@ -1532,11 +1530,14 @@ func _parse_jwt_claims(jwt: String) -> Dictionary:
 	return data
 
 
-# The display name and picture a Google ID token's claims carry,
-# under the keys _apply_provider_profile reads.
+# The picture a Google ID token's claims carry, under the key
+# _apply_provider_profile reads. The `name` claim is
+# deliberately NOT carried (H59): display names are
+# generated, never the provider's (often a real name), and
+# players never enter one. The runtime assigns a generated
+# name when a social account is created.
 func _provider_profile_from_claims(claims: Dictionary) -> Dictionary:
 	return {
-		"display_name": str(claims.get("name", "")),
 		"profile_image_url": str(claims.get("picture", "")),
 	}
 

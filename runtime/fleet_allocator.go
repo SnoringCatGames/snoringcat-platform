@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -322,6 +323,33 @@ func (c *edgegapClient) Stop(ctx context.Context, requestID string) error {
 type matchedPlayer struct {
 	UserID     string
 	SessionIDs []string
+}
+
+// mintSessionToken returns a random per-slot session token (SP27).
+// Tokens replaced the predictable "<user_id>_<index>" session ids
+// (G1.2): a fellow player could compute every other member's id
+// from the matchmaker envelope and claim their slot on the game
+// server. A token is a bearer credential: the runtime sends each
+// user only their own tokens, and the game server maps each token
+// back to its user (EXPECTED_SESSION_TOKENS) instead of trusting
+// the backend id a client declares (H17).
+func mintSessionToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("mint session token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// sessionTokensEnv renders the token -> user_id map the game
+// server reads from EXPECTED_SESSION_TOKENS to derive each
+// player's backend id from the token they present.
+func sessionTokensEnv(owners map[string]string) string {
+	raw, err := json.Marshal(owners)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 // inflightAllocation tracks one in-progress Edgegap allocation so a
@@ -672,6 +700,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	ipList := make([]string, 0, len(entries))
 	matchedPlayers := make([]matchedPlayer, 0, len(entries))
 	allSessionIDs := make([]string, 0, len(entries))
+	tokenOwners := make(map[string]string, len(entries))
 	totalPlayerCount := 0
 	// Collect each player's platform string for transport
 	// selection. selectTransportType applies the rule
@@ -721,9 +750,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		platforms = append(platforms, platform)
 		sessionIDs := make([]string, 0, localCount)
 		for i := 0; i < localCount; i++ {
-			sid := fmt.Sprintf("%s_%d", userID, i)
+			sid, mintErr := mintSessionToken()
+			if mintErr != nil {
+				sendAllocationFailed(ctx, logger, nk, entries, 1, mintErr)
+				return "", mintErr
+			}
 			sessionIDs = append(sessionIDs, sid)
 			allSessionIDs = append(allSessionIDs, sid)
+			tokenOwners[sid] = userID
 		}
 		matchedPlayers = append(matchedPlayers, matchedPlayer{
 			UserID:     userID,
@@ -913,6 +947,14 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			{
 				Key:   "EXPECTED_SESSION_IDS",
 				Value: strings.Join(allSessionIDs, ","),
+			},
+			{
+				// SP27: token -> user_id map so the server derives
+				// each player's backend id from the token presented
+				// (H17). EXPECTED_SESSION_IDS stays as the bare token
+				// list for pre-SP27 server binaries.
+				Key:   "EXPECTED_SESSION_TOKENS",
+				Value: sessionTokensEnv(tokenOwners),
 			},
 			{
 				Key:   "TRANSPORT_TYPE",

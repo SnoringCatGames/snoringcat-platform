@@ -462,3 +462,39 @@ func TestMatchReadyConnection(t *testing.T) {
 		t.Errorf("mock should be true in mock mode")
 	}
 }
+
+// SP27: session tokens are random bearer [REDACTED], not derived
+// from the user id (G1.2). A fellow player who knows a victim's
+// user id must not be able to compute their token.
+func TestMintSessionTokenIsRandomAndOpaque(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 64; i++ {
+		tok, err := mintSessionToken()
+		if err != nil {
+			t.Fatalf("mintSessionToken: %v", err)
+		}
+		if len(tok) != 32 {
+			t.Errorf("token length = %d, want 32 hex chars", len(tok))
+		}
+		if strings.Contains(tok, "user") || strings.Contains(tok, "_") {
+			t.Errorf("token %q leaks its derivation", tok)
+		}
+		if seen[tok] {
+			t.Fatalf("duplicate token minted: %q", tok)
+		}
+		seen[tok] = true
+	}
+}
+
+// SP27: EXPECTED_SESSION_TOKENS carries the token -> user_id map
+// the game server derives backend ids from (H17).
+func TestSessionTokensEnvRoundTrips(t *testing.T) {
+	owners := map[string]string{"tok-a": "user-a", "tok-b": "user-b"}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(sessionTokensEnv(owners)), &decoded); err != nil {
+		t.Fatalf("sessionTokensEnv is not JSON: %v", err)
+	}
+	if len(decoded) != 2 || decoded["tok-a"] != "user-a" || decoded["tok-b"] != "user-b" {
+		t.Errorf("decoded = %v, want %v", decoded, owners)
+	}
+}

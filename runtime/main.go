@@ -288,6 +288,12 @@ func InitModule(
 		return err
 	}
 
+	// H59: social accounts get a generated display name at
+	// creation, never the provider's profile name.
+	if err := registerDisplayNameHooks(initializer); err != nil {
+		return err
+	}
+
 	// AfterAddGroupUsers / AfterJoinGroup / AfterLeaveGroup /
 	// AfterKickGroupUsers hooks fan out party_state_changed
 	// notifications when a `party-` group's membership changes.
