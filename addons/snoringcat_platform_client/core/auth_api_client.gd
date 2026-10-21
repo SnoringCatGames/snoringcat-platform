@@ -3,7 +3,7 @@ extends Node
 ## Nakama-backed authentication client.
 ##
 ## Handles login (OAuth + anonymous), token refresh, account
-## linking / unlinking / merge, account deletion, and player-data
+## linking / unlinking, account deletion, and player-data
 ## export. Supports three OAuth flows:
 ## - Loopback: Desktop clients open browser, local TCP server
 ##   captures redirect (Google, Facebook).
@@ -51,13 +51,6 @@ signal unlink_completed(
 
 ## Emitted when account deletion completes.
 signal delete_completed(success: bool, error: String)
-
-## Emitted when account merge completes.
-signal merge_completed(
-	success: bool,
-	error: String,
-	provider: String,
-)
 
 ## Emitted when data export completes. Save last_export_json, not a
 ## re-encoding of `data`.
@@ -138,7 +131,6 @@ const _GUEST_ENDPOINT := "/auth/guest"
 const _REFRESH_ENDPOINT := "/auth/refresh"
 const _LINK_ENDPOINT := "/auth/link"
 const _UNLINK_ENDPOINT := "/auth/unlink"
-const _MERGE_ENDPOINT := "/auth/merge"
 const _DELETE_ACCOUNT_ENDPOINT := "/auth/account"
 const _EXPORT_ENDPOINT := "/player/export"
 const _POPUP_TIMEOUT_SEC := 300.0
@@ -206,11 +198,6 @@ var _is_cancelling_deletion := false
 # A deletion request clears the profile on the server and keeps no
 # copy, so cancel_account_deletion() puts these back.
 var _provider_profile: Dictionary = {}
-
-# Account merge state.
-var _is_merging := false
-var _pending_merge_token := ""
-var _pending_merge_provider_name := ""
 
 # Data export state.
 var _is_exporting := false
@@ -345,6 +332,20 @@ func refresh_token() -> void:
 	_send_auth_request(_REFRESH_ENDPOINT, body)
 
 
+## Guests link onto their device account (H57), which needs
+## the guest session first; without one the link could only
+## fail as unauthenticated. Returns false after emitting the
+## link failure when no session could be started.
+func _ensure_guest_session_for_link() -> bool:
+	if not Platform.token_store.is_anonymous:
+		return true
+	await get_guest_jwt()
+	if Platform.token_store.is_token_valid():
+		return true
+	_emit_failure("Could not start a guest session")
+	return false
+
+
 ## Link a new OAuth provider to the current account.
 func link_provider(provider: Provider) -> void:
 	print(
@@ -353,6 +354,8 @@ func link_provider(provider: Provider) -> void:
 	)
 	_is_linking = true
 	_link_provider_name = _PROVIDER_NAMES[provider]
+	if not await _ensure_guest_session_for_link():
+		return
 	if provider in _BROWSER_PROVIDERS:
 		if is_web_platform():
 			_start_web_oauth(provider)
@@ -386,6 +389,16 @@ func submit_platform_link(
 func unlink_provider(provider: Provider) -> void:
 	_is_unlinking = true
 	_unlink_provider_name = _PROVIDER_NAMES[provider]
+	# Nakama refuses to unlink an account's last sign-in
+	# identity; answer locally with the code callers expect
+	# (LK-3). The device identity ("anonymous") counts, so a
+	# linked guest can always drop a provider again.
+	var remaining: Array = (
+		Platform.token_store.linked_providers.duplicate())
+	remaining.erase(_PROVIDER_NAMES[provider])
+	if remaining.is_empty():
+		_emit_failure("LAST_PROVIDER")
+		return
 	auth_status_changed.emit("Unlinking account...")
 	var body := {
 		"provider": _PROVIDER_NAMES[provider],
@@ -393,24 +406,6 @@ func unlink_provider(provider: Provider) -> void:
 	_send_auth_request(
 		_UNLINK_ENDPOINT, body, true
 	)
-
-
-## Confirm the pending account merge. Must only be called
-## after a PROVIDER_CONFLICT link failure, which stores a
-## short-lived merge token internally.
-func confirm_merge() -> void:
-	_is_merging = true
-	_send_auth_request(
-		_MERGE_ENDPOINT,
-		{"merge_token": _pending_merge_token},
-		true,
-	)
-
-
-## Cancel the pending account merge and clear merge state.
-func cancel_merge() -> void:
-	_pending_merge_token = ""
-	_pending_merge_provider_name = ""
 
 
 ## Delete the current account and all associated data.
@@ -868,10 +863,6 @@ func _send_auth_request(
 		await _do_link(body)
 	elif endpoint == _UNLINK_ENDPOINT:
 		await _do_unlink(body)
-	elif endpoint == _MERGE_ENDPOINT:
-		_emit_failure(
-			"Account merge is not yet wired to Nakama."
-			+ " Use unlink + re-auth as a workaround.")
 	else:
 		_emit_failure("Unknown auth endpoint: %s" % endpoint)
 
@@ -956,6 +947,17 @@ func _describe_nakama_exception(ex: NakamaException) -> String:
 		ex.message, ex.status_code, ex.grpc_status_code]
 
 
+## Maps a failed Nakama link call to the error string callers
+## switch on. AlreadyExists (gRPC 6: the provider identity
+## belongs to another account) becomes PROVIDER_CONFLICT, the
+## contract the game's link row handles; anything else keeps
+## the described exception text.
+func _describe_link_exception(ex: NakamaException) -> String:
+	if ex != null and ex.grpc_status_code == 6:
+		return "PROVIDER_CONFLICT"
+	return _describe_nakama_exception(ex)
+
+
 # After a successful link/login, fetches the Nakama account so
 # we can pick up display_name and avatar_url from whatever the
 # provider supplied (Google sends both via the id_token; Nakama
@@ -977,7 +979,7 @@ func _fetch_account_profile_dict(
 		"display_name": u.display_name,
 		"profile_image_url": u.avatar_url,
 		# token_store.linked_providers is otherwise only populated
-		# by link/unlink/merge responses; on a fresh sign-in we have
+		# by link/unlink responses; on a fresh sign-in we have
 		# to seed it from the account model or the account panel's
 		# Link/Unlink rows render in the wrong state.
 		"linked_providers": _account_to_provider_list(account),
@@ -1157,7 +1159,7 @@ func _do_link(body: Dictionary) -> void:
 				"Unsupported link provider: %s" % provider_name)
 			return
 	if result.is_exception():
-		_emit_failure(_describe_nakama_exception(
+		_emit_failure(_describe_link_exception(
 			result.get_exception()))
 		return
 	# Pick up the Google avatar on link. The display name is
@@ -1265,6 +1267,13 @@ func _handle_auth_success(data: Dictionary) -> void:
 		var provider_name := _link_provider_name
 		_link_provider_name = ""
 		_update_profile_from_response(data)
+		# A guest who links keeps their account and stops
+		# being a guest (H57): the linked provider is their
+		# sign-in from now on.
+		if Platform.token_store.is_anonymous:
+			Platform.token_store.is_anonymous = false
+			Platform.token_store.provider = provider_name
+			Platform.token_store.save_tokens()
 		link_completed.emit(true, "", provider_name)
 		return
 
@@ -1298,26 +1307,8 @@ func _handle_unlink_success(data: Dictionary) -> void:
 	unlink_completed.emit(true, "", provider_name)
 
 
-func _handle_merge_success(data: Dictionary) -> void:
-	_is_merging = false
-	var provider_name := _pending_merge_provider_name
-	_pending_merge_token = ""
-	_pending_merge_provider_name = ""
-
-	if data.has("linked_providers"):
-		Platform.token_store.linked_providers.clear()
-		var lp: Array = data.get("linked_providers", [])
-		for p in lp:
-			Platform.token_store.linked_providers.append(
-				str(p)
-			)
-	_update_profile_from_response(data)
-
-	merge_completed.emit(true, "", provider_name)
-
-
 ## Update display_name and profile_image_url from a
-## link or merge response, if the server included
+## link response, if the server included
 ## them. Always persists to disk.
 func _update_profile_from_response(
 	data: Dictionary,
@@ -1352,12 +1343,6 @@ func _emit_failure(error: String) -> void:
 		var provider_name := _link_provider_name
 		_link_provider_name = ""
 		link_completed.emit(false, error, provider_name)
-	elif _is_merging:
-		_is_merging = false
-		var provider_name := _pending_merge_provider_name
-		_pending_merge_token = ""
-		_pending_merge_provider_name = ""
-		merge_completed.emit(false, error, provider_name)
 	elif _is_unlinking:
 		_is_unlinking = false
 		var provider_name := _unlink_provider_name
@@ -1404,7 +1389,7 @@ func _check_auto_refresh() -> void:
 ##
 ## Reports through auth_completed directly. _emit_failure would
 ## hand a background refresh failure to whichever link / unlink /
-## merge / delete flow happened to be in progress.
+## delete flow happened to be in progress.
 func _handle_refresh_failure(
 	error: String,
 	is_token_rejected: bool,
