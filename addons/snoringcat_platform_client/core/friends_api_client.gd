@@ -404,7 +404,8 @@ func fetch_blocked_users() -> void:
 ## (capped at the server's `recentPlayersCap`, currently 50).
 ## On success, populates `cached_recent_players` and emits
 ## `recent_players_received`. Each entry has shape
-## `{player_id, username, display_name, matched_at}` where
+## `{player_id, username, display_name, matched_at, spawn_name}`
+## where
 ## `matched_at` is the unix-second timestamp of the most recent
 ## match the user shared with the caller.
 ##
@@ -428,11 +429,14 @@ func fetch_recent_players() -> void:
 	var raw: Array = data.get("recent_players", [])
 	var next: Array[Dictionary] = []
 	for entry in raw:
+		var spawn_name: Variant = entry.get("spawn_name", {})
 		next.append({
 			"player_id": entry.get("user_id", ""),
 			"username": entry.get("username", ""),
 			"display_name": entry.get("display_name", ""),
 			"matched_at": int(entry.get("matched_at", 0)),
+			"spawn_name": (
+				spawn_name if spawn_name is Dictionary else {}),
 		})
 	cached_recent_players = next
 	recent_players_received.emit({

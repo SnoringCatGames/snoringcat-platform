@@ -198,6 +198,22 @@ type matchEndPlayer struct {
 	Score  int    `json:"score"`
 	Kills  int    `json:"kills"`
 	Bumps  int    `json:"bumps"`
+	// SpawnName is the player's lobby-generated name as indices
+	// into the game's name lists (H59), reported by the game
+	// server at match end. Boards and recent-player lists show
+	// it (localized by the client) instead of the account
+	// display name. Nil when the server didn't report one.
+	SpawnName *spawnName `json:"spawn_name,omitempty"`
+}
+
+// spawnName carries a player's lobby-generated name as indices
+// into the game's name lists (H59). The runtime only stores and
+// forwards the indices; clients localize them, so stored rows
+// stay locale-neutral.
+type spawnName struct {
+	NameIndex int `json:"name_index"`
+	AdjListID int `json:"adj_list_id"`
+	AdjIndex  int `json:"adj_index"`
 }
 
 // clampPlayerStats coerces score/kills/bumps to the [0, max*]
@@ -485,6 +501,12 @@ func (m *matchLifecycle) MatchEndRpc(
 	}
 	for i := range args.Players {
 		p := &args.Players[i]
+		// A spawn name with negative indices can't localize;
+		// drop it so stored rows fall back to the account name.
+		if s := p.SpawnName; s != nil &&
+			(s.NameIndex < 0 || s.AdjListID < 0 || s.AdjIndex < 0) {
+			p.SpawnName = nil
+		}
 		origScore := p.Score
 		clampPlayerStats(p)
 		if origScore != p.Score {
@@ -524,16 +546,22 @@ func (m *matchLifecycle) MatchEndRpc(
 			if p.UserID == "" {
 				continue
 			}
+			recordMetadata := map[string]any{
+				"kills": p.Kills,
+				"bumps": p.Bumps,
+			}
+			if p.SpawnName != nil {
+				recordMetadata["name_index"] = p.SpawnName.NameIndex
+				recordMetadata["adj_list_id"] = p.SpawnName.AdjListID
+				recordMetadata["adj_index"] = p.SpawnName.AdjIndex
+			}
 			_, err := nk.LeaderboardRecordWrite(ctx,
 				leaderboardID,
 				p.UserID,
 				"",
 				int64(p.Score),
 				0,
-				map[string]any{
-					"kills": p.Kills,
-					"bumps": p.Bumps,
-				},
+				recordMetadata,
 				nil)
 			if err != nil {
 				logger.Warn("leaderboard write for %s: %v", p.UserID, err)

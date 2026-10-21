@@ -709,3 +709,33 @@ func TestRankPublicLeaderboard(t *testing.T) {
 		})
 	}
 }
+
+// TestPublicLeaderboardSpawnNames — a record carrying spawn-name
+// indices (H59) lists its owner under that name even when the
+// account has no displayable name; the entry exposes the indices
+// for the client to localize. Nameless accounts without indices,
+// and negative indices, stay unlisted.
+func TestPublicLeaderboardSpawnNames(t *testing.T) {
+	f := newPublicLeaderboardFixture(t)
+	f.addPlayer("00000000-0000-0000-0000-00000000000a", "spawn_user",
+		"", 300)
+	f.nk.records[testBoardID][0].Metadata =
+		`{"kills":1,"bumps":2,"name_index":3,"adj_list_id":1,"adj_index":2}`
+	f.addPlayer("00000000-0000-0000-0000-00000000000b", "plain_user",
+		"", 200)
+	f.addPlayer("00000000-0000-0000-0000-00000000000c", "neg_user",
+		"", 100)
+	f.nk.records[testBoardID][2].Metadata =
+		`{"name_index":-1,"adj_list_id":0,"adj_index":0}`
+
+	resp := decodePublicLeaderboard(t, f.get(hopnbopQuery))
+	if len(resp.Entries) != 1 {
+		t.Fatalf("entries = %+v, want only the spawn-named one",
+			resp.Entries)
+	}
+	entry := resp.Entries[0]
+	want := spawnName{NameIndex: 3, AdjListID: 1, AdjIndex: 2}
+	if entry.SpawnName == nil || *entry.SpawnName != want {
+		t.Errorf("spawn name = %+v, want %+v", entry.SpawnName, want)
+	}
+}

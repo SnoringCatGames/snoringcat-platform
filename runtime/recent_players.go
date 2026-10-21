@@ -20,7 +20,8 @@ import (
 //   collection = "recent_players"
 //   key        = "{other_user_id}"  (one row per other player)
 //   user_id    = "{owner_id}"        (owner of the row)
-//   value      = { user_id, username, display_name, matched_at }
+//   value      = { user_id, username, display_name, matched_at,
+//                  spawn_name? }
 //   read perm  = 1 (owner-only — the list is personal data)
 //   write perm = 0 (server-only — match_end is the sole writer)
 //
@@ -45,6 +46,10 @@ type recentPlayerRecord struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
 	MatchedAt   int64  `json:"matched_at"`
+	// SpawnName is the bunny name the player had in the shared
+	// match (H59); clients show it instead of DisplayName when
+	// present. Absent on rows written before spawn capture.
+	SpawnName *spawnName `json:"spawn_name,omitempty"`
 }
 
 // writeRecentPlayersForMatch records a recent_players row for
@@ -79,8 +84,14 @@ func writeRecentPlayersForMatch(
 			byID[u.Id] = u
 		}
 	}
+	spawnByID := make(map[string]*spawnName, len(players))
+	for _, p := range players {
+		if p.SpawnName != nil && p.UserID != "" {
+			spawnByID[p.UserID] = p.SpawnName
+		}
+	}
 	now := nowUnix()
-	writes := buildRecentPlayerWrites(ids, byID, now)
+	writes := buildRecentPlayerWrites(ids, byID, spawnByID, now)
 	if len(writes) == 0 {
 		return
 	}
@@ -114,6 +125,7 @@ func uniqueUserIDs(players []matchEndPlayer) []string {
 func buildRecentPlayerWrites(
 	ids []string,
 	byID map[string]*api.User,
+	spawnByID map[string]*spawnName,
 	now int64,
 ) []*runtime.StorageWrite {
 	writes := make(
@@ -135,6 +147,7 @@ func buildRecentPlayerWrites(
 				Username:    otherUser.Username,
 				DisplayName: otherUser.DisplayName,
 				MatchedAt:   now,
+				SpawnName:   spawnByID[other],
 			}
 			value, _ := json.Marshal(rec)
 			writes = append(writes, &runtime.StorageWrite{

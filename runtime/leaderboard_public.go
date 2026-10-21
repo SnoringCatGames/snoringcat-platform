@@ -29,16 +29,19 @@ import (
 // versionCheckHTTPPath).
 //
 // Privacy. The response carries, per player, only a rank, the
-// player's display name, and their score. Never a user id, username,
-// avatar URL, device id, IP address, record time, or record metadata.
+// player's display name (or the spawn-name indices of the match
+// that set the record), and their score. Never a user id, username,
+// avatar URL, device id, IP address, record time, or other record
+// metadata.
 // A player is listed only when all of these hold:
 //   - the account still exists;
 //   - it is not banned (no disable_time);
 //   - it is not queued for deletion (no account_deletion_queue row),
 //     whatever its display name says;
 //   - its display name is not delete_account's "[deleted]" marker;
-//   - it has a display name. Anonymous (device-only) accounts have
-//     none, so they are never listed;
+//   - it has a display name, or its record carries a spawn name
+//     (H59). Anonymous (device-only) accounts have neither, so
+//     they are never listed;
 //   - its username doesn't start with "probe-", the
 //     synthetic-match-probe's identities (the same filter
 //     claude-config's player-metrics-daily uses).
@@ -111,12 +114,17 @@ const publicLeaderboardAllowedMethods = "GET, HEAD, OPTIONS"
 var errPublicLeaderboardBackoff = errors.New(
 	"waiting to retry after a failed read")
 
-// publicLeaderboardEntry is one listed player. These three fields are
+// publicLeaderboardEntry is one listed player. These fields are
 // everything the route reveals about a player.
 type publicLeaderboardEntry struct {
 	Rank        int64  `json:"rank"`
 	DisplayName string `json:"display_name"`
 	Score       int64  `json:"score"`
+	// SpawnName is the bunny name the player had in the match
+	// that set this record (H59), as name-list indices the
+	// client localizes. Preferred over DisplayName when set;
+	// absent on records written before spawn capture.
+	SpawnName *spawnName `json:"spawn_name,omitempty"`
 }
 
 // publicLeaderboardResponse is the 200 response body.
@@ -524,6 +532,7 @@ type publicLeaderboardCandidate struct {
 	// ownerID stays inside the runtime: it keys snapshot.ranks.
 	ownerID     string
 	displayName string
+	spawn       *spawnName
 	score       int64
 	subscore    int64
 }
@@ -618,13 +627,16 @@ func listablePublicRecords(
 	kept := make([]publicLeaderboardCandidate, 0, len(records))
 	for _, record := range records {
 		owner := record.GetOwnerId()
-		name, ok := publicDisplayName(accountByID[owner], pending[owner])
+		spawn := spawnNameFromMetadata(record.GetMetadata())
+		name, ok := publicDisplayName(
+			accountByID[owner], pending[owner], spawn)
 		if !ok {
 			continue
 		}
 		kept = append(kept, publicLeaderboardCandidate{
 			ownerID:     owner,
 			displayName: name,
+			spawn:       spawn,
 			score:       record.GetScore(),
 			subscore:    record.GetSubscore(),
 		})
@@ -660,10 +672,14 @@ func ownersPendingDeletion(
 
 // publicDisplayName returns the name to list an account under, and
 // false when the account may not be listed at all (see the file
-// comment for the rules).
+// comment for the rules). A record carrying a spawn name (H59)
+// may be listed under that name even when the account itself has
+// no displayable name; the hard exclusions (missing, disabled,
+// pending deletion, probe) always apply.
 func publicDisplayName(
 	account *api.Account,
 	pendingDeletion bool,
+	spawn *spawnName,
 ) (string, bool) {
 	user := account.GetUser()
 	if user == nil || pendingDeletion {
@@ -672,15 +688,46 @@ func publicDisplayName(
 	if account.GetDisableTime().GetSeconds() != 0 {
 		return "", false
 	}
-	name := strings.TrimSpace(user.GetDisplayName())
-	if name == "" || name == anonymizedDisplayName {
-		return "", false
-	}
 	if strings.HasPrefix(
 		strings.ToLower(user.GetUsername()), probeUsernamePrefix) {
 		return "", false
 	}
+	name := strings.TrimSpace(user.GetDisplayName())
+	if name == "" || name == anonymizedDisplayName {
+		return "", spawn != nil
+	}
 	return name, true
+}
+
+// spawnNameFromMetadata reads the name indices a match_end
+// leaderboard write stored on the record (H59). Anything missing,
+// unparseable or negative reads as no spawn name, so the listing
+// falls back to the account display name.
+func spawnNameFromMetadata(metadata string) *spawnName {
+	if metadata == "" {
+		return nil
+	}
+	var raw struct {
+		NameIndex *int `json:"name_index"`
+		AdjListID *int `json:"adj_list_id"`
+		AdjIndex  *int `json:"adj_index"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &raw); err != nil {
+		return nil
+	}
+	if raw.NameIndex == nil || raw.AdjListID == nil ||
+		raw.AdjIndex == nil {
+		return nil
+	}
+	out := &spawnName{
+		NameIndex: *raw.NameIndex,
+		AdjListID: *raw.AdjListID,
+		AdjIndex:  *raw.AdjIndex,
+	}
+	if out.NameIndex < 0 || out.AdjListID < 0 || out.AdjIndex < 0 {
+		return nil
+	}
+	return out
 }
 
 // rankPublicLeaderboard numbers candidates already in board order.
@@ -701,6 +748,7 @@ func rankPublicLeaderboard(
 			Rank:        rank,
 			DisplayName: candidate.displayName,
 			Score:       candidate.score,
+			SpawnName:   candidate.spawn,
 		}
 	}
 	return entries

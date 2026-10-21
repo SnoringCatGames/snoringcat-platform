@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/heroiclabs/nakama-common/api"
@@ -70,6 +71,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 				"a": {Id: "a", Username: "ua", DisplayName: "A"},
 				"b": {Id: "b", Username: "ub", DisplayName: "B"},
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 2 {
@@ -86,6 +88,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 				"c": {Id: "c", Username: "uc", DisplayName: "C"},
 				"d": {Id: "d", Username: "ud", DisplayName: "D"},
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 12 {
@@ -100,6 +103,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 			map[string]*api.User{
 				"a": {Id: "a", Username: "ua", DisplayName: "A"},
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 0 {
@@ -120,6 +124,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 				"a": {Id: "a", Username: "ua", DisplayName: "A"},
 				// b missing
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 1 {
@@ -144,6 +149,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 					DisplayName: anonymizedDisplayName,
 				},
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 1 {
@@ -164,6 +170,7 @@ func TestBuildRecentPlayerWritesPairCount(t *testing.T) {
 			map[string]*api.User{
 				"a": {Id: "a", Username: "ua", DisplayName: "A"},
 			},
+			nil,
 			1000,
 		)
 		if len(got) != 0 {
@@ -184,6 +191,7 @@ func TestBuildRecentPlayerWritesValueShape(t *testing.T) {
 			"a": {Id: "a", Username: "ua", DisplayName: "A"},
 			"b": {Id: "b", Username: "ub", DisplayName: "B"},
 		},
+		nil,
 		1700000000,
 	)
 	if len(got) != 2 {
@@ -301,5 +309,38 @@ func TestRecentPlayersCapConstantStable(t *testing.T) {
 				" Bumping requires updating MULTI_GAME_ROADMAP.md"+
 				" §7.6 + checking client paging assumptions.",
 			recentPlayersCap)
+	}
+}
+
+// TestBuildRecentPlayerWritesSpawnName — the row for a player
+// who reported a spawn name carries it (H59); other rows don't.
+func TestBuildRecentPlayerWritesSpawnName(t *testing.T) {
+	spawn := &spawnName{NameIndex: 3, AdjListID: 1, AdjIndex: 2}
+	got := buildRecentPlayerWrites(
+		[]string{"a", "b"},
+		map[string]*api.User{
+			"a": {Id: "a", Username: "ua", DisplayName: "A"},
+			"b": {Id: "b", Username: "ub", DisplayName: "B"},
+		},
+		map[string]*spawnName{"b": spawn},
+		1000,
+	)
+	if len(got) != 2 {
+		t.Fatalf("want 2 writes, got %d", len(got))
+	}
+	for _, w := range got {
+		var rec recentPlayerRecord
+		if err := json.Unmarshal([]byte(w.Value), &rec); err != nil {
+			t.Fatalf("decode row for %s: %v", w.Key, err)
+		}
+		if w.Key == "b" {
+			if rec.SpawnName == nil || *rec.SpawnName != *spawn {
+				t.Errorf("row for b: spawn = %+v, want %+v",
+					rec.SpawnName, spawn)
+			}
+		} else if rec.SpawnName != nil {
+			t.Errorf("row for %s: spawn = %+v, want nil",
+				w.Key, rec.SpawnName)
+		}
 	}
 }
