@@ -332,15 +332,23 @@ func refresh_token() -> void:
 	_send_auth_request(_REFRESH_ENDPOINT, body)
 
 
-## Guests link onto their device account (H57), which needs
-## the guest session first; without one the link could only
-## fail as unauthenticated. Returns false after emitting the
-## link failure when no session could be started.
-func _ensure_guest_session_for_link() -> bool:
+## Guests get a server session before account operations
+## that need one (H57/H58): link, export, and delete act on
+## the guest's device account, which a local-only guest has
+## not authenticated yet. Non-guests (and guests already
+## holding a session) return at once. Returns whether a
+## valid session exists afterwards.
+func _ensure_guest_session() -> bool:
 	if not Platform.token_store.is_anonymous:
 		return true
 	await get_guest_jwt()
-	if Platform.token_store.is_token_valid():
+	return Platform.token_store.is_token_valid()
+
+
+## _ensure_guest_session for the link flow, whose failure
+## routes through _emit_failure like every other link error.
+func _ensure_guest_session_for_link() -> bool:
+	if await _ensure_guest_session():
 		return true
 	_emit_failure("Could not start a guest session")
 	return false
@@ -414,6 +422,13 @@ func delete_account() -> void:
 		return
 	_is_deleting = true
 	auth_status_changed.emit("Deleting account...")
+	# Deletion applies to a guest's device account too
+	# (H58); a local-only guest needs the session first.
+	if not Platform.token_store.is_token_valid():
+		await _ensure_guest_session()
+	if not Platform.token_store.is_token_valid():
+		_emit_failure("Not authenticated")
+		return
 	_send_delete_request()
 
 
@@ -461,6 +476,10 @@ func export_player_data() -> void:
 		return
 	last_export_json = ""
 
+	if not Platform.token_store.is_token_valid():
+		# A local-only guest has no session yet; export
+		# still applies to their account (H58).
+		await _ensure_guest_session()
 	if not Platform.token_store.is_token_valid():
 		push_warning(
 			"[PlatformAuthApiClient] Export failed: not authenticated",
