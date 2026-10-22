@@ -74,3 +74,7 @@ entries go at the bottom.
   random per-slot tokens (crypto/rand); EXPECTED_SESSION_TOKENS
   carries the token-to-user map to the server; hopnbop H41
   enforces. Done in 886aa10 (2026-10-20).
+
+## SP26 (Done 2026-10-14)
+
+- **SP26** · Local port pool leaked a UDP/TCP pair per match; allocations now record their pair by request_id and Stop releases it (idempotent), with a Go test. Done 2026-10-14 (batch 1).
