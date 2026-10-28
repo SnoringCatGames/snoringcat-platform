@@ -198,9 +198,3 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   `docs/design/H37_systems_audit.md` 3.5, 2.2)
 
 ## Done
-
-- **SP72** · Spawn names captured at match end (hopnbop H59): match_end indices stored on leaderboard records + recent_players rows; public board returns them for client localization. Done in e5538cc (2026-10-20).
-- **SP73** · Guest upgrade links onto the device account (hopnbop H57/H62): link starts the guest session, clears is_anonymous, maps Nakama link errors (PROVIDER_CONFLICT/LAST_PROVIDER); dead merge flow removed. Done in a8de879 (2026-10-20).
-- **SP74** · Generated display names also for device/custom account creation (hopnbop H101). Done in bca5a69 (2026-10-20).
-- **SP75** · Export/delete start the guest session first (hopnbop H58). Done in 4914f54 (2026-10-20).
-- **SP76** · match_history rows carry level_id (hopnbop H49). Done in aa60b94 (2026-10-20).
