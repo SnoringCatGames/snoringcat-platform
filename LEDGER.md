@@ -188,6 +188,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP20** · `Platform.api` / `core/api_client.gd` was still created at startup; its only caller is gone. Done in 99c9195 (2026-10-29).
+- **SP21** · `README.md` claimed a `v1.4.0` tag; this repo has never had a tag. Done in 99c9195 (2026-10-29).
 - **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims, MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set. Done in 7a5399e (2026-10-29).
 - **SP10** · CLAUDE.md said `nakama-runtime` runs gofmt; four runtime files weren't gofmt-clean. Done in 7a5399e (2026-10-29).
 - **SP49** · V17's broken format string in `sdk:test/compliance/test_account_delete.gd:118`. Done in 6987291 (2026-10-29).
