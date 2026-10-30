@@ -60,9 +60,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
 - **SP33** · Any member can pull everyone into a match load (M; batch 2;
   hopnbop `docs/design/H37_systems_audit.md` 3.2)
-- **SP43** · A refresh during a pending link is taken as the link's
-  success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md`
-  3.1)
 - **SP35** · 50 pending outgoing friend requests block every accept (S;
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP36** · Blocking stops friend requests and nothing else (S; batch
@@ -228,5 +225,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP43** · A refresh during a pending link is taken as the link's success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 22055ff (2026-10-29).
 - **SP41** · A failed `delete_account` is reported as a failed sign-in (DEL-2); root cause `sdk:core/auth_api_client.gd:890,896` (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 69c4b6b (2026-10-29).
 - **SP51** · Pin staticcheck in `nakama-runtime.yml:44` (XS; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in 9139b38 (2026-10-29).
