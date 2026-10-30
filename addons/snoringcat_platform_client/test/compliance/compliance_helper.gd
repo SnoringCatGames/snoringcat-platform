@@ -1,9 +1,10 @@
 extends Node
 ## Shared helpers for compliance tests.
 ##
-## NO class_name — the addon's api_client.gd documents a Godot 4.6
-## parser-cache bug that bites class_name'd scripts inside an
-## addon. Compliance tests preload this file directly.
+## NO class_name — a Godot 4.6 parser-cache bug bites
+## class_name'd scripts inside an addon (the SDK's script
+## headers document it). Compliance tests preload this file
+## directly.
 ##
 ## Usage from a GutTest:
 ##

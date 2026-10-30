@@ -93,8 +93,8 @@ the consuming game's `MIGRATION_PLAN.md`). Git history of
 
 The Go runtime plugin is built per-commit; the `runtime_status`
 RPC reports the build SHA so a deployed plugin is always
-traceable to source. Client SDK semver tags on this repo
-(`v1.4.0`); each consuming game pins via the submodule pointer.
+traceable to source. This repo carries no release tags; each
+consuming game pins the SDK via the submodule pointer.
 Game `protocol_version` is per-game and unrelated to the
 platform SDK version.
 

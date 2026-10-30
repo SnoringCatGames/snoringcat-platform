@@ -9,7 +9,6 @@
 ##     })
 ##
 ## Once initialized:
-##     Platform.api          — generic HTTP client
 ##     Platform.token_store  — encrypted token persistence
 ##
 ## Subsystem references (populated incrementally as Stage 6 of the
@@ -114,7 +113,6 @@ var facebook_oauth_client_id: String = ""
 # Core references populated by initialize(). Untyped to dodge the
 # same parser-cache bug that prevents class_name imports here.
 var token_store
-var api
 
 # Shared NakamaClient singleton. Lazily created by
 # get_nakama_client() on first access using the nakama_* fields
@@ -187,16 +185,7 @@ func initialize(config: Dictionary) -> void:
 	var TokenStoreScript: GDScript = load(
 		"res://addons/snoringcat_platform_client"
 		+ "/core/auth_token_store.gd")
-	var ApiClientScript: GDScript = load(
-		"res://addons/snoringcat_platform_client"
-		+ "/core/api_client.gd")
-
 	token_store = TokenStoreScript.new(auth_file_path)
-	api = ApiClientScript.new()
-	api.name = "PlatformApiClient"
-	api.base_url = api_base_url
-	api.token_store = token_store
-	add_child(api)
 
 	is_initialized = true
 	initialized.emit()
