@@ -83,9 +83,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   3.2)
 - **SP42** · Server-side validation of names and avatar URLs (PI-1,
   DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1)
-- **SP37** · Party chat has no server-side length, rate or block limits
-  (soc F9); dead routes. Fix: chat-hook limits, delete the routes (S;
-  batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP45** · A refresh emits the sign-in's `auth_completed(true, "")`
   (SL-1; `global.gd:388-392`). Fix: a separate `session_refreshed`
   signal (S; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1)
@@ -221,6 +218,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
 - **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
 - **SP47** · Sessions are not revoked on account delete (DEL-3). acct (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list). Done in 4ccc33b (2026-10-29).
 - **SP43** · A refresh during a pending link is taken as the link's success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 22055ff (2026-10-29).
