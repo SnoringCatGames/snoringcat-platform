@@ -5,8 +5,9 @@ extends RefCounted
 ## Stores JWT, refresh token, and player metadata in an
 ## encrypted ConfigFile at user://auth.cfg. In preview mode,
 ## secondary clients use separate files to avoid identity
-## collisions during matchmaking. Uses OS.get_unique_id() as
-## the encryption passphrase for basic obfuscation.
+## collisions during matchmaking. Files are encrypted with a
+## per-install random key (SP44); pre-SP44 files used a
+## device-derived passphrase and still load (see load_tokens).
 ##
 ## Anonymous players use a local-only identity. Their JWT is
 ## never saved to disk. A short-lived guest JWT is obtained
@@ -188,6 +189,40 @@ func clear_session() -> void:
 	save_tokens()
 
 
+## Whether an auth file exists at all. A file that exists
+## but cannot be read must never be replaced by a fresh
+## guest identity (SP44): the guest account would orphan.
+func has_auth_file() -> bool:
+	return FileAccess.file_exists(_auth_file_path)
+
+
+## Path of the per-install key file next to the auth file.
+func _key_file_path() -> String:
+	return _auth_file_path.get_basename() + "_key.cfg"
+
+
+## The pre-SP44 passphrase, kept so old files still load.
+func _legacy_passphrase() -> String:
+	return OS.get_unique_id().sha256_text()
+
+
+## The per-install random key, created on first save.
+## Returns "" when none exists yet and create is false.
+func _install_key(create: bool) -> String:
+	var config := ConfigFile.new()
+	if config.load(_key_file_path()) == OK:
+		var existing := str(
+			config.get_value(_SECTION, "install_key", ""))
+		if not existing.is_empty():
+			return existing
+	if not create:
+		return ""
+	var key := Crypto.new().generate_random_bytes(32).hex_encode()
+	config.set_value(_SECTION, "install_key", key)
+	config.save(_key_file_path())
+	return key
+
+
 ## Persist current auth state to encrypted file.
 ##
 ## For anonymous players, JWT fields are intentionally omitted
@@ -239,7 +274,7 @@ func save_tokens() -> void:
 			profile_image_url,
 		)
 	config.save_encrypted_pass(
-		_auth_file_path, _get_passphrase()
+		_auth_file_path, _save_passphrase()
 	)
 
 
@@ -249,6 +284,12 @@ func load_tokens() -> void:
 	var err := config.load_encrypted_pass(
 		_auth_file_path, _get_passphrase()
 	)
+	if err != OK and _get_passphrase() != _legacy_passphrase():
+		# A pre-SP44 file: read it with the old passphrase.
+		# The next save re-keys it under the install key.
+		err = config.load_encrypted_pass(
+			_auth_file_path, _legacy_passphrase()
+		)
 	if err != OK:
 		return
 	is_anonymous = config.get_value(
@@ -300,4 +341,12 @@ func load_tokens() -> void:
 
 
 func _get_passphrase() -> String:
-	return OS.get_unique_id().sha256_text()
+	var key := _install_key(false)
+	return key if not key.is_empty() else _legacy_passphrase()
+
+
+## Passphrase for the next save: the install key, created
+## on first save so new installs are random-keyed and old
+## files re-key the first time they are saved again.
+func _save_passphrase() -> String:
+	return _install_key(true)

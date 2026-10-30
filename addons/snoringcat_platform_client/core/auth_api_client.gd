@@ -1032,6 +1032,15 @@ func _do_anon_auth() -> void:
 	var store: PlatformAuthTokenStore = Platform.token_store
 	var device_id := store.local_player_id
 	if device_id.is_empty():
+		if store.has_auth_file():
+			# A saved identity exists but could not be read.
+			# Minting a fresh one would orphan the guest
+			# account (SP44), so fail instead.
+			_is_refreshing = false
+			guest_jwt_obtained.emit(
+				false,
+				"Saved guest identity could not be read")
+			return
 		device_id = _generate_state_nonce()
 		store.local_player_id = device_id
 		store.save_tokens()
@@ -1707,11 +1716,9 @@ func _generate_anonymous_name() -> String:
 
 
 func _generate_state_nonce() -> String:
-	var bytes := PackedByteArray()
-	bytes.resize(16)
-	for i in bytes.size():
-		bytes[i] = randi() % 256
-	return bytes.hex_encode()
+	# Crypto-random (SP44): this doubles as the guest device
+	# id, so it must not be guessable from the PRNG stream.
+	return Crypto.new().generate_random_bytes(16).hex_encode()
 
 
 func _parse_query_param(
