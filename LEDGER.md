@@ -67,8 +67,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP44** · Guest device id is not crypto-random (SI-1); token store
   passphrase is weak (TS-1). Fix: random 128-bit id, a real key per
   platform (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1)
-- **SP47** · Sessions are not revoked on account delete (DEL-3). acct
-  (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list)
 - **SP30** · No match forms for anyone while an allocation runs (M;
   batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3)
 - **SP29** · One player's 120 s timeout cancels the whole matched set's
@@ -225,6 +223,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP47** · Sessions are not revoked on account delete (DEL-3). acct (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list). Done in 4ccc33b (2026-10-29).
 - **SP43** · A refresh during a pending link is taken as the link's success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 22055ff (2026-10-29).
 - **SP41** · A failed `delete_account` is reported as a failed sign-in (DEL-2); root cause `sdk:core/auth_api_client.gd:890,896` (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 69c4b6b (2026-10-29).
 - **SP51** · Pin staticcheck in `nakama-runtime.yml:44` (XS; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in 9139b38 (2026-10-29).
