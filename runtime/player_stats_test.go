@@ -90,6 +90,17 @@ func TestGetPlayerStatsForAnotherPlayer(t *testing.T) {
 	}
 }
 
+func TestGetPlayerStatsQueuedPlayerIsUnlisted(t *testing.T) {
+	f := statsFixture(t)
+	f.nk.pending[testLeaderID] = true
+	resp, raw := playerStats(t, f, testCallerID,
+		`{"player_id":"`+testLeaderID+`"}`)
+	if raw["best_score"] != nil || raw["rank"] != nil ||
+		resp.Rating != unrankedRating || resp.Matches != 0 {
+		t.Errorf("queued leader's stats = %v, want unlisted", raw)
+	}
+}
+
 func TestGetPlayerStatsUnrankedIsNullNotZero(t *testing.T) {
 	f := statsFixture(t)
 	const newcomer = "dddddddd-dddd-dddd-dddd-dddddddddddd"

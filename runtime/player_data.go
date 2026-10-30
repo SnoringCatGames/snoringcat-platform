@@ -110,6 +110,25 @@ func getPlayerStatsRpc(
 		target = caller
 	}
 
+	// Another player's stats follow the public listing rules
+	// (SP30): a player queued for deletion is unlisted, so
+	// their score stops being readable by everyone else. The
+	// queued player still sees their own stats (they signed
+	// in to cancel), and a failed check fails open.
+	if target != caller {
+		if pending, err := ownersPendingDeletion(
+			ctx, nk, []string{target}); err != nil {
+			logger.Warn(
+				"stats deletion check for %s: %v", target, err)
+		} else if pending[target] {
+			out, _ := json.Marshal(playerStatsResponse{
+				PlayerID: target,
+				Rating:   unrankedRating,
+			})
+			return string(out), nil
+		}
+	}
+
 	resp := playerStatsResponse{
 		PlayerID: target,
 		Rating:   unrankedRating,
