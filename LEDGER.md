@@ -132,11 +132,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP19** · `register_server` accepts made-up request_ids, so junk
   registration rows can pile up. (Agent a654b0d8.) H37 (10-14): still
   true.
-- **SP20** · `Platform.api` / `core/api_client.gd` is still created at
-  startup; its only caller was the deleted `platform_smoke_test.gd`.
-  (Agent a42eb164.)
-- **SP21** · `README.md` still claims a `v1.4.0` tag; this repo has
-  never had one. (Agent a42eb164.)
 - **SP22** · Prod Nakama warns that `console.username` is the default
   (`admin`). The console listens on 127.0.0.1:7351 only. (Agent
   abbaef7c.) H37 (10-14): still true by config, low.
