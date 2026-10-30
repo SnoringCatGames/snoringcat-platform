@@ -52,10 +52,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Next
 
-- **SP34** · The creator cannot leave while others remain (TODO L127)
-  (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7
-  row 5). Levi decided all three on 2026-10-29: HOLD preserved
-  on leave, a party_disband RPC, transferred leader full powers
 - **SP32** · A party invite is a forced join; fix
   `test_party_invite_flow.gd:136-140` with it. Urgent candidate (M to L;
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
@@ -218,6 +214,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
 - **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
 - **SP36** · Blocking stops friend requests and nothing else (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 475d22a (2026-10-29).
 - **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
