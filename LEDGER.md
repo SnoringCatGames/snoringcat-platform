@@ -57,8 +57,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   the next release (2026-10-29): refusing offline invites
   and the consent flow change what 0.56.0 clients see;
   gate is shipping with the first client that handles both
-- **SP28** · A Cancel during `start_matchmaking` leaves a ghost ticket
-  (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3)
 - **SP71** · `match_cancel` without a registration is a no-op; test
   matches leave rows; two wrong test comments (XS to S; batch 3; hopnbop
   `docs/design/H37_systems_audit.md` 3.3)
@@ -206,6 +204,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP28** · A Cancel during `start_matchmaking` leaves a ghost ticket (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 3e2bc1d (2026-10-29).
 - **SP29** · One player's 120 s timeout cancels the whole matched set's allocation (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 6145f01489b6e003012a6e4c30b953acd41a65a0 (2026-10-29).
 - **SP30** · No match forms for anyone while an allocation runs (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in de57ca1 (2026-10-29).
 - **SP44** · Guest device id is not crypto-random (SI-1); token store passphrase is weak (TS-1). Done in b2eb9cd (2026-10-29).
