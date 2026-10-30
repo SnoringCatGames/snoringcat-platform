@@ -125,9 +125,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP9** · `matchmaker_api_client.gd:653` prints `Preview device_id=%s`
   to stdout and godot.log; a device id logs that account in, so it is a
   credential. Crash reports redact it (6b0dc6d7); the log line remains.
-- **SP10** · CLAUDE.md says `nakama-runtime` runs gofmt, but it runs
-  only vet, test and staticcheck; five runtime files aren't gofmt-clean
-  (friends_limits, helpers_test, local_allocator, main, party).
+
 - **SP18** · `match_cancel`: a match participant who knows the
   request_id can tear down that live match. Closing it needs a per-match
   secret handed to the game server (shared with SP27).
@@ -160,9 +158,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP54** · `AutoRemove: true` discards game-server container logs
   (`rt:local_allocator.go:219`) (S; batch 5; hopnbop
   `docs/design/H37_systems_audit.md` 3.5)
-- **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims,
-  MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set (S; batch 7;
-  hopnbop `docs/design/H37_systems_audit.md` 3.5)
 - **SP77** · Edgegap bills a $1 minimum in any month with a deployment
   and the weekly probe deploys there, so the bill is at least $1/mo while
   cost-monitor shows $0.00 (it tracked none of the 5 October probe
@@ -193,6 +188,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims, MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set. Done in 7a5399e (2026-10-29).
+- **SP10** · CLAUDE.md said `nakama-runtime` runs gofmt; four runtime files weren't gofmt-clean. Done in 7a5399e (2026-10-29).
 - **SP49** · V17's broken format string in `sdk:test/compliance/test_account_delete.gd:118`. Done in 6987291 (2026-10-29).
 - **SP50** · Client SDK CI runs no tests (S; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in e9c98f8 (2026-10-29).
 - **SP58** · match_end is not atomic and nothing monitors it (S1, OP2); the stale-row sweep (RT1) (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.4). Done in 12ab013 (2026-10-29).

@@ -12,9 +12,8 @@ This repo is the result of extracting reusable infrastructure out
 of `hopnbop`. Hop 'n Bop is currently the only consumer
 but the system is built to host multiple games.
 
-The active restructure plan lives at
-`~/.claude/plans/in-general-i-ve-been-snoopy-pearl.md` (user's
-machine). Check there for the current phase and next steps.
+The multi-game restructure that produced this repo is recorded
+in hopnbop's `docs/archive/MULTI_GAME_ROADMAP.md`.
 
 ## Architecture
 
@@ -135,18 +134,20 @@ directly on `main`.
 ## Code Style
 
 Follows the same conventions as `hopnbop`:
-- Runtime Go: standard `gofmt`, `staticcheck` clean (the
-  `nakama-runtime` workflow runs both).
+- Runtime Go: standard `gofmt`, `staticcheck` clean. The
+  `nakama-runtime` workflow runs `go vet`, `go test`, and
+  `staticcheck`; gofmt is a local convention, not CI-gated.
 - GDScript: Godot style guide + 80-char lines, tabs, `not` over `!`,
   parens for line wrapping, period-terminated comments. See the
   hopnbop CLAUDE.md for full conventions.
 
 ## Testing
 
-- **Runtime**: `go test ./runtime/...` (when tests exist —
-  most of the runtime is currently smoke-tested via the live
-  `runtime_status` probe and the consuming game's nightly smoke
-  workflow rather than per-package unit tests).
+- **Runtime**: `go vet ./...`, `go test ./...`, and
+  `staticcheck ./...` from `runtime/`; the `nakama-runtime`
+  workflow runs all three on every `runtime/**` push and
+  deploys only if they pass. The `runtime_status` probe and
+  the consuming game's compliance suite cover the live stack.
 - **Client SDK**: GUT, headless. The compliance suite at
   `addons/snoringcat_platform_client/test/compliance/` is the
   contract every consuming game runs in its own CI on submodule
