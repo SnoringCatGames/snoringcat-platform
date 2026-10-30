@@ -154,6 +154,33 @@ func TestMatchEndRejectsUnallocatedRequestID(t *testing.T) {
 	}
 }
 
+func TestMatchCancelWithoutRegistrationSweepsRows(t *testing.T) {
+	// No registration row: the cancel no-ops, but metadata and
+	// synthetic rows for the request must not be left behind.
+	nk := &fakeMatchNk{rows: map[string]string{}}
+	out, err := (&matchLifecycle{}).MatchCancelRpc(
+		context.Background(), testLogger{}, nil, nk,
+		`{"request_id":"`+testRequestID+`"}`)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if !strings.Contains(out, `"noop":true`) {
+		t.Fatalf("response = %s, want noop", out)
+	}
+	want := map[string]bool{
+		matchMetadataCollection + "/" + testRequestID:  false,
+		syntheticMatchCollection + "/" + testRequestID: false,
+	}
+	for _, d := range nk.deletes {
+		want[d] = true
+	}
+	for key, swept := range want {
+		if !swept {
+			t.Errorf("row %s not swept; deletes=%v", key, nk.deletes)
+		}
+	}
+}
+
 func TestMatchEndRejectsUnregisteredRequestID(t *testing.T) {
 	nk := &fakeMatchNk{rows: map[string]string{
 		matchMetadataCollection + "/" + testRequestID: testMetadataAB,

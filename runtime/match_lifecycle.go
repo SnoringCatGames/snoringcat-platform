@@ -579,8 +579,7 @@ func (m *matchLifecycle) MatchEndRpc(
 			}
 			// The level the match was played on (H49); the
 			// game server reports it in match_stats.
-			if levelID, ok := args.Stats["level_id"].(string);
-				ok && levelID != "" {
+			if levelID, ok := args.Stats["level_id"].(string); ok && levelID != "" {
 				entry["level_id"] = levelID
 			}
 			value, _ := json.Marshal(entry)
@@ -738,6 +737,18 @@ func (m *matchLifecycle) MatchCancelRpc(
 		logger.Info(
 			"match_cancel no-op: request_id=%s already cleaned up",
 			args.RequestID)
+		// Still sweep the rows a test match can leave behind
+		// (SP71): metadata and the synthetic marker key on the
+		// same request_id and outlive a cancel that raced the
+		// registration delete.
+		if err := nk.StorageDelete(ctx, []*runtime.StorageDelete{
+			{Collection: matchMetadataCollection, Key: args.RequestID},
+			{Collection: syntheticMatchCollection, Key: args.RequestID},
+		}); err != nil {
+			logger.Warn(
+				"match_cancel sweep request_id=%s: %v",
+				args.RequestID, err)
+		}
 		resp, _ := json.Marshal(
 			map[string]any{"ok": true, "noop": true})
 		return string(resp), nil
