@@ -527,6 +527,31 @@ func getAccountDeletionStatusRpcFactory(
 // getAccountDeletionStatusRpc returns whether the caller's
 // account has an active soft-deletion queue row. Clients hit
 // this on auth_completed and, if pending=true, prompt the user
+// hasPendingDeletion reports whether the user has a soft-delete
+// queued. Session revocation on delete (SP47) reads it from the
+// refresh hook: a queued account cannot refresh, so a second
+// device's session ends when its access token expires. A fresh
+// authenticate still works, which is how the player reaches
+// the cancel prompt.
+func hasPendingDeletion(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	userID string,
+) (bool, error) {
+	reads, err := nk.StorageRead(
+		ctx,
+		[]*runtime.StorageRead{{
+			Collection: accountDeletionCollection,
+			Key:        accountDeletionKey,
+			UserID:     userID,
+		}},
+	)
+	if err != nil {
+		return false, err
+	}
+	return len(reads) > 0, nil
+}
+
 // to either confirm or cancel via cancel_account_deletion.
 // Stage 1.5.
 func getAccountDeletionStatusRpc(

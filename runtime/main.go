@@ -782,19 +782,49 @@ func registerAuthHooks(
 	}
 	if err := initializer.RegisterBeforeSessionRefresh(
 		func(
-			_ context.Context, _ runtime.Logger, _ *sql.DB,
-			_ runtime.NakamaModule,
+			ctx context.Context, logger runtime.Logger,
+			db *sql.DB, nk runtime.NakamaModule,
 			in *api.SessionRefreshRequest,
 		) (*api.SessionRefreshRequest, error) {
-			if err := validateGameIDInVars(
-				in.GetVars(), games); err != nil {
-				return nil, err
-			}
-			return in, nil
+			return beforeSessionRefresh(
+				ctx, logger, db, nk, games, in)
 		}); err != nil {
 		return err
 	}
 	return nil
+}
+
+// beforeSessionRefresh enforces the game_id-in-vars rule and
+// revokes sessions whose account deletion is queued (SP47):
+// the refresh is refused as UNAUTHENTICATED, which the SDK
+// treats as a rejected refresh token and signs the device
+// out. A storage failure fails open with a warning, so a
+// transient error cannot sign every player out.
+func beforeSessionRefresh(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	games *perGameConfig,
+	in *api.SessionRefreshRequest,
+) (*api.SessionRefreshRequest, error) {
+	if err := validateGameIDInVars(in.GetVars(), games); err != nil {
+		return nil, err
+	}
+	userID, _ := ctx.Value(
+		runtime.RUNTIME_CTX_USER_ID).(string)
+	if userID != "" {
+		pending, err := hasPendingDeletion(ctx, nk, userID)
+		if err != nil {
+			logger.Warn(
+				"session refresh deletion check user=%s: %v",
+				userID, err)
+		} else if pending {
+			return nil, runtime.NewError(
+				"account deletion pending; sign in to cancel", 16)
+		}
+	}
+	return in, nil
 }
 
 // parseEnvInt reads an int env var with a fallback default.

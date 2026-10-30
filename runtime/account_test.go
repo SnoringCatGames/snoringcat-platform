@@ -1,8 +1,14 @@
+//lint:file-ignore SA1029 nakama-common uses bare strings as context keys.
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
 )
 
 func TestParseLeaderboardIDs(t *testing.T) {
@@ -130,5 +136,75 @@ func TestLeaderboardIDsToScrubEmptyRegistry(t *testing.T) {
 	if len(got) != 1 || got[0] != "ffa" {
 		t.Fatalf("empty registry should return [ffa], got %v",
 			got)
+	}
+}
+
+// fakeDeletionNk answers only StorageRead, for the SP47
+// refresh-revocation tests. Any other method panics through
+// the nil embedded interface.
+type fakeDeletionNk struct {
+	runtime.NakamaModule
+
+	pending bool
+	readErr error
+}
+
+func (f *fakeDeletionNk) StorageRead(
+	_ context.Context, _ []*runtime.StorageRead,
+) ([]*api.StorageObject, error) {
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	if !f.pending {
+		return nil, nil
+	}
+	return []*api.StorageObject{{
+		Collection: accountDeletionCollection,
+		Key:        accountDeletionKey,
+		UserId:     "user-1",
+		Value:      `{"user_id":"user-1"}`,
+	}}, nil
+}
+
+func refreshCtx(userID string) context.Context {
+	return context.WithValue(
+		context.Background(), runtime.RUNTIME_CTX_USER_ID, userID)
+}
+
+func TestRefreshAllowedWithoutPendingDeletion(t *testing.T) {
+	nk := &fakeDeletionNk{}
+	in := &api.SessionRefreshRequest{
+		Token: "refresh", Vars: map[string]string{"game_id": "hopnbop"}}
+	out, err := beforeSessionRefresh(
+		refreshCtx("user-1"), testLogger{}, nil, nk,
+		newTestGames(t, nil), in)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if out != in {
+		t.Fatalf("out = %v, want the request back", out)
+	}
+}
+
+func TestRefreshRefusedWithPendingDeletion(t *testing.T) {
+	nk := &fakeDeletionNk{pending: true}
+	in := &api.SessionRefreshRequest{
+		Token: "refresh", Vars: map[string]string{"game_id": "hopnbop"}}
+	_, err := beforeSessionRefresh(
+		refreshCtx("user-1"), testLogger{}, nil, nk,
+		newTestGames(t, nil), in)
+	if errorCode(err) != 16 {
+		t.Fatalf("err = %v, want UNAUTHENTICATED (16)", err)
+	}
+}
+
+func TestRefreshFailsOpenOnStorageError(t *testing.T) {
+	nk := &fakeDeletionNk{readErr: errors.New("db down")}
+	in := &api.SessionRefreshRequest{
+		Token: "refresh", Vars: map[string]string{"game_id": "hopnbop"}}
+	if _, err := beforeSessionRefresh(
+		refreshCtx("user-1"), testLogger{}, nil, nk,
+		newTestGames(t, nil), in); err != nil {
+		t.Fatalf("err = %v, want fail-open nil", err)
 	}
 }
