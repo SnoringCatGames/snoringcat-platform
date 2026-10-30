@@ -99,20 +99,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
-- **SP81** · Bump the indirect pins in
-  infra/pulumi/snoringcat-platform/go.mod (unchanged since eb5452c,
-  2026-05-04), which 28 advisories cover, 7 critical: x/crypto 0.52.0,
-  go-git 5.19.2, grpc 1.83.2, go-billy 5.9.0, klauspost/compress 1.18.7,
-  x/net 0.55.0, otel 1.45.0; then go mod tidy, go build ./... and pulumi
-  preview, expecting no changes (Tier 6;
-  dependency-vulnerability-roundup 2026-10-28); residual
-- **SP82** · No Dependabot snapshot has listed the 28 Pulumi advisories.
-  Check whether alerts are on (gh api
-  repos/SnoringCatGames/snoringcat-platform/vulnerability-alerts -i),
-  what dependabot/alerts?state=open returns, and whether
-  dependency-graph/sbom lists the Pulumi deps; settle coverage before
-  the bump (Tier 6; dependency-vulnerability-roundup 2026-10-28);
-  question
 
 ## Residuals (known, not fixed)
 
@@ -183,6 +169,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP81** · The pulumi stack bumps (aws 1.1.0, kubernetes 4.6.1, random 4.3.1, tls 4.1.1) no longer exist in any go.mod here; Dependabot proposes nothing (no PRs, no alerts, no dependabot.yml; checked 2026-10-29). Stale; closed without action.
+- **SP82** · Check what Dependabot proposes and land its pulumi version pins with `pulumi preview`. Done in the SP81 entry above: it proposes nothing (2026-10-29).
 - **SP20** · `Platform.api` / `core/api_client.gd` was still created at startup; its only caller is gone. Done in 99c9195 (2026-10-29).
 - **SP21** · `README.md` claimed a `v1.4.0` tag; this repo has never had a tag. Done in 99c9195 (2026-10-29).
 - **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims, MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set. Done in 7a5399e (2026-10-29).
