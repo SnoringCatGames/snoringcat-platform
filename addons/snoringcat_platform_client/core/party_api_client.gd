@@ -20,6 +20,7 @@ signal party_ready_updated(data: Dictionary)
 signal party_invite_code_received(data: Dictionary)
 signal party_invite_code_redeemed(data: Dictionary)
 signal party_leader_transferred(data: Dictionary)
+signal party_disbanded(data: Dictionary)
 signal request_failed(error: String)
 
 
@@ -535,6 +536,24 @@ func transfer_leadership(
 	party_leader_transferred.emit(
 		data if data is Dictionary else
 		{"party_id": party_id, "leader_id": target_user_id})
+
+
+## End the party for everyone (SP34). Leader-only; the
+## runtime deletes the group and its party rows, and every
+## member learns through the disbanded notification.
+func disband_party(party_id: String) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_disband",
+		JSON.stringify({"party_id": party_id}))
+	if rpc_result.is_exception():
+		request_failed.emit(_describe(rpc_result.get_exception()))
+		return
+	var data: Variant = JSON.parse_string(rpc_result.payload)
+	party_disbanded.emit(
+		data if data is Dictionary else {"party_id": party_id})
 
 
 ## Signals every member to join the leader's realtime party, so the
