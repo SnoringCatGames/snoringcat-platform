@@ -184,6 +184,18 @@ func test_party_pair_matched_into_same_mock_deploy() -> void:
 	b_sock.received_matchmaker_matched.connect(b_capture._on_matched)
 	b_sock.received_notification.connect(b_capture._on_notification)
 
+	# Step 4.5: both members ready up. The server-side ready
+	# gate (SP33) refuses a start while anyone is unready.
+	for token in [str(a.token), str(b.token)]:
+		var ready_resp: Dictionary = await _helper.session_rpc(
+			"party_set_ready",
+			token,
+			{"party_id": party_id, "ready": true})
+		assert_eq(
+			ready_resp.status_code, 200,
+			"party_set_ready: status=%d body=%s"
+				% [ready_resp.status_code, ready_resp.text])
+
 	# Step 5: leader (A) calls party_start_matchmaking. Response
 	# carries matchmaker_properties + leader_id + member_ids.
 	var start_resp: Dictionary = await _helper.session_rpc(

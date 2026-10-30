@@ -393,6 +393,18 @@ func partyStartMatchmakingRpc(
 			"only an active party member can start matchmaking", 7)
 	}
 
+	// Server-side ready gate (SP33): every active member
+	// must be ready, not just whoever pressed Start.
+	ready, err := allMembersReady(ctx, nk, args.PartyID, memberIDs)
+	if err != nil {
+		logger.Error("allMembersReady(%s): %v", args.PartyID, err)
+		return "", err
+	}
+	if !ready {
+		return "", runtime.NewError(
+			"not all party members are ready", 9)
+	}
+
 	// Dispatch the start notification to every OTHER active member.
 	//
 	// `leader_id` carries the resolved party leader (informational;
