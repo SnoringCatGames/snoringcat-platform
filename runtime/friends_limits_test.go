@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
 )
 
 // fakeClock returns a controllable now() the tests can advance.
@@ -136,5 +140,97 @@ func TestFriendsLimitsConstantsStable(t *testing.T) {
 			"friendCodeRateLimitWindow changed; update"+
 				" MULTI_GAME_ROADMAP.md (was 60s, got %v)",
 			friendCodeRateLimitWindow)
+	}
+}
+
+// fakeAddFriendsNk answers FriendsList for the SP35 hook
+// tests: outgoing holds that many state=1 rows, incoming the
+// given state=2 requester ids. Any other method panics
+// through the nil embedded interface.
+type fakeAddFriendsNk struct {
+	runtime.NakamaModule
+
+	outgoing int
+	incoming []string
+}
+
+func (f *fakeAddFriendsNk) FriendsList(
+	_ context.Context, _ string, _ int, state *int, _ string,
+) ([]*api.Friend, string, error) {
+	if state != nil && *state == friendStateInviteReceived {
+		out := []*api.Friend{}
+		for _, id := range f.incoming {
+			out = append(out, &api.Friend{
+				User: &api.User{Id: id}})
+		}
+		return out, "", nil
+	}
+	out := []*api.Friend{}
+	for i := 0; i < f.outgoing; i++ {
+		out = append(out, &api.Friend{
+			User: &api.User{Id: "pending"}})
+	}
+	return out, "", nil
+}
+
+func TestAcceptExemptFromPendingCap(t *testing.T) {
+	nk := &fakeAddFriendsNk{
+		outgoing: maxPendingOutgoingFriendRequests,
+		incoming: []string{"u2"}}
+	limiter, _ := newTestLimiter()
+	in := &api.AddFriendsRequest{Ids: []string{"u2"}}
+	if err := checkAddFriends(
+		context.Background(), nk, limiter, "u1", in); err != nil {
+		t.Fatalf("accept at cap: err = %v, want nil", err)
+	}
+}
+
+func TestNewAddBlockedAtPendingCap(t *testing.T) {
+	nk := &fakeAddFriendsNk{
+		outgoing: maxPendingOutgoingFriendRequests}
+	limiter, _ := newTestLimiter()
+	in := &api.AddFriendsRequest{Ids: []string{"u3"}}
+	err := checkAddFriends(
+		context.Background(), nk, limiter, "u1", in)
+	if errorCode(err) != 9 {
+		t.Fatalf("new add at cap: err = %v, want code 9", err)
+	}
+}
+
+func TestAcceptSkipsRateLimit(t *testing.T) {
+	nk := &fakeAddFriendsNk{incoming: []string{"u2"}}
+	limiter, _ := newTestLimiter()
+	for i := 0; i < friendCodeRateLimitCount; i++ {
+		limiter.allowFriendCodeCall("u1")
+	}
+	accept := &api.AddFriendsRequest{Ids: []string{"u2"}}
+	if err := checkAddFriends(
+		context.Background(), nk, limiter, "u1", accept); err != nil {
+		t.Fatalf("accept with burned budget: err = %v", err)
+	}
+	newAdd := &api.AddFriendsRequest{Ids: []string{"u3"}}
+	err := checkAddFriends(
+		context.Background(), nk, limiter, "u1", newAdd)
+	if errorCode(err) != 8 {
+		t.Fatalf("new add with burned budget: err = %v, want 8", err)
+	}
+}
+
+func TestNewFriendRequestCount(t *testing.T) {
+	incoming := map[string]bool{"u2": true}
+	cases := []struct {
+		ids, usernames []string
+		want           int
+	}{
+		{[]string{"u2"}, nil, 0},
+		{[]string{"u2", "u3"}, nil, 1},
+		{nil, []string{"code1"}, 1},
+		{[]string{"u3"}, []string{"code1"}, 2},
+	}
+	for i, tc := range cases {
+		if got := newFriendRequestCount(
+			tc.ids, tc.usernames, incoming); got != tc.want {
+			t.Errorf("case %d: got %d, want %d", i, got, tc.want)
+		}
 	}
 }

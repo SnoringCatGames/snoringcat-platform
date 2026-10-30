@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
 )
 
 func TestPartyInviteCodeKeys(t *testing.T) {
@@ -61,5 +65,53 @@ func TestPartyInviteCodeAlphabetExclusions(t *testing.T) {
 	if len(partyInviteCodeAlphabet) != 32 {
 		t.Errorf("alphabet length = %d, want 32 (modulo-bias free)",
 			len(partyInviteCodeAlphabet))
+	}
+}
+
+// fakePartyGateNk stubs the reads the invite and join gates
+// precede, so a missing gate surfaces as a clean code
+// mismatch instead of a panic. Any other method panics
+// through the nil embedded interface.
+type fakePartyGateNk struct {
+	runtime.NakamaModule
+}
+
+func (f *fakePartyGateNk) GroupsGetId(
+	_ context.Context, _ []string,
+) ([]*api.Group, error) {
+	return nil, nil
+}
+
+func (f *fakePartyGateNk) StorageRead(
+	_ context.Context, _ []*runtime.StorageRead,
+) ([]*api.StorageObject, error) {
+	return nil, nil
+}
+
+func burnedLimiter(userID string) *friendsLimiter {
+	limiter, _ := newTestLimiter()
+	for i := 0; i < friendCodeRateLimitCount; i++ {
+		limiter.allowFriendCodeCall(userID)
+	}
+	return limiter
+}
+
+func TestPartyInviteRateLimited(t *testing.T) {
+	_, err := partyInviteRpc(
+		refreshCtx("u1"), testLogger{}, &fakePartyGateNk{},
+		newTestGames(t, nil), burnedLimiter("u1"),
+		`{"party_id":"party-1","target_id":"u2"}`)
+	if errorCode(err) != 8 {
+		t.Fatalf("invite over limit: err = %v, want code 8", err)
+	}
+}
+
+func TestPartyJoinByCodeRateLimited(t *testing.T) {
+	_, err := partyJoinByCodeRpc(
+		refreshCtx("u1"), testLogger{}, &fakePartyGateNk{},
+		newTestGames(t, nil), burnedLimiter("u1"),
+		`{"code":"ABC234"}`)
+	if errorCode(err) != 8 {
+		t.Fatalf("join over limit: err = %v, want code 8", err)
 	}
 }

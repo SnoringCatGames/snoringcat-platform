@@ -617,6 +617,7 @@ type partyInviteArgs struct {
 
 func partyInviteRpcFactory(
 	games *perGameConfig,
+	limiter *friendsLimiter,
 ) func(
 	context.Context, runtime.Logger, *sql.DB,
 	runtime.NakamaModule, string,
@@ -628,7 +629,7 @@ func partyInviteRpcFactory(
 		nk runtime.NakamaModule,
 		payload string,
 	) (string, error) {
-		return partyInviteRpc(ctx, logger, nk, games, payload)
+		return partyInviteRpc(ctx, logger, nk, games, limiter, payload)
 	}
 }
 
@@ -648,6 +649,7 @@ func partyInviteRpc(
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
+	limiter *friendsLimiter,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
@@ -668,6 +670,11 @@ func partyInviteRpc(
 	}
 	if args.TargetID == userID {
 		return "", runtime.NewError("cannot invite yourself", 3)
+	}
+	if limiter != nil && !limiter.allowFriendCodeCall(userID) {
+		return "", runtime.NewError(
+			"invite rate limit exceeded; wait a minute"+
+				" and try again", 8)
 	}
 
 	groups, err := nk.GroupsGetId(ctx, []string{args.PartyID})
@@ -2260,6 +2267,7 @@ type partyJoinByCodeResp struct {
 
 func partyJoinByCodeRpcFactory(
 	games *perGameConfig,
+	limiter *friendsLimiter,
 ) func(
 	context.Context, runtime.Logger, *sql.DB,
 	runtime.NakamaModule, string,
@@ -2272,7 +2280,7 @@ func partyJoinByCodeRpcFactory(
 		payload string,
 	) (string, error) {
 		return partyJoinByCodeRpc(
-			ctx, logger, nk, games, payload)
+			ctx, logger, nk, games, limiter, payload)
 	}
 }
 
@@ -2290,6 +2298,7 @@ func partyJoinByCodeRpc(
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
+	limiter *friendsLimiter,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
@@ -2321,6 +2330,12 @@ func partyJoinByCodeRpc(
 			return "", runtime.NewError(
 				"invalid character in code", 3)
 		}
+	}
+
+	if limiter != nil && !limiter.allowFriendCodeCall(userID) {
+		return "", runtime.NewError(
+			"join rate limit exceeded; wait a minute"+
+				" and try again", 8)
 	}
 
 	// Forward lookup: code → party_id.

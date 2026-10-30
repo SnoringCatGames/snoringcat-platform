@@ -77,7 +77,7 @@ const (
 // by the Nakama FriendsList round trip anyway. A plain map+mutex
 // is the simpler model.
 type friendsLimiter struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	windows map[string][]int64
 
 	// now is a clock indirection for tests. Defaults to
@@ -162,46 +162,104 @@ func registerFriendsLimitHook(
 				return in, nil
 			}
 
-			// 7.13 rate-limit. Only fires when usernames are in
-			// the request — Ids-only paths (e.g. accept-incoming,
-			// recent-match add) don't expose codes to brute-
-			// force. The state-1 cap below still applies to both.
-			if len(in.GetUsernames()) > 0 {
-				if !limiter.allowFriendCodeCall(userID) {
-					return nil, runtime.NewError(
-						"friend-code rate limit exceeded; wait a"+
-							" minute and try again", 8)
-				}
+			if err := checkAddFriends(
+				ctx, nk, limiter, userID, in); err != nil {
+				return nil, err
 			}
-
-			// 7.12 max pending. Count the caller's current
-			// state=1 (INVITE_SENT) entries. Nakama's FriendsList
-			// returns at most 100 per page; we cap at
-			// (maxPendingOutgoingFriendRequests+1) pages so
-			// "user already over cap with 5000 pending" still
-			// rejects without spending 50 round trips. The +1
-			// page gives us the "≥cap" answer with one extra
-			// read.
-			pending, err := countOutgoingPending(
-				ctx, nk, userID,
-				maxPendingOutgoingFriendRequests+1)
-			if err != nil {
-				return nil, runtime.NewError(
-					"failed to enforce friend-request limit", 13)
-			}
-			// Each entry in the inbound request creates one new
-			// pending row (assuming none auto-accept; that's
-			// fine, the worst case overcount is the request
-			// size). Count both Ids + Usernames against the cap.
-			newCount := len(in.GetIds()) + len(in.GetUsernames())
-			if pending+newCount > maxPendingOutgoingFriendRequests {
-				return nil, runtime.NewError(
-					"too many pending friend requests; resolve"+
-						" some before sending more", 9)
-			}
-
 			return in, nil
 		})
+}
+
+// checkAddFriends applies the SP35 rules to one AddFriends
+// request. An add whose target already invited the caller is
+// an accept, not a new request: accepts are exempt from both
+// the rate limit and the pending cap, so 50 pending outgoing
+// requests can no longer block every accept. Anything else
+// counts as a new request against both.
+func checkAddFriends(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	limiter *friendsLimiter,
+	userID string,
+	in *api.AddFriendsRequest,
+) error {
+	incoming := map[string]bool{}
+	if len(in.GetIds()) > 0 {
+		var err error
+		incoming, err = incomingRequesters(ctx, nk, userID)
+		if err != nil {
+			return runtime.NewError(
+				"failed to enforce friend-request limit", 13)
+		}
+	}
+	newCount := newFriendRequestCount(
+		in.GetIds(), in.GetUsernames(), incoming)
+	if newCount == 0 {
+		return nil
+	}
+	if !limiter.allowFriendCodeCall(userID) {
+		return runtime.NewError(
+			"friend add rate limit exceeded; wait a"+
+				" minute and try again", 8)
+	}
+	pending, err := countOutgoingPending(
+		ctx, nk, userID, maxPendingOutgoingFriendRequests+1)
+	if err != nil {
+		return runtime.NewError(
+			"failed to enforce friend-request limit", 13)
+	}
+	if pending+newCount > maxPendingOutgoingFriendRequests {
+		return runtime.NewError(
+			"too many pending friend requests; resolve"+
+				" some before sending more", 9)
+	}
+	return nil
+}
+
+// newFriendRequestCount counts the entries that would create
+// a new outgoing request: every username add, plus each id
+// add whose target has not already invited the caller.
+func newFriendRequestCount(
+	ids, usernames []string,
+	incoming map[string]bool,
+) int {
+	count := len(usernames)
+	for _, id := range ids {
+		if !incoming[id] {
+			count++
+		}
+	}
+	return count
+}
+
+// incomingRequesters returns the ids that have a pending
+// incoming request to the caller (state=2), paged like
+// countOutgoingPending.
+func incomingRequesters(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	userID string,
+) (map[string]bool, error) {
+	state := friendStateInviteReceived
+	out := map[string]bool{}
+	cursor := ""
+	for i := 0; i < maxPendingOutgoingFriendRequests+1; i++ {
+		friends, next, err := nk.FriendsList(
+			ctx, userID, 100, &state, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range friends {
+			if f.User != nil && f.User.Id != "" {
+				out[f.User.Id] = true
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
 }
 
 // countOutgoingPending returns the caller's INVITE_SENT (state=1)
@@ -241,3 +299,8 @@ func countOutgoingPending(
 // a typed const so test code can name it the same way production
 // does.
 const friendStateInviteSent = 1
+
+// friendStateInviteReceived is the state=2 (INVITE_RECEIVED)
+// counterpart: they invited the caller, who has not yet
+// responded. An AddFriends naming one of them is an accept.
+const friendStateInviteReceived = 2

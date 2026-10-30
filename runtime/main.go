@@ -322,6 +322,8 @@ func InitModule(
 	// rate limit, so they must count against one budget rather than
 	// two independent ones.
 	sharedFriendsLimiter := newFriendsLimiter()
+	partyInviteLimiter := newFriendsLimiter()
+	partyJoinLimiter := newFriendsLimiter()
 	if err := registerFriendsLimitHook(
 		initializer, sharedFriendsLimiter); err != nil {
 		return err
@@ -572,7 +574,7 @@ func InitModule(
 	}
 	if err := addRpc(
 		"party_invite",
-		partyInviteRpcFactory(games)); err != nil {
+		partyInviteRpcFactory(games, partyInviteLimiter)); err != nil {
 		return err
 	}
 	if err := addRpc(
@@ -602,7 +604,7 @@ func InitModule(
 	}
 	if err := addRpc(
 		"party_join_by_code",
-		partyJoinByCodeRpcFactory(games)); err != nil {
+		partyJoinByCodeRpcFactory(games, partyJoinLimiter)); err != nil {
 		return err
 	}
 	if err := addRpc(
