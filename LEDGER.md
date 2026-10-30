@@ -65,9 +65,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   the next release (2026-10-29): refusing offline invites
   and the consent flow change what 0.56.0 clients see;
   gate is shipping with the first client that handles both
-- **SP40** · The notification poll is frozen on the oldest 50 rows
-  (server half) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md`
-  3.2)
 - **SP45** · A refresh emits the sign-in's `auth_completed(true, "")`
   (SL-1; `global.gd:388-392`). Fix: a separate `session_refreshed`
   signal (S; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1)
@@ -192,6 +189,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 8cf642b (2026-10-29).
 - **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
 - **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
+- **SP40** · Notification rows older than 30 days are pruned by the account cron (server half of H54). Done in 078d9b8 (2026-10-29).
 - **SP36** · Blocking stops friend requests and nothing else (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 475d22a (2026-10-29).
 - **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
 - **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
