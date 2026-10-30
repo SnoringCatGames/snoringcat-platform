@@ -44,13 +44,12 @@ jobs:
       - name: Verify Godot
         run: ~/godot/godot --version
 
-      - name: Compliance-suite coverage notice
+      # SP50: the suite used to run only inside the consuming
+      # game's smoke test, so this workflow ran no tests at all.
+      # run.sh builds the runtime plugin, starts infra/dev,
+      # registers a throwaway game, and runs the compliance
+      # suite in a minimal Godot project (SDK + GUT + nakama).
+      - name: Run compliance suite standalone
         env:
-          PLATFORM_COMPLIANCE_MODE: mock
-        run: |
-          if [ -d addons/snoringcat_platform_client/test/compliance ] \
-              && [ "$(find addons/snoringcat_platform_client/test/compliance -name 'test_*.gd' | head -1)" ]; then
-            echo "::notice::Compliance tests run as part of the consuming game's Tier 4 dev-stack smoke (hopnbop/scripts/local-smoke-test.ps1 + .github/workflows/compliance-matrix.yml). No standalone fixture-Godot project planned."
-          else
-            echo "::notice::No compliance tests in tree yet."
-          fi
+          GODOT: ${{ env.HOME }}/godot/godot
+        run: bash .github/compliance/run.sh

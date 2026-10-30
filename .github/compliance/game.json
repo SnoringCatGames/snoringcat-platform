@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "game_id": "sdkci",
+  "display_name": "SDK CI",
+  "edgegap_app_slug": "sdkci-server",
+  "edgegap_app_version": "v1",
+  "allocator_mode": "local",
+  "local_image_ref": "sdkci-server:v1",
+  "protocol_version": 1,
+  "display_version": "0.0.1",
+  "ports": {
+    "game": "4433/udp",
+    "signaling": "4434/tcp"
+  },
+  "transports": ["enet", "webrtc"],
+  "auth_providers": ["anonymous", "google", "facebook"],
+  "matchmaker_rules": {
+    "min_players": 2,
+    "max_players": 4,
+    "ticket_expiry_seconds": 60,
+    "cross_play": true,
+    "rules": [],
+    "modes": [
+      {
+        "id": "ffa",
+        "display_name_key": "MODE.FFA_NAME",
+        "description_key": "MODE.FFA_DESC",
+        "min_players": 2,
+        "max_players": 4,
+        "query": "+properties.game_mode:ffa",
+        "is_default": true
+      },
+      {
+        "id": "duo",
+        "display_name_key": "MODE.DUO_NAME",
+        "description_key": "MODE.DUO_DESC",
+        "min_players": 2,
+        "max_players": 2,
+        "query": "+properties.game_mode:duo",
+        "is_default": false
+      }
+    ]
+  },
+  "leaderboards": [
+    {"id": "ffa", "sort": "desc", "operator": "best", "reset_schedule": null}
+  ],
+  "legal": {
+    "terms_path": "legal/en/terms.txt",
+    "privacy_path": "legal/en/privacy.txt",
+    "data_deletion_path": "legal/en/data_deletion.txt",
+    "legal_version": "1.2"
+  }
+}

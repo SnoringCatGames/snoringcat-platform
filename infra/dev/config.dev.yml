@@ -1,0 +1,52 @@
+# Dev-only Nakama config. Trimmed to what the compliance suite
+# needs; no OAuth, no signaling proxy, no observability scrape
+# endpoint. Sensitive values come via CLI flags from the
+# entrypoint in `docker-compose.dev.yml`.
+#
+# NOTE: Nakama does NOT expand `${X}` in this file (prod renders
+# it with `phase-a.ps1` before SCP). All `runtime.env` values
+# below are hardcoded literals.
+name: nakama-dev
+data_dir: "/nakama/data"
+
+logger:
+  level: "DEBUG"
+  format: "json"
+  stdout: true
+
+socket:
+  port: 7350
+  read_buffer_size_bytes: 4096
+  write_buffer_size_bytes: 4096
+
+session:
+  token_expiry_sec: 7200
+  refresh_token_expiry_sec: 604800
+
+# Matches the prod tuning so timing-sensitive tests (cancel-
+# race, protocol-mismatch fan-out) see the same intervals.
+matchmaker:
+  interval_sec: 1
+  max_intervals: 10
+
+console:
+  username: "admin"
+  port: 7351
+
+# Env vars exposed to the Go runtime plugin via the
+# `runtime.RUNTIME_CTX_ENV` context value. Hardcoded literals
+# because Nakama does not interpolate ${X} placeholders.
+runtime:
+  env:
+    - "EDGEGAP_MOCK_DEPLOY=true"
+    - "EDGEGAP_APP_NAME=hopnbop-server"
+    - "EDGEGAP_APP_VERSION=v-dev"
+    - "NAKAMA_GAME_VERSION=dev"
+    - "NAKAMA_PROTOCOL_VERSION=2"
+    - "SIGNALING_DOMAIN=dev.invalid"
+    - "SIGNALING_HMAC_SECRET=dev-not-a-secret"
+    # register_game needs it (with the HTTP key). Fixed dev value,
+    # like the placeholder keys in docker-compose.dev.yml; the
+    # smoke script and sync-game-config.ps1 send it to loopback
+    # stacks.
+    - "GAME_ADMIN_KEY=defaultadminkey"
