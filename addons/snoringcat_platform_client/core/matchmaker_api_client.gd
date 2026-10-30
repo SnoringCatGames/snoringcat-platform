@@ -81,6 +81,10 @@ var _socket_auth_user_id := ""
 var _ticket: String = ""
 var _is_searching := false
 var _elapsed_timer: Timer = null
+## True once the runtime says allocation started (SP29).
+## From then on a local timeout gives up alone instead of
+## cancelling the whole matched set's allocation.
+var _is_allocating := false
 var _elapsed_sec := 0.0
 
 ## Nakama *realtime* party id, when this client is matchmaking as
@@ -241,6 +245,7 @@ func start_matchmaking(
 ## timeout — and the stale `_rt_party_id` would make a later solo
 ## cancel take the party-ticket branch against a solo ticket.
 func cancel_matchmaking() -> void:
+	_is_allocating = false
 	if _is_searching:
 		_is_searching = false
 		_elapsed_timer.stop()
@@ -683,6 +688,7 @@ func _on_matchmaker_matched(matched) -> void:
 func _on_notification(p_notification) -> void:
 	if p_notification.subject == _MATCH_ALLOCATING_SUBJECT:
 		if _is_searching:
+			_is_allocating = true
 			_elapsed_sec = 0.0
 			progress_updated.emit("placing", 0.0, -1.0)
 		return
@@ -695,6 +701,7 @@ func _on_notification(p_notification) -> void:
 		# Stale notification arriving after we already cancelled
 		# or moved on.
 		return
+	_is_allocating = false
 	_is_searching = false
 	_elapsed_timer.stop()
 
@@ -801,9 +808,22 @@ func _on_notification(p_notification) -> void:
 	})
 
 
+## Local give-up after allocation started (SP29): stop the
+## timer and drop the ticket without the shared cancel RPC,
+## so the rest of the matched set keeps its allocation.
+func _abandon_allocating() -> void:
+	_is_allocating = false
+	_is_searching = false
+	_elapsed_timer.stop()
+	_ticket = ""
+	if not _rt_party_id.is_empty():
+		leave_rt_party()
+
+
 func _handle_match_failed(p_notification) -> void:
 	if not _is_searching:
 		return
+	_is_allocating = false
 	_is_searching = false
 	_elapsed_timer.stop()
 
@@ -862,7 +882,13 @@ func _pick_port(
 func _on_elapsed_tick() -> void:
 	_elapsed_sec += _PROGRESS_TICK_SEC
 	if _elapsed_sec > _MATCH_TIMEOUT_SEC:
-		cancel_matchmaking()
+		if _is_allocating:
+			# One player's timeout must not cancel the whole
+			# matched set (SP29): give up locally, leave the
+			# shared allocation running for everyone else.
+			_abandon_allocating()
+		else:
+			cancel_matchmaking()
 		matchmaking_failed.emit(
 			"Matchmaking timed out after %.0f seconds"
 			% _MATCH_TIMEOUT_SEC)
