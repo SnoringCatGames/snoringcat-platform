@@ -618,6 +618,11 @@ func InitModule(
 		return err
 	}
 	if err := addRpc(
+		"party_disband",
+		partyDisbandRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
 		"party_transfer_leadership",
 		partyTransferLeadershipRpcFactory(games)); err != nil {
 		return err

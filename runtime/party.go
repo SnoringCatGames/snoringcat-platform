@@ -72,6 +72,7 @@ const (
 	partyEventReadyChanged  partyEvent = "ready_changed"
 	partyEventLeaderChanged partyEvent = "leader_changed"
 	partyEventModeChanged   partyEvent = "mode_changed"
+	partyEventDisbanded     partyEvent = "disbanded"
 )
 
 // partyLeaderCollection holds the optional "current leader"
@@ -1269,8 +1270,8 @@ func afterLeaveGroupHook(
 	if leaver != "" {
 		extras = append(extras, leaver)
 	}
-	clearPartyReadyRows(
-		ctx, logger, nk, in.GetGroupId(), extras)
+	// HOLD (SP34): surviving members keep their ready rows
+	// when someone leaves; only a join resets readiness.
 	// If the leaver was the current (override-aware) leader, auto-
 	// transfer to a remaining active member so the party isn't
 	// stranded with no leader. This also handles the case where the
@@ -1296,9 +1297,8 @@ func afterKickGroupUsersHook(
 	in *api.KickGroupUsersRequest,
 ) error {
 	// Kicked users are gone from GroupUsersList; include them
-	// explicitly so their UI sees the kick.
-	clearPartyReadyRows(
-		ctx, logger, nk, in.GetGroupId(), in.GetUserIds())
+	// explicitly so their UI sees the kick. Surviving members
+	// keep their ready rows (HOLD, SP34).
 	// If any kicked user was the current leader, auto-transfer to
 	// keep the surviving party functional. The "leader kicks self"
 	// path isn't reachable via the client UI (kick_member checks
