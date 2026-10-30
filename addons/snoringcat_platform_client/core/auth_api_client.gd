@@ -1382,6 +1382,11 @@ func _check_auto_refresh() -> void:
 		return
 	if _is_refreshing:
 		return
+	# A refresh that lands while a link, unlink or delete waits
+	# for its own result would be reported as that flow's result
+	# (LK-1). Wait for the flow to finish; the next tick retries.
+	if _is_linking or _is_unlinking or _is_deleting:
+		return
 	var now := Time.get_unix_time_from_system()
 	if now - _last_refresh_time < _REFRESH_COOLDOWN_SEC:
 		return
