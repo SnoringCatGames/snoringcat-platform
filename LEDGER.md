@@ -129,6 +129,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   dependency-graph/sbom lists the Pulumi deps; settle coverage before
   the bump (Tier 6; dependency-vulnerability-roundup 2026-10-28);
   question
+- **SP30** · No match forms for anyone while an allocation runs (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Note: 8ebbad2 (2026-10-29) fixed the L1 stats leak under this ID by mistake; the allocation work below is still open
 
 ## Residuals (known, not fixed)
 
@@ -209,7 +210,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
-- **SP30** · No match forms for anyone while an allocation runs (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 8ebbad2 (2026-10-29).
 - **SP44** · Guest device id is not crypto-random (SI-1); token store passphrase is weak (TS-1). Done in b2eb9cd (2026-10-29).
 - **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 8cf642b (2026-10-29).
 - **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
