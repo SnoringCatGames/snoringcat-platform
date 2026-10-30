@@ -39,9 +39,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP17** · Google sign-in has never run end to end with a real
   account. Needs Levi at a browser for two minutes:
   `scripts/test-google-auth.py` (6ffa5fd).
-- **SP34** · The creator cannot leave while others remain (TODO L127)
-  (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7
-  row 5)
 - **SP69** · One account can queue from two devices (TD-1, TODO L112)
   (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1 list,
   section 7 row 7)
@@ -55,6 +52,10 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Next
 
+- **SP34** · The creator cannot leave while others remain (TODO L127)
+  (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7
+  row 5). Levi decided all three on 2026-10-29: HOLD preserved
+  on leave, a party_disband RPC, transferred leader full powers
 - **SP32** · A party invite is a forced join; fix
   `test_party_invite_flow.gd:136-140` with it. Urgent candidate (M to L;
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
