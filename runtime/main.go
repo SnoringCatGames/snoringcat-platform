@@ -300,6 +300,9 @@ func InitModule(
 	// Clients subscribed via a Nakama realtime socket refresh
 	// their local party state on receipt, replacing the legacy
 	// polling cadence in party_manager.gd.
+	if err := registerStorageAllowlistHook(initializer); err != nil {
+		return err
+	}
 	if err := registerAccountValidationHook(initializer); err != nil {
 		return err
 	}

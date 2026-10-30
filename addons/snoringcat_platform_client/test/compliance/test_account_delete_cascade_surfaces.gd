@@ -117,12 +117,13 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 		group_id.is_empty(),
 		"create-group missing id: %s" % create.text)
 
-	# Step 3: write two user-owned storage rows in a custom
-	# collection. permission_read=1 / permission_write=1 mirrors
-	# the typical client-owned shape (owner-only). The cascade
-	# walks every collection via nk.StorageList so it should
-	# reach these regardless of collection name.
-	var custom_collection := "compliance_gdpr_test"
+	# Step 3: write two user-owned storage rows under
+	# non-standard keys. permission_read=1 / permission_write=1
+	# mirrors the typical client-owned shape (owner-only). The
+	# cascade deletes every user row server-side, so it should
+	# reach these regardless of key. (SP59 allows clients only
+	# the settings and recent_players collections.)
+	var custom_collection := "settings"
 	var write_body := {
 		"objects": [
 			{
