@@ -85,6 +85,12 @@ var _elapsed_timer: Timer = null
 ## From then on a local timeout gives up alone instead of
 ## cancelling the whole matched set's allocation.
 var _is_allocating := false
+## Bumped by every start and every cancel (SP28). A start
+## suspended in an await compares its captured value after
+## the await: a mismatch means Cancel landed meanwhile, so
+## the just-created ticket is withdrawn instead of going
+## live as a ghost.
+var _search_generation := 0
 var _elapsed_sec := 0.0
 
 ## Nakama *realtime* party id, when this client is matchmaking as
@@ -169,6 +175,8 @@ func start_matchmaking(
 	if _is_searching:
 		push_warning("[PlatformMatchmaking] Already searching")
 		return
+	_search_generation += 1
+	var generation := _search_generation
 
 	_preview_device_id = preview_device_id
 	_local_player_count = local_player_count
@@ -201,6 +209,11 @@ func start_matchmaking(
 			ticket_result.get_exception())
 		matchmaking_failed.emit(
 			"Matchmaker add failed: %s" % ticket_ex.message)
+		return
+	if generation != _search_generation:
+		# Cancel landed while the ticket was being created
+		# (SP28): withdraw it and stay out of the pool.
+		_withdraw_ticket(ticket_result.ticket)
 		return
 
 	_ticket = ticket_result.ticket
@@ -244,7 +257,19 @@ func start_matchmaking(
 ## receive `received_party_close` and sit searching until the 120s
 ## timeout — and the stale `_rt_party_id` would make a later solo
 ## cancel take the party-ticket branch against a solo ticket.
+## Withdraw a matchmaker ticket, through the party API when
+## it belongs to a realtime party this client leads.
+func _withdraw_ticket(ticket: String) -> void:
+	if _socket == null or not _socket.is_connected_to_host():
+		return
+	if not _rt_party_id.is_empty() and _is_rt_party_leader:
+		_socket.remove_matchmaker_party_async(_rt_party_id, ticket)
+	else:
+		_socket.remove_matchmaker_async(ticket)
+
+
 func cancel_matchmaking() -> void:
+	_search_generation += 1
 	_is_allocating = false
 	if _is_searching:
 		_is_searching = false
@@ -899,6 +924,12 @@ func _on_elapsed_tick() -> void:
 
 func _on_socket_closed() -> void:
 	print("[PlatformMatchmaking] Socket closed")
+	if _is_searching:
+		# A dead socket cannot deliver match_ready: end the
+		# search like any other failure instead of waiting
+		# for the timeout on a ticket nobody can answer.
+		cancel_matchmaking()
+		matchmaking_failed.emit("Connection to the matchmaker was lost")
 
 
 func _on_socket_connection_error(error) -> void:
