@@ -203,7 +203,10 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   fallback; read the server location field (weekly-cost-review
   2026-10-14 finding 4); residual
 - **SP59** · Any session can write unbounded storage (RL3) (M; batch 5;
-  hopnbop `docs/design/H37_systems_audit.md` 3.5)
+  hopnbop `docs/design/H37_systems_audit.md` 3.5). Runtime half
+  done in 3c65a1e (2026-10-29): storage allowlist plus size cap
+  deployed (run 40929281553). Left for Levi: the per-IP Caddy
+  zone (prod host config); residual
 
 ## Ideas (not scheduled)
 
