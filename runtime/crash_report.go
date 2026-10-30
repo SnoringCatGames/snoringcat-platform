@@ -88,8 +88,12 @@ const (
 	// by every HTTP-key caller (all dedicated game servers, and
 	// anyone else holding the key).
 	crashReportServerDailyCap = 200
-	// crashReportGlobalDailyCap is the per-UTC-day budget for all
-	// callers together. It bounds storage: 30 days at the cap and
+	// crashReportGlobalDailyCap is the per-UTC-day budget for
+	// session users. HTTP-key callers draw only on the server
+	// cap above (SP61), so a client flood cannot starve the
+	// servers; the storage bound is the sum of both caps, and
+	// crashReportMaxStored is the hard bound regardless.
+	// (30 days at both caps and
 	// the 16 KiB payload limit is under 250 MB.
 	crashReportGlobalDailyCap = 500
 	// crashReportLimiterSweepSize is the number of tracked users
@@ -465,7 +469,9 @@ func (l *crashReportLimiter) reserve(
 	defer l.mu.Unlock()
 	now := l.now()
 	l.rollDay(now)
-	if l.totalToday >= crashReportGlobalDailyCap {
+	// The global cap binds session users only (SP61):
+	// servers draw on their own budget below.
+	if userID != "" && l.totalToday >= crashReportGlobalDailyCap {
 		if !l.globalCapHit {
 			l.globalCapHit = true
 			firstCapHit = "global"
@@ -493,7 +499,9 @@ func (l *crashReportLimiter) reserve(
 		}
 		l.perUser[userID] = append(stamps, now.UnixNano())
 	}
-	l.totalToday++
+	if userID != "" {
+		l.totalToday++
+	}
 	return "", nil
 }
 
@@ -501,14 +509,14 @@ func (l *crashReportLimiter) reserve(
 func (l *crashReportLimiter) release(userID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.totalToday > 0 {
-		l.totalToday--
-	}
 	if userID == "" {
 		if l.serverToday > 0 {
 			l.serverToday--
 		}
 		return
+	}
+	if l.totalToday > 0 {
+		l.totalToday--
 	}
 	stamps := l.perUser[userID]
 	switch {

@@ -568,8 +568,10 @@ func TestCrashReportLimiterGlobalDailyCap(t *testing.T) {
 	if errorCode(reserveErr(limiter, "fresh-user")) != 8 {
 		t.Fatal("global cap not enforced for a session user")
 	}
-	if errorCode(reserveErr(limiter, "")) != 8 {
-		t.Fatal("global cap not enforced for an HTTP-key caller")
+	// SP61: the global cap no longer starves HTTP-key
+	// callers; servers draw on their own budget.
+	if err := reserveErr(limiter, ""); err != nil {
+		t.Fatalf("global cap starved a server report: %v", err)
 	}
 	clock.advance(6 * time.Hour)
 	if err := reserveErr(limiter, "fresh-user"); err != nil {
