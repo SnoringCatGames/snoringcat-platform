@@ -50,6 +50,4 @@ jobs:
       # registers a throwaway game, and runs the compliance
       # suite in a minimal Godot project (SDK + GUT + nakama).
       - name: Run compliance suite standalone
-        env:
-          GODOT: ${{ env.HOME }}/godot/godot
-        run: bash .github/compliance/run.sh
+        run: GODOT=~/godot/godot bash .github/compliance/run.sh
