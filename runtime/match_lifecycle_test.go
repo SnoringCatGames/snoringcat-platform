@@ -20,11 +20,13 @@ import (
 // expect.
 type fakeMatchNk struct {
 	runtime.NakamaModule
-	rows        map[string]string
-	readErrors  map[string]error
-	writes      []*runtime.StorageWrite
-	deletes     []string
-	leaderboard []string
+	rows            map[string]string
+	readErrors      map[string]error
+	writes          []*runtime.StorageWrite
+	deletes         []string
+	leaderboard     []string
+	leaderboardErr  error
+	storageWriteErr error
 }
 
 func (f *fakeMatchNk) StorageRead(
@@ -47,6 +49,9 @@ func (f *fakeMatchNk) StorageRead(
 func (f *fakeMatchNk) StorageWrite(
 	_ context.Context, writes []*runtime.StorageWrite,
 ) ([]*api.StorageObjectAck, error) {
+	if f.storageWriteErr != nil {
+		return nil, f.storageWriteErr
+	}
 	f.writes = append(f.writes, writes...)
 	return nil, nil
 }
@@ -64,6 +69,9 @@ func (f *fakeMatchNk) LeaderboardRecordWrite(
 	_ context.Context, id, ownerID, _ string, _, _ int64,
 	_ map[string]interface{}, _ *int,
 ) (*api.LeaderboardRecord, error) {
+	if f.leaderboardErr != nil {
+		return nil, f.leaderboardErr
+	}
 	f.leaderboard = append(f.leaderboard, id+"/"+ownerID)
 	return &api.LeaderboardRecord{}, nil
 }
@@ -151,6 +159,24 @@ func TestMatchEndRejectsUnallocatedRequestID(t *testing.T) {
 		t.Errorf("refused call had side effects: writes=%d"+
 			" deletes=%v leaderboard=%v",
 			len(nk.writes), nk.deletes, nk.leaderboard)
+	}
+}
+
+func TestMatchEndWriteFailureKeepsRegistration(t *testing.T) {
+	// SP58: a failed leaderboard write must fail the call
+	// retryably and keep the registration (no cleanup deletes),
+	// so the game server can retry the idempotent writes.
+	nk := newMatchNk(testMetadataAB)
+	nk.leaderboardErr = errors.New("db down")
+	_, err := (&matchLifecycle{}).MatchEndRpc(
+		context.Background(), testLogger{}, nil, nk,
+		matchEndPayload(testUserA, testUserA, testUserB))
+	if got := errorCode(err); got != 14 {
+		t.Fatalf("code = %d (%v), want 14 (retryable)", got, err)
+	}
+	if len(nk.deletes) != 0 {
+		t.Errorf("failed call cleaned up anyway: deletes=%v",
+			nk.deletes)
 	}
 }
 

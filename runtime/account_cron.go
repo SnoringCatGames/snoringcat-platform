@@ -107,6 +107,7 @@ func runAccountCronPass(
 	nk runtime.NakamaModule,
 ) {
 	processAccountDeletionQueue(ctx, logger, db, nk)
+	sweepStaleMatchRows(ctx, logger, nk)
 	if pruned, err := pruneStaleClientIPs(ctx, db); err != nil {
 		logger.Warn("account_cron prune client IPs: %v", err)
 	} else if pruned > 0 {

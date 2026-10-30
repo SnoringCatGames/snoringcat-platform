@@ -542,6 +542,7 @@ func (m *matchLifecycle) MatchEndRpc(
 		endedAt := nowUnix()
 		historyWrites := make([]*runtime.StorageWrite, 0, len(args.Players))
 		recorded := 0
+		writeFailed := false
 		for _, p := range args.Players {
 			if p.UserID == "" {
 				continue
@@ -564,7 +565,11 @@ func (m *matchLifecycle) MatchEndRpc(
 				recordMetadata,
 				nil)
 			if err != nil {
+				// SP58: a failed write fails the whole call
+				// (below) instead of being dropped; the caller
+				// retries against the kept registration.
 				logger.Warn("leaderboard write for %s: %v", p.UserID, err)
+				writeFailed = true
 			} else {
 				recorded++
 			}
@@ -595,11 +600,19 @@ func (m *matchLifecycle) MatchEndRpc(
 		if len(historyWrites) > 0 {
 			if _, err := nk.StorageWrite(ctx, historyWrites); err != nil {
 				logger.Warn("match_history write: %v", err)
+				writeFailed = true
 			}
 		}
 		// After the writes, so the next read sees them.
 		if recorded > 0 && m.boards != nil {
 			m.boards.invalidate()
+		}
+		if writeFailed {
+			// SP58: keep the registration (no cleanup below) so
+			// the game server can retry; history keys and
+			// leaderboard writes make the retry idempotent.
+			return "", runtime.NewError(
+				"match_end partial write failure; safe to retry", 14)
 		}
 	}
 
