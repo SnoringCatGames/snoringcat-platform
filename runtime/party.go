@@ -160,8 +160,7 @@ const partyInviteCodeCollection = "party_invite_codes"
 // invite codes. 32 chars, deliberately omitting I, O, 0, and 1
 // to reduce visual ambiguity when reading a code aloud or off a
 // screenshot. 32^6 ≈ 1.07B combinations.
-const partyInviteCodeAlphabet = (
-	"23456789ABCDEFGHJKLMNPQRSTUVWXYZ")
+const partyInviteCodeAlphabet = ("23456789ABCDEFGHJKLMNPQRSTUVWXYZ")
 
 // partyInviteCodeLength is fixed at 6. Short enough to type
 // quickly on a gamepad's on-screen keyboard, long enough that
@@ -237,15 +236,15 @@ func partyStartMatchmakingRpcFactory(
 // from every member independently.
 //
 // This RPC:
-//   1. Validates the caller is the party group's leader (creator).
-//   2. Confirms the group is actually a party (name prefix).
-//   3. Enumerates members.
-//   4. Sends a transient `party_matchmaking_start` notification to
-//      each member carrying the leader's `rt_party_id`, so each
-//      client can join that realtime party on its own socket.
-//   5. Returns the same info to the caller (the leader), which
-//      waits for the members' presences to appear and then submits
-//      one PartyMatchmakerAdd for the whole party.
+//  1. Validates the caller is the party group's leader (creator).
+//  2. Confirms the group is actually a party (name prefix).
+//  3. Enumerates members.
+//  4. Sends a transient `party_matchmaking_start` notification to
+//     each member carrying the leader's `rt_party_id`, so each
+//     client can join that realtime party on its own socket.
+//  5. Returns the same info to the caller (the leader), which
+//     waits for the members' presences to appear and then submits
+//     one PartyMatchmakerAdd for the whole party.
 //
 // The caller's own client SHOULD treat the RPC response as the
 // authoritative kickoff (skip waiting for the leader's own

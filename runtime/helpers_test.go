@@ -13,10 +13,10 @@ import (
 // can call any method without panicking.
 type testLogger struct{}
 
-func (testLogger) Debug(string, ...interface{})            {}
-func (testLogger) Info(string, ...interface{})             {}
-func (testLogger) Warn(string, ...interface{})             {}
-func (testLogger) Error(string, ...interface{})            {}
+func (testLogger) Debug(string, ...interface{}) {}
+func (testLogger) Info(string, ...interface{})  {}
+func (testLogger) Warn(string, ...interface{})  {}
+func (testLogger) Error(string, ...interface{}) {}
 func (l testLogger) WithField(string, interface{}) runtime.Logger {
 	return l
 }

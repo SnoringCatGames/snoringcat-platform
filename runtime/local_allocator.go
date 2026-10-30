@@ -83,7 +83,7 @@ type LocalDockerAllocator struct {
 	// map Stop releases through (SP26). The pair cannot be
 	// recovered from Docker after the container stops, so it
 	// is recorded at allocation time.
-	allocMu sync.Mutex
+	allocMu    sync.Mutex
 	allocPorts map[string][2]int
 	// http is a Docker-socket-aware HTTP client. Reused across
 	// requests to keep socket connections alive.
@@ -383,11 +383,11 @@ func (l *LocalDockerAllocator) releasePortsFor(requestID string) bool {
 // port; a release returns the same pair. Indices into the
 // underlying slices stay aligned across allocations.
 type localPortPool struct {
-	mu     sync.Mutex
-	udpLo  int
-	udpHi  int
-	tcpLo  int
-	tcpHi  int
+	mu       sync.Mutex
+	udpLo    int
+	udpHi    int
+	tcpLo    int
+	tcpHi    int
 	udpInUse map[int]bool
 	tcpInUse map[int]bool
 }
@@ -469,15 +469,15 @@ func parsePortRange(s string) (int, int, error) {
 // v1.45 (matches the heroiclabs/nakama Dockerfile's docker
 // version baseline).
 type dockerCreateContainerRequest struct {
-	Image        string                    `json:"Image"`
-	Env          []string                  `json:"Env"`
-	ExposedPorts map[string]struct{}       `json:"ExposedPorts"`
-	HostConfig   dockerHostConfig          `json:"HostConfig"`
+	Image        string              `json:"Image"`
+	Env          []string            `json:"Env"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts"`
+	HostConfig   dockerHostConfig    `json:"HostConfig"`
 }
 
 type dockerHostConfig struct {
-	AutoRemove   bool                            `json:"AutoRemove"`
-	PortBindings map[string][]dockerPortBinding  `json:"PortBindings"`
+	AutoRemove   bool                           `json:"AutoRemove"`
+	PortBindings map[string][]dockerPortBinding `json:"PortBindings"`
 	// NetworkMode picks the docker network the container attaches
 	// to. Set to a named network (e.g. "nakama_nakama-net") so the
 	// in-container game-server can resolve `nakama` and reach

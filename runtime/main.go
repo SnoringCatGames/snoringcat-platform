@@ -36,112 +36,113 @@
 //
 // HTTP routes registered (no Nakama auth at all):
 //   - /snoringcat/version_check: version_check for clients that
-//                            have no session yet. See version.go.
+//     have no session yet. See version.go.
 //   - /snoringcat/leaderboard: a game's public leaderboard (rank,
-//                            display name, score), read-only and
-//                            cached, for the game websites. See
-//                            leaderboard_public.go.
+//     display name, score), read-only and
+//     cached, for the game websites. See
+//     leaderboard_public.go.
 //
 // Leaderboards: every board a registered game declares in its
 // game.yaml is created at boot and on register_game, authoritative
 // (only match_end writes records). See leaderboards.go.
 //
 // RPCs registered:
-//   Operator only (HTTP key AND the GAME_ADMIN_KEY admin_key
-//   query parameter; refused outright while GAME_ADMIN_KEY is
-//   unset; see admin_key.go):
-//   - register_game:       upsert a game's per_game_config row.
-//   - bulk_import:         Phase E migration RPC. Also only
-//                            registered while BULK_IMPORT_ENABLED.
-//   Server-to-server (HTTP key; the key shipped in clients up to
-//   0.47.0, so each of these checks its own integrity):
-//   - register_server:     game server checks in after boot.
-//   - match_end:           game server posts match results.
-//   - match_cancel:        game server tears a match down (client
-//                            sessions too, for synthetic matches).
-//   - runtime_status:      read-only probe of build + config.
-//   HTTP key or session:
-//   - version_check:       client/server compatibility check.
-//   - transport_select:    pure function; compliance probe.
-//   Client session:
-//   - record_client_ip:    pre-matchmaking IP recorder.
-//   - update_and_get_presence: write own presence + read friends'.
-//   - get_player_stats:    best score + public rank.
-//   - get_match_history:   recent matches + totals for the caller.
-//   - export_player_data:  GDPR data export: everything stored about
-//                            the caller (data_export.go).
-//   - party_start_matchmaking: leader notifies party members to
-//                            join its realtime party, so the
-//                            leader can submit one matchmaker
-//                            ticket for the whole group.
-//   - party_abort_matchmaking: leader tells members to stand down
-//                            (e.g. someone never joined).
-//   - party_invite:        invite a friend on behalf of ANY active
-//                            member (server-side add as the leader/
-//                            admin, since Nakama gates client adds to
-//                            admins). Kick stays leader-only.
-//   - party_set_ready:     toggle the caller's per-party ready
-//                            flag (fans out party_state_changed).
-//   - party_set_mode:      leader picks the matchmaker game mode
-//                            for the whole party (Stage 5.7).
-//   - party_set_level_prefs / party_set_cheat_prefs: leader stores
-//                            the party's level prefs + gameplay-cheat
-//                            prefs (leader-authoritative). Forwarded
-//                            to the game server at allocation via
-//                            deploy env vars.
-//   - party_get_invite_code: fetch / generate a 6-char invite
-//                            code for the caller's party.
-//   - party_join_by_code:   join a party using a previously-
-//                            generated invite code.
-//   - party_transfer_leadership: leader hands the party's lead
-//                            role to another active member.
-//   - delete_account:      soft-delete + cascade (GDPR / CCPA):
-//                            clears the profile and game data at
-//                            once, hard-deletes after 30 days.
-//   - get_account_deletion_status: check whether the caller has
-//                            an active account_deletion_queue
-//                            row (Stage 1.5). Client polls at
-//                            auth_completed to prompt cancel.
-//   - cancel_account_deletion: drop the queue row and the
-//                            "[deleted]" marker before the cron
-//                            fires (Stage 1.5). Restores nothing.
-//   - cancel_matchmaking_allocation: matched player aborts an
-//                            in-flight Edgegap allocation
-//                            mid-poll. Registered alongside the
-//                            matchmaker hook; tears down the
-//                            in-progress deploy (if any) and
-//                            fans out match_failed
-//                            reason=cancelled to all matched
-//                            users (Stage 7.2).
-//   - block_user:          add a user to the caller's BANNED
-//                            list (Nakama state=3). Removes any
-//                            existing friendship in either
-//                            direction; future friend-add calls
-//                            in either direction are rejected by
-//                            Nakama (Stage 7.4).
-//   - unblock_user:        remove a state=3 row from the caller's
-//                            friends table (Stage 7.4).
-//   - list_blocked_users:  list the caller's BANNED entries with
-//                            display name + username (Stage 7.4).
-//   - list_recent_players: read the caller's recent-opponents
-//                            list. match_end seeds rows for every
-//                            (owner, other) pair on a real match
-//                            so the UI can offer "add as friend"
-//                            for fellow players (Stage 7.6).
-//   - get_game_config:     read a game's public per_game_config.
-//   - get_friend_code:     fetch / generate the caller's stable
-//                            8-char friend code. Account-level (not
-//                            per-game); decoupled from the username.
-//   - add_friend_by_code:  resolve a friend code to a user and send
-//                            a friend request. Resolves server-side
-//                            (with a username fallback for old
-//                            clients) then FriendsAdd; re-enforces
-//                            the BeforeAddFriends rate + pending caps
-//                            since a runtime FriendsAdd skips them.
-//   Client session (role "client") or HTTP key (role "server"):
-//   - crash_report:        store one redacted crash or error report
-//                            under the system user, rate-limited;
-//                            pruned after 30 days (crash_report.go).
+//
+//	Operator only (HTTP key AND the GAME_ADMIN_KEY admin_key
+//	query parameter; refused outright while GAME_ADMIN_KEY is
+//	unset; see admin_key.go):
+//	- register_game:       upsert a game's per_game_config row.
+//	- bulk_import:         Phase E migration RPC. Also only
+//	                         registered while BULK_IMPORT_ENABLED.
+//	Server-to-server (HTTP key; the key shipped in clients up to
+//	0.47.0, so each of these checks its own integrity):
+//	- register_server:     game server checks in after boot.
+//	- match_end:           game server posts match results.
+//	- match_cancel:        game server tears a match down (client
+//	                         sessions too, for synthetic matches).
+//	- runtime_status:      read-only probe of build + config.
+//	HTTP key or session:
+//	- version_check:       client/server compatibility check.
+//	- transport_select:    pure function; compliance probe.
+//	Client session:
+//	- record_client_ip:    pre-matchmaking IP recorder.
+//	- update_and_get_presence: write own presence + read friends'.
+//	- get_player_stats:    best score + public rank.
+//	- get_match_history:   recent matches + totals for the caller.
+//	- export_player_data:  GDPR data export: everything stored about
+//	                         the caller (data_export.go).
+//	- party_start_matchmaking: leader notifies party members to
+//	                         join its realtime party, so the
+//	                         leader can submit one matchmaker
+//	                         ticket for the whole group.
+//	- party_abort_matchmaking: leader tells members to stand down
+//	                         (e.g. someone never joined).
+//	- party_invite:        invite a friend on behalf of ANY active
+//	                         member (server-side add as the leader/
+//	                         admin, since Nakama gates client adds to
+//	                         admins). Kick stays leader-only.
+//	- party_set_ready:     toggle the caller's per-party ready
+//	                         flag (fans out party_state_changed).
+//	- party_set_mode:      leader picks the matchmaker game mode
+//	                         for the whole party (Stage 5.7).
+//	- party_set_level_prefs / party_set_cheat_prefs: leader stores
+//	                         the party's level prefs + gameplay-cheat
+//	                         prefs (leader-authoritative). Forwarded
+//	                         to the game server at allocation via
+//	                         deploy env vars.
+//	- party_get_invite_code: fetch / generate a 6-char invite
+//	                         code for the caller's party.
+//	- party_join_by_code:   join a party using a previously-
+//	                         generated invite code.
+//	- party_transfer_leadership: leader hands the party's lead
+//	                         role to another active member.
+//	- delete_account:      soft-delete + cascade (GDPR / CCPA):
+//	                         clears the profile and game data at
+//	                         once, hard-deletes after 30 days.
+//	- get_account_deletion_status: check whether the caller has
+//	                         an active account_deletion_queue
+//	                         row (Stage 1.5). Client polls at
+//	                         auth_completed to prompt cancel.
+//	- cancel_account_deletion: drop the queue row and the
+//	                         "[deleted]" marker before the cron
+//	                         fires (Stage 1.5). Restores nothing.
+//	- cancel_matchmaking_allocation: matched player aborts an
+//	                         in-flight Edgegap allocation
+//	                         mid-poll. Registered alongside the
+//	                         matchmaker hook; tears down the
+//	                         in-progress deploy (if any) and
+//	                         fans out match_failed
+//	                         reason=cancelled to all matched
+//	                         users (Stage 7.2).
+//	- block_user:          add a user to the caller's BANNED
+//	                         list (Nakama state=3). Removes any
+//	                         existing friendship in either
+//	                         direction; future friend-add calls
+//	                         in either direction are rejected by
+//	                         Nakama (Stage 7.4).
+//	- unblock_user:        remove a state=3 row from the caller's
+//	                         friends table (Stage 7.4).
+//	- list_blocked_users:  list the caller's BANNED entries with
+//	                         display name + username (Stage 7.4).
+//	- list_recent_players: read the caller's recent-opponents
+//	                         list. match_end seeds rows for every
+//	                         (owner, other) pair on a real match
+//	                         so the UI can offer "add as friend"
+//	                         for fellow players (Stage 7.6).
+//	- get_game_config:     read a game's public per_game_config.
+//	- get_friend_code:     fetch / generate the caller's stable
+//	                         8-char friend code. Account-level (not
+//	                         per-game); decoupled from the username.
+//	- add_friend_by_code:  resolve a friend code to a user and send
+//	                         a friend request. Resolves server-side
+//	                         (with a username fallback for old
+//	                         clients) then FriendsAdd; re-enforces
+//	                         the BeforeAddFriends rate + pending caps
+//	                         since a runtime FriendsAdd skips them.
+//	Client session (role "client") or HTTP key (role "server"):
+//	- crash_report:        store one redacted crash or error report
+//	                         under the system user, rate-limited;
+//	                         pruned after 30 days (crash_report.go).
 package main
 
 import (
