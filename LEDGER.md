@@ -79,8 +79,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP40** · The notification poll is frozen on the oldest 50 rows
   (server half) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md`
   3.2)
-- **SP42** · Server-side validation of names and avatar URLs (PI-1,
-  DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1)
 - **SP45** · A refresh emits the sign-in's `auth_completed(true, "")`
   (SL-1; `global.gd:388-392`). Fix: a separate `session_refreshed`
   signal (S; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1)
@@ -216,6 +214,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
 - **SP36** · Blocking stops friend requests and nothing else (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 475d22a (2026-10-29).
 - **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
 - **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
