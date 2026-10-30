@@ -55,8 +55,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP32** · A party invite is a forced join; fix
   `test_party_invite_flow.gd:136-140` with it. Urgent candidate (M to L;
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
-- **SP33** · Any member can pull everyone into a match load (M; batch 2;
-  hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP44** · Guest device id is not crypto-random (SI-1); token store
   passphrase is weak (TS-1). Fix: random 128-bit id, a real key per
   platform (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1)
@@ -214,6 +212,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 8cf642b (2026-10-29).
 - **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
 - **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
 - **SP36** · Blocking stops friend requests and nothing else (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 475d22a (2026-10-29).
