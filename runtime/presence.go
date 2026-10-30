@@ -30,8 +30,8 @@ import (
 //   collection = "presence"
 //   key        = "{game_id}/current"  (e.g. "hopnbop/current")
 //   value      = { game_id, rich_presence, status, updated_at }
-//   read perm  = 2 (public read so friends can see)
-//   write perm = 1 (owner write only)
+//   read perm  = 0, write perm = 0 (server only, SP36:
+//   friends read presence through this RPC, never the row)
 //
 // Pre-Stage-3 (bootstrap) rows used key="current" and no
 // game_id field. Those rows are overwritten on the next
@@ -70,6 +70,12 @@ const (
 // Without this, a crash or a force-quit leaves the last-written row
 // in storage forever and the player reads as permanently online —
 // there is no disconnect hook to write `offline` on their behalf.
+// presenceRichMaxRunes caps the free-form rich_presence text
+// the server stores and forwards (SP36). Longer values are
+// truncated, never refused, so a chatty client degrades to a
+// shorter label instead of losing its heartbeat.
+const presenceRichMaxRunes = 100
+
 const presenceStaleAfterSeconds int64 = 90
 
 // isPresenceVisible reports whether a stored record should surface
@@ -198,10 +204,11 @@ func updateAndGetPresenceRpc(
 	// game_id. Two games sharing one Nakama instance write to
 	// two distinct rows (collection=presence, distinct keys).
 	rec := presenceRecord{
-		GameID:       gameID,
-		RichPresence: args.RichPresence,
-		Status:       args.Status,
-		UpdatedAt:    nowUnix(),
+		GameID: gameID,
+		RichPresence: truncateRunes(
+			args.RichPresence, presenceRichMaxRunes),
+		Status:    args.Status,
+		UpdatedAt: nowUnix(),
 	}
 	value, _ := json.Marshal(rec)
 	if _, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{
@@ -209,8 +216,8 @@ func updateAndGetPresenceRpc(
 		Key:             presenceKey(gameID),
 		UserID:          userID,
 		Value:           string(value),
-		PermissionRead:  2,
-		PermissionWrite: 1,
+		PermissionRead:  0,
+		PermissionWrite: 0,
 	}}); err != nil {
 		logger.Error("presence write: %v", err)
 		return "", err
@@ -336,4 +343,13 @@ func gameIDFromKey(key string) string {
 		}
 	}
 	return ""
+}
+
+// truncateRunes shortens s to at most max runes.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }

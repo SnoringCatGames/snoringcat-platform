@@ -1,6 +1,15 @@
+//lint:file-ignore SA1029 nakama-common uses bare strings as context keys.
 package main
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
+)
 
 // TestIsPresenceVisible pins the visibility rule that decides
 // whether a friend shows up at all. The pre-fix runtime dropped
@@ -176,5 +185,64 @@ func TestPresenceKeyRoundtrip(t *testing.T) {
 			t.Errorf("gameIDFromKey(presenceKey(%q)) = %q, "+
 				"want %q", gid, got, gid)
 		}
+	}
+}
+
+// fakePresenceNk captures the presence write and answers an
+// empty friend list. Any other method panics through the
+// nil embedded interface.
+type fakePresenceNk struct {
+	runtime.NakamaModule
+
+	writes []*runtime.StorageWrite
+}
+
+func (f *fakePresenceNk) StorageWrite(
+	_ context.Context, writes []*runtime.StorageWrite,
+) ([]*api.StorageObjectAck, error) {
+	f.writes = writes
+	return nil, nil
+}
+
+func (f *fakePresenceNk) FriendsList(
+	_ context.Context, _ string, _ int, _ *int, _ string,
+) ([]*api.Friend, string, error) {
+	return nil, "", nil
+}
+
+func TestPresenceWriteIsServerOnlyAndCapped(t *testing.T) {
+	nk := &fakePresenceNk{}
+	games := newTestGames(t, map[string]string{
+		"hopnbop": `{"game_id":"hopnbop","schema_version":1}`,
+	})
+	long := strings.Repeat("x", presenceRichMaxRunes+50)
+	payload := `{"rich_presence":"` + long +
+		`","status":"online"}`
+	ctx := context.WithValue(
+		refreshCtx("u1"), runtime.RUNTIME_CTX_VARS,
+		map[string]string{"game_id": "hopnbop"})
+	_, err := updateAndGetPresenceRpc(
+		ctx, testLogger{}, nk, games, payload)
+	if err != nil {
+		t.Fatalf("rpc: %v", err)
+	}
+	if len(nk.writes) != 1 {
+		t.Fatalf("writes = %d, want 1", len(nk.writes))
+	}
+	w := nk.writes[0]
+	if w.PermissionRead != 0 || w.PermissionWrite != 0 {
+		t.Fatalf(
+			"perms = %d/%d, want 0/0",
+			w.PermissionRead, w.PermissionWrite)
+	}
+	var rec presenceRecord
+	if err := json.Unmarshal([]byte(w.Value), &rec); err != nil {
+		t.Fatalf("stored value: %v", err)
+	}
+	if got := len([]rune(rec.RichPresence)); got != presenceRichMaxRunes {
+		t.Fatalf("rich runes = %d, want %d", got, presenceRichMaxRunes)
+	}
+	if rec.UpdatedAt <= 0 {
+		t.Fatalf("updated_at = %d, want server stamp", rec.UpdatedAt)
 	}
 }

@@ -151,7 +151,7 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 	# Step 4: pre-cascade sanity. If these fail, the rest of the
 	# test isn't actually exercising the cascade.
 	var pre_presence: bool = await _read_presence_exists(
-		token, user_id)
+		token, presence_rich)
 	assert_true(
 		pre_presence,
 		"pre-cascade: presence row missing — seeding failed")
@@ -193,7 +193,7 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 	# legacy "current"). The cascade scrubs both via per-game
 	# enumeration; a regression would leave the seeded row.
 	var post_presence: bool = await _read_presence_exists(
-		token, user_id)
+		token, presence_rich)
 	assert_false(
 		post_presence,
 		"post-cascade: presence row still exists — scrub regressed")
@@ -273,38 +273,20 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 		"queue row missing scheduled_for: %s" % status.text)
 
 
-## Returns true when the deleter's presence storage row is
-## readable via the StorageObjects API. Tries both the game-
-## scoped key ({game_id}/current) and the pre-Stage-3 legacy
-## key ("current") so the test stays correct regardless of
-## which key the runtime wrote to.
+## Returns true when the deleter's exported data still
+## holds the seeded presence marker. Presence rows are
+## server-only since SP36, so existence is checked through
+## the export RPC (a server-side read) instead of the
+## StorageObjects API.
 func _read_presence_exists(
 	token: String,
-	user_id: String,
+	rich_marker: String,
 ) -> bool:
-	var game_id: String = _helper._resolve_game_id()
-	var keys_to_check: Array[String] = ["current"]
-	if not game_id.is_empty():
-		keys_to_check.append(game_id + "/current")
-	for key in keys_to_check:
-		var result: Dictionary = await _helper.http_post(
-			"/v2/storage",
-			{
-				"object_ids": [{
-					"collection": "presence",
-					"key": key,
-					"user_id": user_id,
-				}],
-			},
-			"bearer:" + token)
-		if result.status_code != 200:
-			continue
-		if not (result.body is Dictionary):
-			continue
-		var objects: Variant = result.body.get("objects", [])
-		if objects is Array and (objects as Array).size() > 0:
-			return true
-	return false
+	var result: Dictionary = await _helper.session_rpc(
+		"export_player_data", token, null)
+	if result.status_code != 200:
+		return false
+	return str(result.text).contains(rich_marker)
 
 
 ## Returns Nakama's user-group state int for `group_id` from
