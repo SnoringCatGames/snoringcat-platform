@@ -57,12 +57,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   the next release (2026-10-29): refusing offline invites
   and the consent flow change what 0.56.0 clients see;
   gate is shipping with the first client that handles both
-- **SP71** · `match_cancel` without a registration is a no-op; test
-  matches leave rows; two wrong test comments (XS to S; batch 3; hopnbop
-  `docs/design/H37_systems_audit.md` 3.3)
-- **SP58** · match_end is not atomic and nothing monitors it (S1, OP2);
-  the stale-row sweep (RT1) (M; batch 3; hopnbop
-  `docs/design/H37_systems_audit.md` 3.4)
 - **SP40** · The notification poll is frozen on the oldest 50 rows
   (server half) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md`
   3.2)
@@ -204,6 +198,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP58** · match_end is not atomic and nothing monitors it (S1, OP2); the stale-row sweep (RT1) (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.4). Done in 12ab013 (2026-10-29).
+- **SP71** · `match_cancel` without a registration is a no-op; test matches leave rows; two wrong test comments (XS to S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 8d7fce3 (2026-10-29).
 - **SP28** · A Cancel during `start_matchmaking` leaves a ghost ticket (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 3e2bc1d (2026-10-29).
 - **SP29** · One player's 120 s timeout cancels the whole matched set's allocation (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 6145f01489b6e003012a6e4c30b953acd41a65a0 (2026-10-29).
 - **SP30** · No match forms for anyone while an allocation runs (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in de57ca1 (2026-10-29).
