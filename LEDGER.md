@@ -53,7 +53,10 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 ## Next
 
 - **SP32** · A party invite is a forced join; fix
-  `test_party_invite_flow.gd:136-140` with it. Urgent candidate (M to L;
+  party nickname (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). HELD for the next release
+  (2026-10-29): refusing offline invites and the consent
+  flow change what 0.56.0 clients see; gate is shipping
+  with the first client that handles both
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
 - **SP44** · Guest device id is not crypto-random (SI-1); token store
   passphrase is weak (TS-1). Fix: random 128-bit id, a real key per
