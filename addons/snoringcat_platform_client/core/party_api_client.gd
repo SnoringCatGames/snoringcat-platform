@@ -404,6 +404,36 @@ func set_mode(party_id: String, mode_id: String) -> void:
 		{"party_id": party_id, "mode_id": mode_id})
 
 
+## Store the leader's mode, level prefs and cheat prefs in
+## one atomic RPC (H55). Any argument left at its sentinel
+## (empty mode, empty level prefs, null cheats flag) is not
+## written. Fire-and-forget like the single-pref calls.
+func set_prefs(
+	party_id: String,
+	mode_id: String,
+	level_prefs: Dictionary,
+	are_cheats_enabled: Variant,
+	networked_cheats: Array,
+) -> void:
+	var session := await _ensure_session()
+	if session == null:
+		return
+	var payload := {"party_id": party_id}
+	if not mode_id.is_empty():
+		payload["mode_id"] = mode_id
+	if not level_prefs.is_empty():
+		payload["prefs"] = level_prefs
+	if are_cheats_enabled != null:
+		payload["are_cheats_enabled"] = are_cheats_enabled
+		payload["networked_cheats"] = networked_cheats
+	var rpc_result = await Platform.get_nakama_client().rpc_async(
+		session, "party_set_prefs", JSON.stringify(payload))
+	if rpc_result.is_exception():
+		push_warning(
+			"[Party] set_prefs failed: %s"
+			% _describe(rpc_result.get_exception()))
+
+
 ## Store the leader's level preferences for the party (leader-only;
 ## the runtime enforces). `prefs` is the LevelPreferences.to_dict
 ## shape ({inclusion, exclusion, preferred}). Fire-and-forget: this

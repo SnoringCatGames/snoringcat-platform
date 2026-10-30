@@ -606,6 +606,11 @@ func InitModule(
 		return err
 	}
 	if err := addRpc(
+		"party_set_prefs",
+		partySetPrefsRpcFactory(games)); err != nil {
+		return err
+	}
+	if err := addRpc(
 		"party_set_cheat_prefs",
 		partySetCheatPrefsRpcFactory(games)); err != nil {
 		return err
