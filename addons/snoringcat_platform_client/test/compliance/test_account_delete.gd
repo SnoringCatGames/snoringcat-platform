@@ -113,10 +113,10 @@ func test_delete_endpoint_removes_account() -> void:
 	if (delete_result.status_code < 200
 			or delete_result.status_code >= 300):
 		pending(
-			"DELETE /v2/account returned %d (likely gated by"
-			+ " server config); cannot complete deletion"
-			+ " round-trip"
-				% delete_result.status_code)
+			(
+				"DELETE /v2/account returned %d (likely gated by "
+				+ "server config); cannot complete deletion round-trip"
+			) % delete_result.status_code)
 		return
 
 	# Step 3: re-auth with the same device_id, create=false.
