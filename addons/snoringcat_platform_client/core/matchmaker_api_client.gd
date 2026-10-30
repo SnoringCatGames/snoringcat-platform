@@ -61,6 +61,10 @@ const _MATCH_READY_SUBJECT := "match_ready"
 ## Distinct from `match_ready`'s double-encoded shape because
 ## there's no nested `connection` payload to carry.
 const _MATCH_FAILED_SUBJECT := "match_failed"
+## Sent by the runtime when allocation starts (SP30). It
+## restarts the search timeout: allocation can outlast one
+## timeout window without the client giving up.
+const _MATCH_ALLOCATING_SUBJECT := "match_allocating"
 const _PROGRESS_TICK_SEC := 1.0
 
 ## Poll granularity while the leader waits for party members to
@@ -677,6 +681,11 @@ func _on_matchmaker_matched(matched) -> void:
 
 
 func _on_notification(p_notification) -> void:
+	if p_notification.subject == _MATCH_ALLOCATING_SUBJECT:
+		if _is_searching:
+			_elapsed_sec = 0.0
+			progress_updated.emit("placing", 0.0, -1.0)
+		return
 	if p_notification.subject == _MATCH_FAILED_SUBJECT:
 		_handle_match_failed(p_notification)
 		return

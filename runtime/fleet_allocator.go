@@ -674,10 +674,50 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 	// the parent — we still need a non-cancelled context for the
 	// post-cancel teardown notifications.
 	allocCtx, allocCancel := context.WithCancel(ctx)
-	defer allocCancel()
 	inflight := &inflightAllocation{cancel: allocCancel}
 	a.registerInflight(matchedUserIDs, inflight)
-	defer a.deregisterInflight(matchedUserIDs, inflight)
+
+	// SP30: never block the matchmaker on allocation. Nakama
+	// waits for every matchmaker hook, so one slow deploy
+	// froze match formation for everyone. Tell the clients
+	// allocation started (which restarts their search
+	// timeout), allocate in a goroutine, and let
+	// match_ready / match_failed finish the story.
+	for _, uid := range matchedUserIDs {
+		if err := nk.NotificationSend(
+			ctx, uid, "match_allocating",
+			map[string]any{"phase": "allocating"},
+			101, "", false); err != nil {
+			logger.Warn("notify allocating %s: %v", uid, err)
+		}
+	}
+	go func() {
+		defer allocCancel()
+		defer a.deregisterInflight(matchedUserIDs, inflight)
+		if err := a.runAllocation(
+			ctx, allocCtx, logger, nk, entries,
+			matchedUserIDs, matchStart,
+		); err != nil {
+			logger.Error("allocation: %v", err)
+		}
+	}()
+	return "", nil
+}
+
+// runAllocation is the asynchronous half of
+// OnMatchmakerMatched (SP30): collect inputs, allocate a
+// game server, and fan out match_ready or match_failed.
+// ctx is the hook's parent context (notifications);
+// allocCtx is cancelled by the cancel RPC.
+func (a *fleetAllocator) runAllocation(
+	ctx context.Context,
+	allocCtx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	entries []runtime.MatchmakerEntry,
+	matchedUserIDs []string,
+	matchStart time.Time,
+) error {
 
 	// Collect player IPs from storage (the client calls
 	// `record_client_ip` right before joining the matchmaker —
@@ -753,7 +793,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			sid, mintErr := mintSessionToken()
 			if mintErr != nil {
 				sendAllocationFailed(ctx, logger, nk, entries, 1, mintErr)
-				return "", mintErr
+				return mintErr
 			}
 			sessionIDs = append(sessionIDs, sid)
 			allSessionIDs = append(allSessionIDs, sid)
@@ -833,7 +873,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 					matchGameID, expected, mismatched)
 				abortProtocolMismatch(
 					ctx, logger, nk, entries, expected, mismatched)
-				return "", nil
+				return nil
 			}
 		}
 	}
@@ -869,7 +909,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 				blockedPairs)
 			abortBlockedPair(
 				ctx, logger, nk, entries, blockedPairs)
-			return "", nil
+			return nil
 		}
 	}
 
@@ -1039,7 +1079,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 						" runtime has no LocalDockerAllocator"+
 						" configured (LOCAL_PUBLIC_IP unset?)",
 					matchGameID))
-			return "", fmt.Errorf(
+			return fmt.Errorf(
 				"local allocator not configured for game %s",
 				matchGameID)
 		}
@@ -1051,11 +1091,11 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 					"local allocation aborted by user cancel" +
 						" (no deploy created)")
 				sendMatchCancelled(ctx, logger, nk, entries)
-				return "", nil
+				return nil
 			}
 			sendAllocationFailed(
 				ctx, logger, nk, entries, 1, err)
-			return "", fmt.Errorf(
+			return fmt.Errorf(
 				"local allocation failed: %w", err)
 		}
 		deploy = d
@@ -1129,12 +1169,12 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 					"edgegap allocation aborted by user cancel" +
 						" (no deploy created)")
 				sendMatchCancelled(ctx, logger, nk, entries)
-				return "", nil
+				return nil
 			}
 			sendAllocationFailed(
 				ctx, logger, nk, entries,
 				maxAllocationAttempts, lastErr)
-			return "", fmt.Errorf(
+			return fmt.Errorf(
 				"edgegap allocation failed after %d attempts: %w",
 				maxAllocationAttempts, lastErr)
 		}
@@ -1155,7 +1195,7 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 			ctx, logger, deploy.RequestID,
 			"user cancelled post-allocation")
 		sendMatchCancelled(ctx, logger, nk, entries)
-		return "", nil
+		return nil
 	}
 
 	// Record allocation cold-start latency for Prometheus
@@ -1275,9 +1315,8 @@ func (a *fleetAllocator) OnMatchmakerMatched(
 		}
 	}
 
-	// Return empty match ID — the actual realtime match runs on
-	// the Edgegap-allocated game server, not inside Nakama.
-	return "", nil
+	// The realtime match runs on the allocated game server.
+	return nil
 }
 
 // matchReadyConnection builds the per-player `connection` object
