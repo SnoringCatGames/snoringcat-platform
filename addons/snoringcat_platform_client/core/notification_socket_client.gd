@@ -80,6 +80,7 @@ func _ready() -> void:
 	add_child(_reconnect_timer)
 
 	Platform.auth.auth_completed.connect(_on_auth_completed)
+	Platform.auth.signed_out.connect(_on_signed_out)
 
 
 ## Whether the socket is currently connected to Nakama.
@@ -318,11 +319,21 @@ func _on_socket_connection_error(error) -> void:
 		"[NotificationSocket] connection error: %s" % error)
 
 
+func _on_signed_out(_error: String) -> void:
+	stop()
+
+
 func _on_auth_completed(
 	success: bool, _error: String,
 ) -> void:
 	if not success:
-		stop()
+		# Only a real sign-out stops the socket (H23). A
+		# transient failure keeps the session, so keep the
+		# socket and its reconnect state. SignOutRouter
+		# stops it when the session actually ends, and a
+		# rejected refresh clears the refresh token first.
+		if Platform.token_store.refresh_token.is_empty():
+			stop()
 		return
 	if not Platform.token_store.is_token_valid():
 		stop()
