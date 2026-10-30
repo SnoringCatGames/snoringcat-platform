@@ -95,8 +95,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP64** · Nothing validates or reloads the Caddyfile on deploy; the
   Caddy build is unpinned (RL5, RL6) (S; batch 5; hopnbop
   `docs/design/H37_systems_audit.md` 3.5)
-- **SP59** · Any session can write unbounded storage (RL3) (M; batch 5;
-  hopnbop `docs/design/H37_systems_audit.md` 3.5)
 - **SP60** · The public leaderboard read scans 5 pages, and guests are
   recorded on the board (L2) (S to M; batch 5; hopnbop
   `docs/design/H37_systems_audit.md` 3.4)
@@ -204,6 +202,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   Hetzner removed 2026-07-01, so the location is always the hil
   fallback; read the server location field (weekly-cost-review
   2026-10-14 finding 4); residual
+- **SP59** · Any session can write unbounded storage (RL3) (M; batch 5;
+  hopnbop `docs/design/H37_systems_audit.md` 3.5)
 
 ## Ideas (not scheduled)
 
