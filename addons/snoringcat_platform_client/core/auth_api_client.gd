@@ -897,13 +897,11 @@ func _send_delete_request() -> void:
 	# would hard-delete immediately with no chance to cancel.
 	var session := Platform.build_session_from_store()
 	if session == null:
-		_is_deleting = false
 		_emit_failure("Not authenticated")
 		return
 	var rpc_result = await Platform.get_nakama_client().rpc_async(
 		session, "delete_account", "")
 	if rpc_result.is_exception():
-		_is_deleting = false
 		_emit_failure(
 			_describe_nakama_exception(
 				rpc_result.get_exception()))
