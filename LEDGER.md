@@ -60,8 +60,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
 - **SP33** · Any member can pull everyone into a match load (M; batch 2;
   hopnbop `docs/design/H37_systems_audit.md` 3.2)
-- **SP36** · Blocking stops friend requests and nothing else (S; batch
-  2; hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP44** · Guest device id is not crypto-random (SI-1); token store
   passphrase is weak (TS-1). Fix: random 128-bit id, a real key per
   platform (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1)
@@ -218,6 +216,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP36** · Blocking stops friend requests and nothing else (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 475d22a (2026-10-29).
 - **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
 - **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
 - **SP47** · Sessions are not revoked on account delete (DEL-3). acct (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list). Done in 4ccc33b (2026-10-29).
