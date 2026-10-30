@@ -45,6 +45,11 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP69** · One account can queue from two devices (TD-1, TODO L112)
   (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1 list,
   section 7 row 7)
+- **SP78** · nakama-prod-1 has been up 141 days; its kernel predates
+  fixes since early June unless livepatched. Hetzner lists
+  CVE-2026-99999 (PwnEscape, disclosed 10-15, still Investigating).
+  Check whether the guest needs the patch and pick a reboot window
+  (weekly-cost-review 2026-10-21); question
 
 ## In progress
 
@@ -131,14 +136,26 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   `docs/design/H37_systems_audit.md` 3.5)
 - **SP50** · Client SDK CI runs no tests (S; batch 6; hopnbop
   `docs/design/H37_systems_audit.md` 3.5)
-- **SP51** · Pin staticcheck in `nakama-runtime.yml:44` (XS; batch 6;
-  hopnbop `docs/design/H37_systems_audit.md` 3.5)
 - **SP49** · V17's broken format string in
   `sdk:test/compliance/test_account_delete.gd:118` (XS; batch 7; hopnbop
   `docs/design/H37_systems_audit.md` section 5 row 2)
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
+- **SP81** · Bump the indirect pins in
+  infra/pulumi/snoringcat-platform/go.mod (unchanged since eb5452c,
+  2026-05-04), which 28 advisories cover, 7 critical: x/crypto 0.52.0,
+  go-git 5.19.2, grpc 1.83.2, go-billy 5.9.0, klauspost/compress 1.18.7,
+  x/net 0.55.0, otel 1.45.0; then go mod tidy, go build ./... and pulumi
+  preview, expecting no changes (Tier 6;
+  dependency-vulnerability-roundup 2026-10-28); residual
+- **SP82** · No Dependabot snapshot has listed the 28 Pulumi advisories.
+  Check whether alerts are on (gh api
+  repos/SnoringCatGames/snoringcat-platform/vulnerability-alerts -i),
+  what dependabot/alerts?state=open returns, and whether
+  dependency-graph/sbom lists the Pulumi deps; settle coverage before
+  the bump (Tier 6; dependency-vulnerability-roundup 2026-10-28);
+  question
 
 ## Residuals (known, not fixed)
 
@@ -189,6 +206,21 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims,
   MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set (S; batch 7;
   hopnbop `docs/design/H37_systems_audit.md` 3.5)
+- **SP77** · Edgegap bills a $1 minimum in any month with a deployment
+  and the weekly probe deploys there, so the bill is at least $1/mo while
+  cost-monitor shows $0.00 (it tracked none of the 5 October probe
+  deploys and has no floor). Add the floor; check the Edgegap invoice
+  (infra/remote/cost-monitor/cost-monitor.sh:412; weekly-cost-review
+  2026-10-21); residual
+- **SP79** · cost-monitor Hetzner MTD is a hard-coded cpx21@hil rate
+  (infra/remote/cost-monitor/cost-monitor.sh:239) that cannot see a
+  reprice, and no job compares it with an invoice; check the latest
+  Hetzner invoice is about $14.59 before tax (weekly-cost-review
+  2026-10-14 finding 1); residual
+- **SP80** · cost-monitor.sh:257 reads .datacenter.location.name, which
+  Hetzner removed 2026-07-01, so the location is always the hil
+  fallback; read the server location field (weekly-cost-review
+  2026-10-14 finding 4); residual
 
 ## Ideas (not scheduled)
 
@@ -198,3 +230,5 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   `docs/design/H37_systems_audit.md` 3.5, 2.2)
 
 ## Done
+
+- **SP51** · Pin staticcheck in `nakama-runtime.yml:44` (XS; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in 9139b38 (2026-10-29).
