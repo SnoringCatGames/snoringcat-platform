@@ -60,8 +60,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2, 0.1 row 2)
 - **SP33** · Any member can pull everyone into a match load (M; batch 2;
   hopnbop `docs/design/H37_systems_audit.md` 3.2)
-- **SP35** · 50 pending outgoing friend requests block every accept (S;
-  batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP36** · Blocking stops friend requests and nothing else (S; batch
   2; hopnbop `docs/design/H37_systems_audit.md` 3.2)
 - **SP44** · Guest device id is not crypto-random (SI-1); token store
@@ -223,6 +221,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
 - **SP47** · Sessions are not revoked on account delete (DEL-3). acct (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list). Done in 4ccc33b (2026-10-29).
 - **SP43** · A refresh during a pending link is taken as the link's success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 22055ff (2026-10-29).
 - **SP41** · A failed `delete_account` is reported as a failed sign-in (DEL-2); root cause `sdk:core/auth_api_client.gd:890,896` (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 69c4b6b (2026-10-29).
