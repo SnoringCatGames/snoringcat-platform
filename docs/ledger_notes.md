@@ -148,3 +148,13 @@ item short and this file keeps the rest. New entries go at the bottom.
   (SI-6); Apple is listed with no flow (SI-3). acct: SI-4 Suspect; SI-6
   Believed, not run on a device; SI-3 Believed (M; batch 4; hopnbop
   `docs/design/H37_systems_audit.md` 3.1 list)
+
+## SP82 (2026-10-29, muse 01a189f7)
+
+Three reads for SP82, run 2026-10-29 (PowerShell, gh 2.89.0, account levilindsey):
+
+- ``gh api repos/SnoringCatGames/snoringcat-platform/vulnerability-alerts -i`` returned HTTP/2.0 204 No Content: vulnerability alerts are on.
+- ``gh api "repos/SnoringCatGames/snoringcat-platform/dependabot/alerts?state=open&per_page=100"`` returned []: zero open Dependabot alerts, although SP81 lists 28 advisories (7 critical) over infra/pulumi/snoringcat-platform/go.mod.
+- ``gh api repos/SnoringCatGames/snoringcat-platform/dependency-graph/sbom`` returned HTTP/2.0 404 Not Found: no SBOM exists, so it does not list the Pulumi module's dependencies at all.
+
+There is no .github/dependabot.yml (.github/ holds only compliance/ and workflows/). Conclusion: alerts are enabled, but the dependency graph has no coverage of the nested Pulumi go.mod, so its advisories never surface as alerts. Enabling that coverage (adding .github/dependabot.yml for gomod at /infra/pulumi/snoringcat-platform, and the dependency graph if it is off) is Levi's call; SP82 waits on it under Waiting on Levi.

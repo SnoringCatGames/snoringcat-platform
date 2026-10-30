@@ -21,6 +21,14 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Waiting on Levi
 
+- **SP82** · Dependabot alerts are on but blind to the Pulumi module
+  (checked 2026-10-29; detail in `docs/ledger_notes.md`): Levi to OK
+  adding `.github/dependabot.yml` (gomod,
+  `/infra/pulumi/snoringcat-platform`) so SP81's advisories surface.
+- **SP81** · Pulumi pins bumped (go.mod/go.sum; tidy, build, vet pass);
+  Levi to run `pulumi preview` in
+  `infra/pulumi/snoringcat-platform` (expect no changes; needs prod
+  credentials).
 - **SP12** · Facebook sign-in is probably broken (SI-2): the SDK sends
   the OAuth code where Nakama wants an access token. Recommended: hide
   Facebook until it works (report section 7 row 11).
@@ -52,21 +60,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Next
 
-- **SP81** · Bump the indirect pins in
-  `infra/pulumi/snoringcat-platform/go.mod`, which 28 advisories cover,
-  7 critical: x/crypto 0.48.0 to 0.52.0, go-git 5.18.0 to 5.19.2, grpc
-  1.80.0 to 1.83.2, go-billy 5.8.0 to 5.9.0, klauspost/compress 1.18.0
-  to 1.18.7, x/net 0.51.0 to 0.55.0, otel 1.43.0 to 1.45.0; then `go mod
-  tidy` and `go build ./...`. `pulumi preview` (expect no changes) is
-  Levi's, since it needs prod credentials. Reopened 2026-10-29: fa96d0b
-  closed it against modules this go.mod never pinned.
-- **SP82** · No Dependabot snapshot has listed SP81's advisories. Check
-  whether alerts are on (`gh api
-  repos/SnoringCatGames/snoringcat-platform/vulnerability-alerts -i`),
-  what `dependabot/alerts?state=open` returns, and whether
-  `dependency-graph/sbom` lists the Pulumi module's deps; settle it
-  before SP81's bump. Reopened 2026-10-29: "no alerts" is the symptom
-  this item asks about, not its answer.
 - **SP32** · A party invite is a forced join (M; batch 2;
   hopnbop `docs/design/H37_systems_audit.md` 3.2). HELD for
   the next release (2026-10-29): refusing offline invites
