@@ -108,6 +108,11 @@ func runAccountCronPass(
 ) {
 	processAccountDeletionQueue(ctx, logger, db, nk)
 	sweepStaleMatchRows(ctx, logger, nk)
+	if pruned, err := pruneOldNotifications(ctx, db); err != nil {
+		logger.Warn("account_cron prune notifications: %v", err)
+	} else if pruned > 0 {
+		logger.Info("account_cron pruned %d old notifications", pruned)
+	}
 	if pruned, err := pruneStaleClientIPs(ctx, db); err != nil {
 		logger.Warn("account_cron prune client IPs: %v", err)
 	} else if pruned > 0 {
