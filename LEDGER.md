@@ -96,9 +96,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   5)
 - **SP63** · A test for account_cron (RT4) (S; batch 6; hopnbop
   `docs/design/H37_systems_audit.md` 3.5)
-- **SP49** · V17's broken format string in
-  `sdk:test/compliance/test_account_delete.gd:118` (XS; batch 7; hopnbop
-  `docs/design/H37_systems_audit.md` section 5 row 2)
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
@@ -196,6 +193,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP49** · V17's broken format string in `sdk:test/compliance/test_account_delete.gd:118`. Done in 6987291 (2026-10-29).
 - **SP50** · Client SDK CI runs no tests (S; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in e9c98f8 (2026-10-29).
 - **SP58** · match_end is not atomic and nothing monitors it (S1, OP2); the stale-row sweep (RT1) (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.4). Done in 12ab013 (2026-10-29).
 - **SP71** · `match_cancel` without a registration is a no-op; test matches leave rows; two wrong test comments (XS to S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 8d7fce3 (2026-10-29).
