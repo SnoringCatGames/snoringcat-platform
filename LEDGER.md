@@ -57,9 +57,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   the next release (2026-10-29): refusing offline invites
   and the consent flow change what 0.56.0 clients see;
   gate is shipping with the first client that handles both
-- **SP44** · Guest device id is not crypto-random (SI-1); token store
-  passphrase is weak (TS-1). Fix: random 128-bit id, a real key per
-  platform (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1)
 - **SP30** · No match forms for anyone while an allocation runs (M;
   batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3)
 - **SP29** · One player's 120 s timeout cancels the whole matched set's
@@ -214,6 +211,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP44** · Guest device id is not crypto-random (SI-1); token store passphrase is weak (TS-1). Done in b2eb9cd (2026-10-29).
 - **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 8cf642b (2026-10-29).
 - **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
 - **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
