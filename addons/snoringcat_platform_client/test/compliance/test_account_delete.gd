@@ -316,7 +316,7 @@ func test_delete_clears_identifying_data_at_once() -> void:
 		"/v2/account",
 		{
 			"display_name": "Scrub %s" % run,
-			"avatar_url": "https://example.invalid/%s.png" % run,
+			"avatar_url": "https://lh3.googleusercontent.com/%s.png" % run,
 		},
 		"bearer:" + token)
 	assert_true(profile.status_code < 300, "profile update failed")
@@ -448,7 +448,7 @@ func test_delete_clears_identifying_data_at_once() -> void:
 	# Put one back that way, sign in, and it must be gone again.
 	assert_true(
 		await _helper.console_update_account(
-			user_id, {"avatar_url": "https://example.invalid/refill.png"}),
+			user_id, {"avatar_url": "https://lh3.googleusercontent.com/refill.png"}),
 		"console avatar refill failed")
 	assert_eq(
 		await _device_sign_in(str(player.device_id)), 200,

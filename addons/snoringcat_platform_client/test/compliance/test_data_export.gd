@@ -162,7 +162,7 @@ func test_export_includes_every_category() -> void:
 	# custom id. Seeding through the console skips the sign-in
 	# hooks, and the player doesn't sign in again before exporting.
 	var display_name := "Export %s" % run
-	var avatar_url := "https://example.invalid/%s.png" % run
+	var avatar_url := "https://lh3.googleusercontent.com/%s.png" % run
 	var email := "export-%s@example.invalid" % run
 	var custom_id := "compliance-export-%s" % run
 	var profile_update: Dictionary = await _helper.http_put(
