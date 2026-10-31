@@ -191,6 +191,11 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP95** · SP84 follow-up: a session issued in the same second as the
   delete outlives the revocation until its access token expires, since
   Nakama revokes by issue second. Refresh stays blocked.
+- **SP100** · SP96 residual: a party of one can still gain a member
+  between the join guard and the after-join hook, which leaves the
+  player in two parties. The window is milliseconds; closing it needs
+  the guard and the hook to agree on one read, which they cannot
+  without a lock.
 
 ## Ideas (not scheduled)
 
@@ -204,6 +209,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP99** · SP96 follow-ups: the after-join hook disbands the joiner's party of one only when the joiner is an active member of the joined party (a join request on a closed party ends nothing); party_join_by_code picks the parties of one from a fresh read after its add; the joiner-side refusals say 'you are already in a party'. Done in b8e20d5 (2026-10-30).
 - **SP93** · A prod query for stored avatar URLs and display names that fail the SP42 checks, then a cleanup (H104 1B F4). A read-only count on prod (2026-10-30) found no stored display name and no stored avatar URL that fails the SP42 rules; the only non-standard names are accounts that never set one and the marker that account deletion writes, both expected. Nothing to clean up.
 - **SP83** · Prod Nakama needs a request-body guard at the proxy and a memory limit on its container (H104 1B F18). Done in e17586f (2026-10-30).
 - **SP87** · SP59 follow-ups: bound the `settings` keys and the party-prefs inputs, one live party per creator, `recent_players` off the client-writable list (with hopnbop allowlist seeds if 0.56.0 never writes it), tests that fail with the hook unregistered (H104 1B F14 to F17). Done in d4e12c9 (2026-10-30).
