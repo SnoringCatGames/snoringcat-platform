@@ -282,66 +282,6 @@ func InitModule(
 		return nil
 	}
 
-	// Register the BeforeAuthenticate* hooks. Each enforces that
-	// the inbound request carries a known game_id in its vars
-	// map. The vars propagate into the session token; the same
-	// game_id is then visible to every RPC via RUNTIME_CTX_VARS.
-	//
-	// Bootstrap exemption: while the `games` table is empty
-	// (e.g. immediately after first deploy, before
-	// sync-game-config.ps1 has run), all auths pass through.
-	// See validateGameIDInVars for the rule.
-	if err := registerAuthHooks(initializer, games); err != nil {
-		return err
-	}
-
-	// One after-authenticate function per provider (SP106):
-	// Nakama keeps only the last one registered, so the
-	// generated name at creation (H59), the display-name
-	// clamp (SP88) and sign-in privacy all run inside it.
-	if err := registerAfterAuthenticateHooks(initializer); err != nil {
-		return err
-	}
-
-	// AfterAddGroupUsers / AfterJoinGroup / AfterLeaveGroup /
-	// AfterKickGroupUsers hooks fan out party_state_changed
-	// notifications when a `party-` group's membership changes.
-	// Clients subscribed via a Nakama realtime socket refresh
-	// their local party state on receipt, replacing the legacy
-	// polling cadence in party_manager.gd.
-	if err := registerPartyKickHook(initializer); err != nil {
-		return err
-	}
-	if err := registerPartyGroupGuards(initializer); err != nil {
-		return err
-	}
-	if err := registerStorageAllowlistHook(initializer, games); err != nil {
-		return err
-	}
-	if err := registerAccountValidationHook(initializer); err != nil {
-		return err
-	}
-	if err := registerPartyChatHook(
-		initializer, newFriendsLimiter()); err != nil {
-		return err
-	}
-	if err := registerPartyGroupHooks(initializer); err != nil {
-		return err
-	}
-
-	// Personal-data hooks: refuse email sign-in, drop provider
-	// emails and keep pending deletions' profiles clear on every
-	// sign-in, and purge references after Nakama's own account
-	// delete. See runtime/privacy.go.
-	if err := registerPrivacyHooks(initializer); err != nil {
-		return err
-	}
-
-	// Stage 7.12 + 7.13: BeforeAddFriends hook enforces a cap on
-	// pending outgoing friend requests and a per-caller rate
-	// limit on add-by-username ("friend code") calls. Always on;
-	// no env flag. See runtime/friends_limits.go.
-	//
 	// The limiter instance is shared with the add_friend_by_code RPC
 	// (registered below): both enforce the same per-caller add-by-code
 	// rate limit, so they must count against one budget rather than
@@ -349,8 +289,8 @@ func InitModule(
 	sharedFriendsLimiter := newFriendsLimiter()
 	partyInviteLimiter := newFriendsLimiter()
 	partyJoinLimiter := newFriendsLimiter()
-	if err := registerFriendsLimitHook(
-		initializer, sharedFriendsLimiter); err != nil {
+	if err := registerHooks(
+		initializer, games, sharedFriendsLimiter); err != nil {
 		return err
 	}
 
@@ -724,6 +664,64 @@ func InitModule(
 		"snoringcat-platform runtime loaded (build=%s app=%s version=%s edgegap=%t mock_deploy=%t games=%v)",
 		BuildID, appName, appVersion, matchmakerHookEnabled,
 		mockDeploy, games.GameIDs())
+	return nil
+}
+
+// registerHooks registers every hook the runtime installs.
+// InitModule calls this one function, and the duplicate-
+// registration test calls it too, so a registrar added in
+// one place cannot escape the test (SP109). Nakama keeps
+// one function per hook, so every entry here must stay
+// the only registration of its hook (SP106).
+func registerHooks(
+	initializer runtime.Initializer,
+	games *perGameConfig,
+	sharedFriendsLimiter *friendsLimiter,
+) error {
+	// BeforeAuthenticate* hooks enforce that the inbound
+	// request carries a known game_id in its vars map. The
+	// vars propagate into the session token; the same
+	// game_id is then visible to every RPC via
+	// RUNTIME_CTX_VARS. Bootstrap exemption: while the
+	// `games` table is empty (e.g. immediately after first
+	// deploy, before sync-game-config.ps1 has run), all
+	// auths pass through. See validateGameIDInVars.
+	if err := registerAuthHooks(initializer, games); err != nil {
+		return err
+	}
+	// One after-authenticate function per provider (SP106).
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
+		return err
+	}
+	if err := registerPartyKickHook(initializer); err != nil {
+		return err
+	}
+	if err := registerPartyGroupGuards(initializer); err != nil {
+		return err
+	}
+	if err := registerStorageAllowlistHook(initializer, games); err != nil {
+		return err
+	}
+	if err := registerAccountValidationHook(initializer); err != nil {
+		return err
+	}
+	if err := registerPartyChatHook(
+		initializer, newFriendsLimiter()); err != nil {
+		return err
+	}
+	if err := registerPartyGroupHooks(initializer); err != nil {
+		return err
+	}
+	// Personal-data hooks. See runtime/privacy.go.
+	if err := registerPrivacyHooks(initializer); err != nil {
+		return err
+	}
+	// BeforeAddFriends cap and rate limit (friends_limits.go),
+	// sharing its limiter with the add_friend_by_code RPC.
+	if err := registerFriendsLimitHook(
+		initializer, sharedFriendsLimiter); err != nil {
+		return err
+	}
 	return nil
 }
 

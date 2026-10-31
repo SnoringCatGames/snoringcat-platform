@@ -231,31 +231,14 @@ func (c *recordingInitializer) RegisterAfterDeleteAccount(fn func(context.Contex
 	return nil
 }
 
-// registerAllHooks runs every hook registration InitModule
-// makes, in InitModule's order, through one initializer.
+// registerAllHooks runs the one registration function
+// InitModule calls, through one initializer (SP109), so
+// this test sees exactly what production registers.
 func registerAllHooks(t *testing.T, c *recordingInitializer) {
 	t.Helper()
 	games := newTestGames(t, nil)
-	steps := []func() error{
-		func() error { return registerAuthHooks(c, games) },
-		func() error { return registerAfterAuthenticateHooks(c) },
-		func() error { return registerPartyKickHook(c) },
-		func() error { return registerPartyGroupGuards(c) },
-		func() error { return registerStorageAllowlistHook(c, games) },
-		func() error { return registerAccountValidationHook(c) },
-		func() error {
-			return registerPartyChatHook(c, newFriendsLimiter())
-		},
-		func() error { return registerPartyGroupHooks(c) },
-		func() error { return registerPrivacyHooks(c) },
-		func() error {
-			return registerFriendsLimitHook(c, newFriendsLimiter())
-		},
-	}
-	for i, step := range steps {
-		if err := step(); err != nil {
-			t.Fatalf("register step %d: err = %v", i, err)
-		}
+	if err := registerHooks(c, games, newFriendsLimiter()); err != nil {
+		t.Fatalf("registerHooks: err = %v", err)
 	}
 }
 
