@@ -200,9 +200,9 @@ func isKeptJoiner(runes []rune, i int) bool {
 //   - sign-in privacy runs on every sign-in
 //     (enforceSignInPrivacy).
 //
-// Google and Facebook do all three. Steam clamps and
-// runs privacy. Apple and device generate and run
-// privacy. Custom generates only.
+// Google, Facebook and Steam do all three. Apple and
+// device generate and run privacy. Custom generates
+// only.
 func registerAfterAuthenticateHooks(
 	initializer runtime.Initializer,
 ) error {
@@ -320,7 +320,7 @@ func registerAfterAuthenticateHooks(
 			out *api.Session,
 			_ *api.AuthenticateSteamRequest,
 		) error {
-			work(false, true, true)(ctx, logger, db, nk, out)
+			work(true, true, true)(ctx, logger, db, nk, out)
 			return nil
 		}); err != nil {
 		return err

@@ -26,6 +26,11 @@ type recordingInitializer struct {
 		runtime.NakamaModule, *api.Session,
 		*api.AuthenticateGoogleRequest,
 	) error
+	steamFn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateSteamRequest,
+	) error
 }
 
 func (c *recordingInitializer) record(name string) {
@@ -150,6 +155,7 @@ func (c *recordingInitializer) RegisterAfterAuthenticateFacebook(fn func(context
 
 func (c *recordingInitializer) RegisterAfterAuthenticateSteam(fn func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, *api.Session, *api.AuthenticateSteamRequest) error) error {
 	c.record("AfterAuthenticateSteam")
+	c.steamFn = fn
 	return nil
 }
 
@@ -322,6 +328,36 @@ func TestCreatedGoogleAccountGetsGeneratedName(t *testing.T) {
 	i := strings.LastIndex(got, "_")
 	if i < 0 || len(got)-i-1 != 4 {
 		t.Errorf("generated name = %q, want the _NNNN shape", got)
+	}
+}
+
+func TestCreatedSteamAccountGetsGeneratedName(t *testing.T) {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	if initializer.steamFn == nil {
+		t.Fatal("no Steam after-auth hook was registered")
+	}
+	nk := &fakeAfterAuthNk{displayName: "Provider Person"}
+	err := initializer.steamFn(
+		afterAuthCtx(), testLogger{}, nil, nk,
+		&api.Session{Created: true},
+		&api.AuthenticateSteamRequest{})
+	if err != nil {
+		t.Fatalf("hook: err = %v", err)
+	}
+	if len(nk.updated) != 1 {
+		t.Fatalf("updates = %v, want one generated name", nk.updated)
+	}
+	got := nk.updated[0]
+	if got == "Provider Person" || got == "" {
+		t.Errorf("stored name = %q, want a generated name", got)
+	}
+	if err := validateDisplayName(got); err != nil {
+		t.Errorf("generated name %q fails validation: %v", got, err)
 	}
 }
 
