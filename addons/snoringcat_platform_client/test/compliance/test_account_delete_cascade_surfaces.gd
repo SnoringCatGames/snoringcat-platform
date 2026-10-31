@@ -53,9 +53,9 @@ func before_each() -> void:
 
 func after_each() -> void:
 	# Hard-delete the one-shot account so the audit-queue row +
-	# user shell don't linger. Post-1.5 the deleter retains
-	# sign-in capability, so the original token still authorizes
-	# /v2/account DELETE.
+	# user shell don't linger. The test replaces _user's token
+	# with a fresh sign-in after the delete, and that token
+	# authorizes /v2/account DELETE.
 	if not _user.is_empty():
 		await _helper.delete_one_shot_account(_user)
 	_user = {}
@@ -189,6 +189,12 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 		and bool(delete_inner.get("ok", false)),
 		"delete_account ok!=true: %s" % delete_result.text)
 
+	# delete_account revoked A's session; the checks below run
+	# on a fresh sign-in, as A's client would after the delete.
+	token = await _device_token(str(a.device_id))
+	assert_false(token.is_empty(), "re-sign-in after delete failed")
+	_user["token"] = token
+
 	# Step 6: presence row cleared. update_and_get_presence
 	# writes to (collection=presence, key={game_id}/current OR
 	# legacy "current"). The cascade scrubs both via per-game
@@ -272,6 +278,20 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 	assert_gt(
 		int(status_inner.get("scheduled_for", 0)), 0,
 		"queue row missing scheduled_for: %s" % status.text)
+
+
+## Signs in with an existing device id and returns the new
+## session token ("" on failure). delete_account revokes the
+## old session, so reads after it need a fresh sign-in.
+func _device_token(device_id: String) -> String:
+	var result: Dictionary = await _helper.http_post(
+		"/v2/account/authenticate/device?create=false",
+		_helper.device_auth_body(device_id),
+		"basic_server_key")
+	if (result.status_code != 200
+			or not (result.body is Dictionary)):
+		return ""
+	return str(result.body.get("token", ""))
 
 
 ## Returns true when the deleter's exported data still
