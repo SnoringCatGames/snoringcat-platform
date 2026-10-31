@@ -1964,7 +1964,7 @@ func partySetLevelPrefsRpc(
 	if err := validatePartyPrefsBlob(args.Prefs); err != nil {
 		return "", err
 	}
-		prefs := json.RawMessage("{}")
+	prefs := json.RawMessage("{}")
 	if len(args.Prefs) > 0 {
 		prefs = args.Prefs
 	}

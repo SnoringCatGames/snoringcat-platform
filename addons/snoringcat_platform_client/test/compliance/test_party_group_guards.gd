@@ -207,6 +207,57 @@ func test_party_prefs_inputs_are_bounded() -> void:
 		"over-long mode id should be refused: %s"
 		% mode_resp.text)
 
+
+func test_create_refused_while_in_shared_party() -> void:
+	if not await _mint_users(2):
+		return
+	var a: Dictionary = _users[0]
+	var b: Dictionary = _users[1]
+	var party_id := await _make_party(a, "party-")
+	if party_id.is_empty():
+		return
+	var invite: Dictionary = await _helper.session_rpc(
+		"party_invite", str(a.token),
+		{"party_id": party_id, "target_id": str(b.user_id)})
+	assert_eq(
+		invite.status_code, 200,
+		"invite: status=%d body=%s"
+		% [invite.status_code, invite.text])
+	var accept: Dictionary = await _helper.http_post(
+		"/v2/group/" + party_id + "/join",
+		null, "bearer:" + str(b.token))
+	assert_true(
+		_is_2xx(accept),
+		"accept: status=%d body=%s"
+		% [accept.status_code, accept.text])
+
+	var create: Dictionary = await _helper.http_post(
+		"/v2/group",
+		{"name": "party-second-"
+			+ str(Time.get_unix_time_from_system() as int),
+			"open": false, "max_count": 4},
+		"bearer:" + str(b.token))
+	assert_false(
+		_is_2xx(create),
+		"create while in a shared party should be refused:"
+		+ " status=%d" % create.status_code)
+	assert_true(
+		create.text.contains("already in a party"),
+		"the refusal names the reason: %s" % create.text)
+
+	var mine: Dictionary = await _helper.http_get(
+		"/v2/user/" + str(b.user_id) + "/group",
+		"bearer:" + str(b.token))
+	var still_in := false
+	if mine.body is Dictionary:
+		for entry in mine.body.get("user_groups", []):
+			if str(entry.get("group", {}).get("id", "")) \
+					== party_id:
+				still_in = true
+	assert_true(
+		still_in,
+		"the shared party survives the refused create")
+
 func _mint_users(count: int) -> bool:
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")

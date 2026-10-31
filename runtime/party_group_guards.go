@@ -57,11 +57,11 @@ func registerPartyGroupGuards(
 	return nil
 }
 
-// A player holds one live party they created. Creating a
-// `party-` group ends any party the caller created earlier
-// (the full disband, so its members hear about it and its
-// rows go with it) instead of letting stale parties pile up.
-// Parties the caller only belongs to are left alone.
+// Creating a `party-` group follows the join guard's rule:
+// a caller in a party with other members cannot start a
+// second one, and a party holding only the caller is ended
+// (the full disband, so its rows and open invites go with
+// it) instead of stranding the caller in it.
 func beforeCreateGroupPartyGuard(
 	ctx context.Context,
 	logger runtime.Logger,
@@ -81,22 +81,19 @@ func beforeCreateGroupPartyGuard(
 	if err != nil {
 		return nil, err
 	}
-	for partyID := range memberships {
-		groups, err := nk.GroupsGetId(ctx, []string{partyID})
-		if err != nil {
-			return nil, err
-		}
-		if len(groups) == 0 ||
-			groups[0].GetCreatorId() != userID {
-			continue
-		}
+	if sharedParty(memberships) != "" {
+		return nil, runtime.NewError(
+			"you are already in a party", 6)
+	}
+	for _, soloID := range soloParties(memberships) {
 		if err := disbandPartyGroup(
-			ctx, logger, nk, partyID); err != nil {
+			ctx, logger, nk, soloID); err != nil {
 			return nil, err
 		}
 	}
 	return in, nil
 }
+
 // partyGroupGuard refuses the call when the group is a party
 // group. A group that does not resolve passes through, and
 // Nakama reports the bad id itself.

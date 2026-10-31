@@ -113,7 +113,8 @@ func clampDisplayName(name string) string {
 	out := strings.TrimSpace(
 		string(runes[:maxDisplayNameRunes]))
 	if out == reservedDisplayName {
-		out = string([]rune(out)[:maxDisplayNameRunes-1])
+		outRunes := []rune(out)
+		out = string(outRunes[:len(outRunes)-1])
 	}
 	return out
 }
@@ -151,6 +152,19 @@ func registerAuthNameClamp(
 				userID, err)
 		}
 	}
+	run := func(
+		ctx context.Context,
+		logger runtime.Logger,
+		nk runtime.NakamaModule,
+	) {
+		userID, ok := ctx.Value(
+			runtime.RUNTIME_CTX_USER_ID).(string)
+		if !ok || userID == "" {
+			logger.Warn("name clamp: no user id in context")
+			return
+		}
+		clamp(ctx, logger, nk, userID)
+	}
 	if err := initializer.RegisterAfterAuthenticateFacebook(
 		func(
 			ctx context.Context,
@@ -160,8 +174,7 @@ func registerAuthNameClamp(
 			out *api.Session,
 			_ *api.AuthenticateFacebookRequest,
 		) error {
-			clamp(ctx, logger, nk,
-			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			run(ctx, logger, nk)
 			return nil
 		}); err != nil {
 		return err
@@ -175,8 +188,7 @@ func registerAuthNameClamp(
 			out *api.Session,
 			_ *api.AuthenticateGoogleRequest,
 		) error {
-			clamp(ctx, logger, nk,
-			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			run(ctx, logger, nk)
 			return nil
 		}); err != nil {
 		return err
@@ -190,8 +202,7 @@ func registerAuthNameClamp(
 			out *api.Session,
 			_ *api.AuthenticateSteamRequest,
 		) error {
-			clamp(ctx, logger, nk,
-			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			run(ctx, logger, nk)
 			return nil
 		}); err != nil {
 		return err

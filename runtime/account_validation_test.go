@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
 )
 
 func TestValidateDisplayName(t *testing.T) {
@@ -90,5 +95,81 @@ func TestClampDisplayName(t *testing.T) {
 	if n := utf8.RuneCountInString(got); n != maxDisplayNameRunes {
 		t.Errorf("clamp long = %d runes, want %d",
 			n, maxDisplayNameRunes)
+	}
+}
+
+func TestClampDisplayNameReservedAfterTrim(t *testing.T) {
+	// Over the bound, with the first bound's worth of
+	// runes trimming back to the reserved name.
+	name := reservedDisplayName +
+		strings.Repeat(" ", maxDisplayNameRunes) + "x"
+	got := clampDisplayName(name)
+	if n := utf8.RuneCountInString(got); n > maxDisplayNameRunes {
+		t.Errorf("clamp = %d runes, want at most %d",
+			n, maxDisplayNameRunes)
+	}
+	if strings.ContainsRune(got, 0) {
+		t.Errorf("clamp = %q, want no NUL runes", got)
+	}
+	if got == reservedDisplayName {
+		t.Errorf("clamp = %q, want a non-reserved name", got)
+	}
+}
+
+type capturingAuthClampInitializer struct {
+	runtime.Initializer
+
+	googleFn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateGoogleRequest,
+	) error
+}
+
+func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateFacebook(
+	func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateFacebookRequest,
+	) error,
+) error {
+	return nil
+}
+
+func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateSteam(
+	func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateSteamRequest,
+	) error,
+) error {
+	return nil
+}
+func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateGoogle(
+	fn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateGoogleRequest,
+	) error,
+) error {
+	c.googleFn = fn
+	return nil
+}
+
+func TestAuthNameClampWithoutUserIDIsANoOp(t *testing.T) {
+	initializer := &capturingAuthClampInitializer{}
+	if err := registerAuthNameClamp(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	if initializer.googleFn == nil {
+		t.Fatal("no Google after-auth hook was registered")
+	}
+	// No user id in context: the hook logs and returns
+	// without touching the module.
+	err := initializer.googleFn(
+		context.Background(), testLogger{}, nil, nil,
+		&api.Session{}, &api.AuthenticateGoogleRequest{})
+	if err != nil {
+		t.Fatalf("hook without user id: err = %v", err)
 	}
 }
