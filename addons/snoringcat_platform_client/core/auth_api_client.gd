@@ -287,17 +287,13 @@ func submit_platform_token(
 func login_anonymous() -> void:
 	var store: PlatformAuthTokenStore = Platform.token_store
 	if store.load_failed and store.has_auth_file():
-		# The saved sign-in cannot be read. Move it aside
-		# rather than minting over it, and say plainly that
-		# a new guest is starting.
-		if store.move_unreadable_file_aside():
-			auth_status_changed.emit(
-				"Saved sign-in could not be read; "
-				+ "starting as a new guest")
-		else:
-			push_warning(
-				"[PlatformAuthApiClient] Unreadable auth "
-				+ "file could not be moved aside")
+		# The saved sign-in cannot be read. save_tokens
+		# moves it aside before writing, so a new guest
+		# starts without destroying the old file; here we
+		# only say plainly that one is starting.
+		auth_status_changed.emit(
+			"Saved sign-in could not be read; "
+			+ "starting as a new guest")
 	store.is_anonymous = true
 	store.display_name = _generate_anonymous_name()
 	store.local_player_id = _generate_state_nonce()
@@ -1062,7 +1058,6 @@ func _do_anon_auth() -> void:
 			# account (SP44), so fail instead. A file that
 			# loaded and holds no id has no account to
 			# orphan, and mints below.
-			_is_refreshing = false
 			guest_jwt_obtained.emit(
 				false,
 				"Saved guest identity could not be read")
@@ -1074,7 +1069,6 @@ func _do_anon_auth() -> void:
 		await Platform.get_nakama_client().authenticate_device_async(
 			device_id, null, true, _build_session_vars()))
 	if session.is_exception():
-		_is_refreshing = false
 		guest_jwt_obtained.emit(
 			false,
 			_describe_nakama_exception(session.get_exception()))

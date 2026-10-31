@@ -209,11 +209,14 @@ func has_auth_file() -> bool:
 	return FileAccess.file_exists(_auth_file_path)
 
 
-## Moves an unreadable auth file aside (auth.cfg.unreadable)
-## so a fresh guest can start without destroying the old
-## file. Returns whether the file was moved.
+## Moves an unreadable auth file aside so a fresh guest
+## can start without destroying the old file. The aside
+## name is unique: a plain rename replaces an existing
+## aside file, so a later unreadable file gets a numbered
+## name and the earlier aside survives. Returns whether
+## the file was moved.
 func move_unreadable_file_aside() -> bool:
-	var aside_path := _auth_file_path + ".unreadable"
+	var aside_path := _unique_unreadable_path()
 	var err := DirAccess.rename_absolute(
 		ProjectSettings.globalize_path(_auth_file_path),
 		ProjectSettings.globalize_path(aside_path))
@@ -221,6 +224,19 @@ func move_unreadable_file_aside() -> bool:
 		return false
 	load_failed = false
 	return true
+
+
+## The first free aside name for the auth file:
+## auth.cfg.unreadable, then auth.cfg.unreadable.2, and
+## so on.
+func _unique_unreadable_path() -> String:
+	var base := _auth_file_path + ".unreadable"
+	if not FileAccess.file_exists(base):
+		return base
+	var n := 2
+	while FileAccess.file_exists("%s.%d" % [base, n]):
+		n += 1
+	return "%s.%d" % [base, n]
 
 
 ## Path of the per-install key file next to the auth file.
@@ -263,6 +279,18 @@ func _install_key(create: bool) -> String:
 ## anonymous account had JWT fields (legacy), they are
 ## overwritten with empty values.
 func save_tokens() -> void:
+	if load_failed and has_auth_file():
+		# The file on disk cannot be read. Move it aside
+		# before writing anything: the consent save runs
+		# before guest sign-in, so without this guard it
+		# would write over the old identity. When the
+		# move fails, write nothing at all.
+		if not move_unreadable_file_aside():
+			push_warning(
+				"[PlatformAuthTokenStore] Unreadable auth "
+				+ "file could not be moved aside; "
+				+ "save skipped")
+			return
 	var config := ConfigFile.new()
 	config.set_value(
 		_SECTION, "is_anonymous", is_anonymous
