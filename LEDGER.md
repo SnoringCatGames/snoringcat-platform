@@ -128,7 +128,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   the client-writable list (with hopnbop allowlist seeds if 0.56.0
   never writes it), tests that fail with the hook unregistered (H104 1B
   F14 to F17).
-- **SP88** · SP42 follow-ups: exact avatar host patterns, names stored
+- **SP88** · SP42 follow-ups: exact avatar host patterns (done in
+  bade4f3, SP88 host patterns), names stored
   as checked, invisible characters and `[Deleted]` look-alikes refused,
   a compliance test that the hook is wired (H104 1B F3 runtime half,
   F5, F6).
@@ -150,6 +151,9 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP2** · phase-b's UptimeRobot step still calls the v2 API
   (`scripts/phase-b.ps1:373-416`), whose `newMonitor` this free plan
   refuses (v3 works), so a rebuild can't recreate the monitors.
+- **SP84 residual** · A session issued in the same second as the
+  delete outlives the revocation until its access token expires,
+  since Nakama revokes by issue second. Refresh stays blocked.
 - **SP3** · The host's cost-monitor `.env` lacks `GITHUB_TOKEN`
   (`cost-monitor.sh:759`), so its GitHub Actions spend is a placeholder
   zero that weekly-cost-review quotes (unchecked on the host).
