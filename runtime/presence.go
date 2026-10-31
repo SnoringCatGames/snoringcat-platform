@@ -34,8 +34,10 @@ import (
 //   friends read presence through this RPC, never the row)
 //
 // Pre-Stage-3 (bootstrap) rows used key="current" and no
-// game_id field. Those rows are overwritten on the next
-// presence ping; no migration needed.
+// game_id field. Rows written before server-only
+// permissions keep their old permissions until a
+// heartbeat rewrites them; migratePresencePermissions
+// rewrites the rest at startup.
 
 const (
 	presenceCollection = "presence"
@@ -70,13 +72,42 @@ const (
 // Without this, a crash or a force-quit leaves the last-written row
 // in storage forever and the player reads as permanently online —
 // there is no disconnect hook to write `offline` on their behalf.
+const presenceStaleAfterSeconds int64 = 90
+
 // presenceRichMaxRunes caps the free-form rich_presence text
 // the server stores and forwards (SP36). Longer values are
 // truncated, never refused, so a chatty client degrades to a
 // shorter label instead of losing its heartbeat.
 const presenceRichMaxRunes = 100
 
-const presenceStaleAfterSeconds int64 = 90
+// migratePresencePermissions rewrites presence rows written
+// before server-only permissions (SP36) to read 0, write 0.
+// Rows a heartbeat already rewrote carry 0/0 and do not
+// match the filter, so the statement is a no-op on later
+// starts and safe to run every time. Only permissions
+// change; values are untouched.
+func migratePresencePermissions(
+	ctx context.Context,
+	db *sql.DB,
+	logger runtime.Logger,
+) {
+	result, err := db.ExecContext(ctx, `
+		UPDATE storage
+		SET "read" = 0, "write" = 0
+		WHERE collection = $1
+			AND ("read" <> 0 OR "write" <> 0)`,
+		presenceCollection)
+	if err != nil {
+		logger.Error(
+			"presence permission migration: %v", err)
+		return
+	}
+	if n, err := result.RowsAffected(); err == nil && n > 0 {
+		logger.Info(
+			"presence permission migration: %d rows rewritten",
+			n)
+	}
+}
 
 // isPresenceVisible reports whether a stored record should surface
 // to a friend. A record is visible when the player hasn't announced
@@ -194,8 +225,8 @@ func updateAndGetPresenceRpc(
 	args := presenceArgs{}
 	if payload != "" {
 		if err := json.Unmarshal([]byte(payload), &args); err != nil {
-			return "", runtime.NewError(
-				"invalid payload: "+err.Error(), 3)
+			logger.Warn("presence payload parse: %v", err)
+			return "", runtime.NewError("invalid payload", 3)
 		}
 	}
 	args.Status = normalizePresenceStatus(args.Status)
@@ -220,7 +251,7 @@ func updateAndGetPresenceRpc(
 		PermissionWrite: 0,
 	}}); err != nil {
 		logger.Error("presence write: %v", err)
-		return "", err
+		return "", runtime.NewError("presence write failed", 13)
 	}
 
 	// Pull the friends list. Nakama caps page size at 100; for
@@ -229,7 +260,7 @@ func updateAndGetPresenceRpc(
 		ctx, userID, 100, nil, "")
 	if err != nil {
 		logger.Error("friends list: %v", err)
-		return "", err
+		return "", runtime.NewError("friends list failed", 13)
 	}
 
 	// Build the batched read set. Default: each friend's row in
@@ -279,7 +310,7 @@ func updateAndGetPresenceRpc(
 	objects, err := nk.StorageRead(ctx, reads)
 	if err != nil {
 		logger.Error("presence batched read: %v", err)
-		return "", err
+		return "", runtime.NewError("presence read failed", 13)
 	}
 	now := nowUnix()
 	for _, obj := range objects {

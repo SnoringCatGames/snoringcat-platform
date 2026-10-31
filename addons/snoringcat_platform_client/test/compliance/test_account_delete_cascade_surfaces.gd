@@ -151,10 +151,13 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 
 	# Step 4: pre-cascade sanity. If these fail, the rest of the
 	# test isn't actually exercising the cascade.
-	var pre_presence: bool = await _read_presence_exists(
+	var pre_presence: Dictionary = await _read_presence(
 		token, presence_rich)
+	assert_eq(
+		pre_presence.status, 200,
+		"pre-cascade: presence read failed")
 	assert_true(
-		pre_presence,
+		pre_presence.exists,
 		"pre-cascade: presence row missing — seeding failed")
 	var pre_group: Dictionary = await _helper.http_get(
 		"/v2/group/" + group_id, "bearer:" + token)
@@ -199,10 +202,14 @@ func test_delete_account_clears_all_state_surfaces() -> void:
 	# writes to (collection=presence, key={game_id}/current OR
 	# legacy "current"). The cascade scrubs both via per-game
 	# enumeration; a regression would leave the seeded row.
-	var post_presence: bool = await _read_presence_exists(
+	var post_presence: Dictionary = await _read_presence(
 		token, presence_rich)
+	assert_eq(
+		post_presence.status, 200,
+		"post-cascade: presence read failed, "
+			+ "so the scrub check proves nothing")
 	assert_false(
-		post_presence,
+		post_presence.exists,
 		"post-cascade: presence row still exists — scrub regressed")
 
 	# Step 7: party-prefixed group hard-deleted. The cascade
@@ -299,15 +306,19 @@ func _device_token(device_id: String) -> String:
 ## server-only since SP36, so existence is checked through
 ## the export RPC (a server-side read) instead of the
 ## StorageObjects API.
-func _read_presence_exists(
+## Reads the caller's exported data and reports the read's
+## status beside whether the presence marker is in it, so a
+## failed read cannot pass as "row gone".
+func _read_presence(
 	token: String,
 	rich_marker: String,
-) -> bool:
+) -> Dictionary:
 	var result: Dictionary = await _helper.session_rpc(
 		"export_player_data", token, null)
-	if result.status_code != 200:
-		return false
-	return str(result.text).contains(rich_marker)
+	return {
+		"status": result.status_code,
+		"exists": str(result.text).contains(rich_marker),
+	}
 
 
 ## Returns Nakama's user-group state int for `group_id` from

@@ -3,13 +3,94 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
+
+// stubPresenceConn records the one ExecContext the
+// migration runs, so its statement can be checked without
+// a database.
+type stubPresenceConn struct {
+	query string
+	args  []driver.Value
+	rows  int64
+}
+
+func (c *stubPresenceConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("no prepare")
+}
+
+func (c *stubPresenceConn) Close() error { return nil }
+
+func (c *stubPresenceConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("no transactions")
+}
+
+func (c *stubPresenceConn) ExecContext(
+	_ context.Context,
+	query string,
+	args []driver.NamedValue,
+) (driver.Result, error) {
+	c.query = query
+	for _, a := range args {
+		c.args = append(c.args, a.Value)
+	}
+	return driver.RowsAffected(c.rows), nil
+}
+
+type stubPresenceConnector struct{ conn *stubPresenceConn }
+
+func (s *stubPresenceConnector) Connect(
+	context.Context,
+) (driver.Conn, error) {
+	return s.conn, nil
+}
+
+func (s *stubPresenceConnector) Driver() driver.Driver {
+	return stubPresenceDriver{}
+}
+
+type stubPresenceDriver struct{}
+
+func (stubPresenceDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("use the connector")
+}
+
+func TestMigratePresencePermissions(t *testing.T) {
+	conn := &stubPresenceConn{rows: 3}
+	db := sql.OpenDB(&stubPresenceConnector{conn: conn})
+	defer db.Close()
+
+	migratePresencePermissions(
+		context.Background(), db, testLogger{})
+
+	if !strings.Contains(conn.query, "UPDATE storage") {
+		t.Errorf("query = %q, want a storage update", conn.query)
+	}
+	if !strings.Contains(conn.query, `"read" = 0`) ||
+		!strings.Contains(conn.query, `"write" = 0`) {
+		t.Errorf("query = %q, want both permissions zeroed",
+			conn.query)
+	}
+	// Only rows not already server-only match, so later
+	// starts change nothing.
+	if !strings.Contains(conn.query, `"read" <> 0`) ||
+		!strings.Contains(conn.query, `"write" <> 0`) {
+		t.Errorf("query = %q, want the not-yet-migrated filter",
+			conn.query)
+	}
+	if len(conn.args) != 1 || conn.args[0] != presenceCollection {
+		t.Errorf("args = %v, want [%s]", conn.args,
+			presenceCollection)
+	}
+}
 
 // TestIsPresenceVisible pins the visibility rule that decides
 // whether a friend shows up at all. The pre-fix runtime dropped

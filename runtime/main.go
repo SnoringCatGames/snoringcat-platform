@@ -237,6 +237,12 @@ func InitModule(
 	// Create the leaderboards each registered game declares
 	// (match_end writes to them). Failures are logged, not fatal.
 	ensureAllGameLeaderboards(ctx, logger, nk, games)
+
+	// Presence rows written before server-only permissions
+	// (SP36) are still client-readable until a heartbeat
+	// rewrites them; rewrite their permissions now. Logged,
+	// not fatal: the next start retries.
+	migratePresencePermissions(ctx, db, logger)
 	// One cached reader for the public leaderboard: the HTTP route
 	// and get_player_stats rank players from the same read.
 	publicBoards := newPublicLeaderboardReader(logger, nk)
