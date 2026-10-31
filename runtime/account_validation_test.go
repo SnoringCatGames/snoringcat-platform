@@ -70,3 +70,12 @@ func TestValidateAvatarURL(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAvatarURLRefusesNonASCIIHost(t *testing.T) {
+	// U+212A (Kelvin sign) folds to 'k' when lowercased;
+	// non-ASCII host characters are refused before that.
+	raw := "https://avatars.a\u212aamai.steamstatic.com/a.jpg"
+	if err := validateAvatarURL(raw); errorCode(err) != 3 {
+		t.Errorf("url: err = %v, want code 3", err)
+	}
+}

@@ -140,19 +140,21 @@ func validateAvatarURL(raw string) error {
 		return runtime.NewError("avatar URL is malformed", 3)
 	}
 	// The host is the text before the first '/'; it may
-	// contain only hostname characters.
+	// contain only ASCII hostname characters. The check
+	// runs before lowercasing, so a non-ASCII character
+	// cannot fold into an ASCII one.
 	authority := raw[len("https://"):]
 	if i := strings.Index(authority, "/"); i >= 0 {
 		authority = authority[:i]
 	}
-	host := strings.ToLower(authority)
-	for _, r := range host {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') &&
-			r != '.' && r != '-' {
+	for _, r := range authority {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') &&
+			(r < '0' || r > '9') && r != '.' && r != '-' {
 			return runtime.NewError(
 				"avatar URL is malformed", 3)
 		}
 	}
+	host := strings.ToLower(authority)
 	if !avatarURLAllowedHost(host) {
 		return runtime.NewError(
 			"avatar host is not allowed", 3)
