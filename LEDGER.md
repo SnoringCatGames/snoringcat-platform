@@ -117,6 +117,20 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
+- **SP107** · Steam lost its generated name at creation in SP106
+  (`8363d0c`): the H124 brief said Steam keeps only the clamp, but
+  before SP106 Steam also got a generated name (H59). Fix: hopnbop
+  `docs/design/H125_muse_run6.md` (Muse run 6).
+- **SP108** · No account created since H59's naming hooks reached prod
+  (`886aa10`, 2026-10-20) got a generated name: privacy's
+  after-authenticate hooks, registered after them, replaced them until
+  SP106. Those accounts (and a few older ones) are nameless, and the
+  public leaderboard hides them. Fix: name an empty-named account at
+  sign-in and at session refresh (hopnbop H125).
+- **SP109** · `TestNoHookRegisteredTwice`
+  (`runtime/after_auth_hooks_test.go`) runs a hand-kept copy of
+  InitModule's registrar list; make InitModule and the test call one
+  registration function (hopnbop H125).
 ## Residuals (known, not fixed)
 
 - **SP2** · phase-b's UptimeRobot step still calls the v2 API
