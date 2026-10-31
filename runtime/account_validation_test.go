@@ -9,6 +9,7 @@ import (
 
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestValidateDisplayName(t *testing.T) {
@@ -27,13 +28,81 @@ func TestValidateDisplayName(t *testing.T) {
 		"",
 		"   ",
 		"[deleted]",
+		"[Deleted]",
+		"[DELETED]",
+		"[deleted]\u200b",
+		"\u200b\u200b",
+		"\u202eevil",
+		"!!!",
 		"line\nbreak",
 		strings.Repeat("n", maxDisplayNameRunes+1),
+		strings.Repeat(" ", 40) +
+			strings.Repeat("n", maxDisplayNameRunes+1),
 	}
 	for _, name := range bad {
 		if err := validateDisplayName(name); errorCode(err) != 3 {
 			t.Errorf("name %q: err = %v, want code 3", name, err)
 		}
+	}
+}
+
+type capturingUpdateAccountInitializer struct {
+	runtime.Initializer
+
+	fn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.UpdateAccountRequest,
+	) (*api.UpdateAccountRequest, error)
+}
+
+func (c *capturingUpdateAccountInitializer) RegisterBeforeUpdateAccount(
+	fn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.UpdateAccountRequest,
+	) (*api.UpdateAccountRequest, error),
+) error {
+	c.fn = fn
+	return nil
+}
+
+func TestAccountValidationHookStoresCheckedName(t *testing.T) {
+	initializer := &capturingUpdateAccountInitializer{}
+	if err := registerAccountValidationHook(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	if initializer.fn == nil {
+		t.Fatal("no BeforeUpdateAccount hook was registered")
+	}
+	// An accepted name is stored trimmed, padding included
+	// in what the client sent but not in what is kept.
+	in := &api.UpdateAccountRequest{
+		DisplayName: &wrapperspb.StringValue{
+			Value: "  Ada Lovelace  ",
+		},
+	}
+	out, err := initializer.fn(
+		context.Background(), testLogger{}, nil, nil, in)
+	if err != nil {
+		t.Fatalf("hook: err = %v, want nil", err)
+	}
+	if got := out.DisplayName.Value; got != "Ada Lovelace" {
+		t.Errorf("stored name = %q, want the trimmed name", got)
+	}
+	// Padding does not count toward the length bound.
+	padded := &api.UpdateAccountRequest{
+		DisplayName: &wrapperspb.StringValue{
+			Value: strings.Repeat(" ", 40) +
+				strings.Repeat("n", maxDisplayNameRunes),
+		},
+	}
+	out, err = initializer.fn(
+		context.Background(), testLogger{}, nil, nil, padded)
+	if err != nil {
+		t.Fatalf("padded hook: err = %v, want nil", err)
+	}
+	if n := utf8.RuneCountInString(out.DisplayName.Value); n != maxDisplayNameRunes {
+		t.Errorf("stored padded = %d runes, want %d",
+			n, maxDisplayNameRunes)
 	}
 }
 
@@ -95,6 +164,18 @@ func TestClampDisplayName(t *testing.T) {
 	if n := utf8.RuneCountInString(got); n != maxDisplayNameRunes {
 		t.Errorf("clamp long = %d runes, want %d",
 			n, maxDisplayNameRunes)
+	}
+}
+
+func TestClampDisplayNameReservedLookAlike(t *testing.T) {
+	// An imported name that matches the reserved name in
+	// any case is shortened so it no longer matches.
+	got := clampDisplayName("[Deleted]")
+	if got == "" {
+		t.Fatal("clamp = no change, want a shortened name")
+	}
+	if strings.EqualFold(got, reservedDisplayName) {
+		t.Errorf("clamp = %q, want a non-reserved name", got)
 	}
 }
 

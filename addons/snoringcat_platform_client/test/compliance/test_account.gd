@@ -90,3 +90,56 @@ func test_account_update_round_trips() -> void:
 		"display_name didn't round-trip;"
 			+ " got '%s' expected '%s'"
 			% [str(user.get("display_name", "")), new_name])
+
+func test_account_update_enforces_profile_rules() -> void:
+	# The account update hook is wired: profile values the
+	# rules refuse come back as an error, and an accepted
+	# name is stored trimmed.
+	if not _helper.is_live_mode():
+		pending("mock mode not yet implemented")
+		return
+	if _helper.server_key_basic_header().is_empty():
+		pending("NAKAMA_SERVER_KEY env var not set")
+		return
+
+	var device_id := (
+		"compliance-acct-validation-"
+		+ str(Time.get_unix_time_from_system() as int))
+	var token: String = await _helper.nakama_anon_session(device_id)
+	assert_false(token.is_empty(), "anon auth failed")
+
+	var long_name := ""
+	for i in 33:
+		long_name += "n"
+	var refused_name: Dictionary = await _helper.http_put(
+		"/v2/account",
+		{"display_name": long_name},
+		"bearer:" + token)
+	assert_eq(
+		refused_name.status_code, 400,
+		"over-long name: %s" % refused_name.text)
+
+	var refused_avatar: Dictionary = await _helper.http_put(
+		"/v2/account",
+		{"avatar_url": "https://tracker.invalid/pixel.png"},
+		"bearer:" + token)
+	assert_eq(
+		refused_avatar.status_code, 400,
+		"unlisted avatar host: %s" % refused_avatar.text)
+
+	var accepted: Dictionary = await _helper.http_put(
+		"/v2/account",
+		{"display_name": "  Trimmed Name  "},
+		"bearer:" + token)
+	assert_true(
+		accepted.status_code == 200 or accepted.status_code == 204,
+		"trimmed name update returned %d: %s"
+			% [accepted.status_code, accepted.text])
+	var get_result: Dictionary = await _helper.http_get(
+		"/v2/account", "bearer:" + token)
+	assert_eq(get_result.status_code, 200)
+	var user: Dictionary = get_result.body.get("user", {})
+	assert_eq(
+		str(user.get("display_name", "")), "Trimmed Name",
+		"name stored untrimmed: '%s'"
+			% str(user.get("display_name", "")))

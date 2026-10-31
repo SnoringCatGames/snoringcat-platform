@@ -88,6 +88,10 @@ func registerAccountValidationHook(
 					in.DisplayName.Value); err != nil {
 					return nil, err
 				}
+				// Store the name as checked: trimmed,
+				// so what is kept is what was validated.
+				in.DisplayName.Value = strings.TrimSpace(
+					in.DisplayName.Value)
 			}
 			if in.AvatarUrl != nil {
 				if err := validateAvatarURL(
@@ -99,24 +103,44 @@ func registerAccountValidationHook(
 		})
 }
 
-// clampDisplayName returns the name cut to the display
-// name bound, or "" when it already fits. Sign-in providers
-// import names without the update hook, so a name that
-// predates the bound (or arrives over it) is cut to fit
-// after authentication instead of failing later updates.
+// clampDisplayName returns the name as it may be stored:
+// trimmed, cut to the display name bound, invisible
+// characters dropped, and never the reserved name in any
+// case. It returns "" when the name already complies.
+// Sign-in providers import names without the update hook,
+// so a name that predates the rules (or arrives over the
+// bound) is rewritten after authentication instead of
+// failing later updates.
 func clampDisplayName(name string) string {
-	trimmed := strings.TrimSpace(name)
+	trimmed := strings.TrimSpace(stripInvisibleRunes(name))
 	runes := []rune(trimmed)
-	if len(runes) <= maxDisplayNameRunes {
+	if len(runes) > maxDisplayNameRunes {
+		trimmed = strings.TrimSpace(
+			string(runes[:maxDisplayNameRunes]))
+		runes = []rune(trimmed)
+	}
+	if strings.EqualFold(trimmed, reservedDisplayName) &&
+		len(runes) > 0 {
+		trimmed = string(runes[:len(runes)-1])
+	}
+	if trimmed == name {
 		return ""
 	}
-	out := strings.TrimSpace(
-		string(runes[:maxDisplayNameRunes]))
-	if out == reservedDisplayName {
-		outRunes := []rune(out)
-		out = string(outRunes[:len(outRunes)-1])
-	}
-	return out
+	return trimmed
+}
+
+// stripInvisibleRunes drops format characters and the
+// line/paragraph separators: they render as nothing (or
+// reorder neighbouring text) in a display name.
+func stripInvisibleRunes(name string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) ||
+			unicode.Is(unicode.Zl, r) ||
+			unicode.Is(unicode.Zp, r) {
+			return -1
+		}
+		return r
+	}, name)
 }
 
 // registerAuthNameClamp installs the after-authenticate
@@ -210,7 +234,11 @@ func registerAuthNameClamp(
 	return nil
 }
 
-// validateDisplayName checks one proposed display name.
+// validateDisplayName checks one proposed display name
+// in the form it would be stored: trimmed of surrounding
+// space, within the bound, with no control or invisible
+// characters, at least one letter or digit, and not the
+// reserved name in any case.
 func validateDisplayName(name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -219,14 +247,25 @@ func validateDisplayName(name string) error {
 	if utf8.RuneCountInString(trimmed) > maxDisplayNameRunes {
 		return runtime.NewError("display name is too long", 3)
 	}
-	if trimmed == reservedDisplayName {
+	if strings.EqualFold(trimmed, reservedDisplayName) {
 		return runtime.NewError("display name is reserved", 3)
 	}
+	hasLetterOrDigit := false
 	for _, r := range trimmed {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) ||
+			unicode.Is(unicode.Cf, r) ||
+			unicode.Is(unicode.Zl, r) ||
+			unicode.Is(unicode.Zp, r) {
 			return runtime.NewError(
-				"display name has control characters", 3)
+				"display name has invisible characters", 3)
 		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasLetterOrDigit = true
+		}
+	}
+	if !hasLetterOrDigit {
+		return runtime.NewError(
+			"display name needs a letter or digit", 3)
 	}
 	return nil
 }
