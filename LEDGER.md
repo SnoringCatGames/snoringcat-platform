@@ -182,9 +182,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   player in two parties. The window is milliseconds; closing it needs
   the guard and the hook to agree on one read, which they cannot
   without a lock.
-- **SP104** · SP88 residual: refusing every Cf character also refuses
-  ZWNJ and ZWJ (Persian and Indic names, ZWJ emoji). Check the
-  supported locales, or record it as a known limit (hopnbop H123 2.4).
+
 
 ## Ideas (not scheduled)
 
@@ -198,6 +196,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP104** · ZWNJ and ZWJ are kept where they do orthographic work (between letters or marks; ZWJ also between emoji) and refused or dropped elsewhere; the supported locales include Hindi, so the joiners are needed. Done in 81974cc (2026-10-30).
 - **SP103** · The name clamp's kept output always passes `validateDisplayName` (control characters drop too); when nothing valid remains, the after-auth hook stores a generated name instead of keeping the invalid imported one. Done in f2d0698 (2026-10-30).
 - **SP105** · Go files check out with LF (`*.go text eol=lf` in `.gitattributes`, checkout refreshed to w/lf), so a local `gofmt -l runtime` lists nothing instead of every file. Done in 7540b74 (2026-10-30).
 - **SP102** · The consent path can no longer overwrite an unreadable auth file: `save_tokens()` moves it aside first (unique aside name) and writes nothing when the move fails; `login_anonymous()` keeps only its status message; `_do_anon_auth` no longer clears a refresh flag it never sets. Done in cd982de (2026-10-30).
