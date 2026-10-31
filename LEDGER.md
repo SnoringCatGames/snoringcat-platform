@@ -18,13 +18,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Urgent
 
-- **SP83** · Prod Nakama needs a request-body guard at the proxy and a
-  memory limit on its container (H104 1B F18). Patch prepared and
-  tested locally 2026-10-30 (hopnbop `.claude/probes/H104/F18/`);
-  it is committed and deployed together once Levi approves the
-  deploy. Details: hopnbop `.claude/probes/H104/stage1-B.md`
-  (local).
-
 
 ## Waiting on Levi
 
@@ -65,8 +58,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP92** · Report H104 1B F18 (a Nakama 3.25.0 server issue) to
   Heroic Labs privately, through their security contact rather than a
   public issue; after the proxy guard is deployed.
-- **SP93** · A prod query for stored avatar URLs and display names that
-  fail the SP42 checks, then a cleanup (H104 1B F4).
 
 ## In progress
 
@@ -131,6 +122,12 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   permissions: migrate them if the 0.56.0 compliance matrix stays
   green, and fix the comment that says no migration is needed. Plus
   SP36 nits (H104 1A SP36-1, SP36-3 to 5).
+- **SP98** · Exercise the proxy request-body guard in CI: the dev
+  compliance stack has no proxy, so nothing automated covers the guard
+  the production Caddyfile enforces. Add a Caddy service to the dev
+  stack built from the production image, point the suite at it, and
+  assert an encoded request and an oversized body are refused at the
+  proxy (SP83 follow-up).
 
 ## Residuals (known, not fixed)
 
@@ -207,6 +204,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP93** · A prod query for stored avatar URLs and display names that fail the SP42 checks, then a cleanup (H104 1B F4). A read-only count on prod (2026-10-30) found no stored display name and no stored avatar URL that fails the SP42 rules; the only non-standard names are accounts that never set one and the marker that account deletion writes, both expected. Nothing to clean up.
+- **SP83** · Prod Nakama needs a request-body guard at the proxy and a memory limit on its container (H104 1B F18). Done in e17586f (2026-10-30).
 - **SP87** · SP59 follow-ups: bound the `settings` keys and the party-prefs inputs, one live party per creator, `recent_players` off the client-writable list (with hopnbop allowlist seeds if 0.56.0 never writes it), tests that fail with the hook unregistered (H104 1B F14 to F17). Done in d4e12c9 (2026-10-30).
 - **SP96** · SP85 follow-up: a party holding only the invited or joining player must not count as being in a party. Done in 2cf7a55 (2026-10-30).
 - **SP97** · SP86 follow-ups: party_abort_matchmaking releases the party's start-guard entry so a fresh attempt is not refused inside the window; the start guard prunes entries older than its window; the party_matchmaking_start notification carries the member_ids roster that passed the ready gate, so followers check their own id in it instead of a ready flag the start already spent. Done in 66d6beb (2026-10-30).
