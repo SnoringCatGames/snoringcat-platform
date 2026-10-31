@@ -18,11 +18,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Urgent
 
-- **SP106** · Since SP88 (`03884fa`, deployed 2026-10-31 01:48 UTC) the
-  name clamp replaces the generated-name after-authenticate hook for
-  Google and Facebook (Nakama keeps one per provider), so a new account
-  there keeps its provider name (H59). No account was created since
-  (prod count). Fix: hopnbop `docs/design/H124_muse_run5.md`.
+
 
 
 ## Waiting on Levi
@@ -202,6 +198,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP106** · One after-authenticate function per provider now runs the generated name at creation, the SP88 clamp and sign-in privacy (three registrars had silently replaced each other; privacy, registered last, was the survivor). Done in 8363d0c (2026-10-31).
 - **SP104** · ZWNJ and ZWJ are kept where they do orthographic work (between letters or marks; ZWJ also between emoji) and refused or dropped elsewhere; the supported locales include Hindi, so the joiners are needed. Done in 81974cc (2026-10-30).
 - **SP103** · The name clamp's kept output always passes `validateDisplayName` (control characters drop too); when nothing valid remains, the after-auth hook stores a generated name instead of keeping the invalid imported one. Done in f2d0698 (2026-10-30).
 - **SP105** · Go files check out with LF (`*.go text eol=lf` in `.gitattributes`, checkout refreshed to w/lf), so a local `gofmt -l runtime` lists nothing instead of every file. Done in 7540b74 (2026-10-30).
