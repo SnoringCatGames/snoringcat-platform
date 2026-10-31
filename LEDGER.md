@@ -28,6 +28,13 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Waiting on Levi
 
+- **SP84** · SP47's revocation (sessions and sockets end at
+  delete time) is built and tested but held for a release:
+  the released suite gains one unlisted failure, a fixture
+  that reads the account back with the pre-delete token
+  (players sign in again and are unaffected). Patch:
+  hopnbop `.claude/probes/SP84/sp84.patch`; ship it with the
+  next client release. Reopens SP47 (H104 1B F11 to F13).
 - **SP82** · Dependabot alerts are on but blind to the Pulumi module
   (checked 2026-10-29; detail in `docs/ledger_notes.md`): Levi to OK
   adding `.github/dependabot.yml` (gomod,
@@ -114,10 +121,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
-- **SP84** · SP47 does not take effect: a deleted account keeps its
-  sessions and sockets (DEL-3 still open). Revoke both in
-  `delete_account`, fail closed, and add a compliance test that a
-  refresh after a delete fails. Reopens SP47 (H104 1B F11 to F13).
 - **SP85** · Party invite and join, server-only checks that need no
   client change: a blocked target, a target already in another party,
   and raw group calls on party groups. Reopens the party half of SP36;
