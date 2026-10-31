@@ -216,6 +216,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP97** · SP86 follow-ups: party_abort_matchmaking releases the party's start-guard entry so a fresh attempt is not refused inside the window; the start guard prunes entries older than its window; the party_matchmaking_start notification carries the member_ids roster that passed the ready gate, so followers check their own id in it instead of a ready flag the start already spent. Done in 66d6beb (2026-10-30).
 - **SP85** · Party invite and join, server-only checks that need no client change: a blocked target, a target already in another party, and raw group calls on party groups. Done in 1f3f8ca (2026-10-30).
 - **SP20** · `Platform.api` / `core/api_client.gd` was still created at startup; its only caller is gone. Done in 99c9195 (2026-10-29).
 - **SP21** · `README.md` claimed a `v1.4.0` tag; this repo has never had a tag. Done in 99c9195 (2026-10-29).
