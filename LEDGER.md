@@ -117,6 +117,17 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
+- **SP110** · Test: a pending-deletion Google, Facebook or Steam
+  account that signs in ends with the `[deleted]` marker. The clamp
+  rewrites the marker and privacy's scrub
+  (`enforcePendingDeletionProfile`) restores it in the same hook, so
+  prod is right; H125 asked for the test, and run 6 covered only
+  device, which skips the clamp.
+- **SP112** · Claude, after 2026-11-07, read-only counts: nameless
+  accounts (15 on 2026-10-31), and generated names among the 13
+  accounts created 2026-10-20 03:01:48 to 2026-10-31 08:32:17 UTC,
+  SP108's deploy (0 then; 11 empty, 2 markers). No change means no
+  returns or a broken heal: probe it.
 
 ## Residuals (known, not fixed)
 
@@ -185,6 +196,10 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   player in two parties. The window is milliseconds; closing it needs
   the guard and the hook to agree on one read, which they cannot
   without a lock.
+- **SP111** · `registerHooks` (`runtime/main.go`, SP109) says it
+  registers every hook, but `RegisterMatchmakerMatched` stays in
+  InitModule, outside `TestNoHookRegisteredTwice`. Move it in, or
+  narrow the comment.
 
 
 ## Ideas (not scheduled)
