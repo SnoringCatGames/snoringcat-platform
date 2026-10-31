@@ -117,10 +117,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
-- **SP107** · Steam lost its generated name at creation in SP106
-  (`8363d0c`): the H124 brief said Steam keeps only the clamp, but
-  before SP106 Steam also got a generated name (H59). Fix: hopnbop
-  `docs/design/H125_muse_run6.md` (Muse run 6).
 - **SP108** · No account created since H59's naming hooks reached prod
   (`886aa10`, 2026-10-20) got a generated name: privacy's
   after-authenticate hooks, registered after them, replaced them until
@@ -212,6 +208,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP107** · Steam does all three after-sign-in behaviors again, so a created Steam account gets a generated name (H59). Done in 29e01f9 (2026-10-31).
 - **SP106** · One after-authenticate function per provider now runs the generated name at creation, the SP88 clamp and sign-in privacy (three registrars had silently replaced each other; privacy, registered last, was the survivor). Done in 8363d0c (2026-10-31).
 - **SP104** · ZWNJ and ZWJ are kept where they do orthographic work (between letters or marks; ZWJ also between emoji) and refused or dropped elsewhere; the supported locales include Hindi, so the joiners are needed. Done in 81974cc (2026-10-30).
 - **SP103** · The name clamp's kept output always passes `validateDisplayName` (control characters drop too); when nothing valid remains, the after-auth hook stores a generated name instead of keeping the invalid imported one. Done in f2d0698 (2026-10-30).
