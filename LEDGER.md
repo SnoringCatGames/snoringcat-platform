@@ -28,13 +28,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Waiting on Levi
 
-- **SP84** · SP47's revocation (sessions and sockets end at
-  delete time) is built and tested but held for a release:
-  the released suite gains one unlisted failure, a fixture
-  that reads the account back with the pre-delete token
-  (players sign in again and are unaffected). Patch:
-  hopnbop `.claude/probes/SP84/sp84.patch`; ship it with the
-  next client release. Reopens SP47 (H104 1B F11 to F13).
 - **SP82** · Dependabot alerts are on but blind to the Pulumi module
   (checked 2026-10-29; detail in `docs/ledger_notes.md`): Levi to OK
   adding `.github/dependabot.yml` (gomod,
@@ -245,6 +238,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP37** · Party chat has no server-side length, rate or block limits (soc F9); dead routes. Done in c8e0864 (2026-10-29).
 - **SP35** · 50 pending outgoing friend requests block every accept (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in bbac2e0 (2026-10-29).
 - **SP47** · Sessions are not revoked on account delete (DEL-3). acct (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1 list). Done in 4ccc33b (2026-10-29).
+- **SP84** · Account deletion now ends every session and socket at delete time (completes SP47's revocation; the released client was checked against it: delete shows the queued toast, grace-window re-sign-in cancels cleanly). Done in 5d0adce, fixture follow-up f6fc9e3 (2026-10-30).
 - **SP43** · A refresh during a pending link is taken as the link's success (LK-1) (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 22055ff (2026-10-29).
 - **SP41** · A failed `delete_account` is reported as a failed sign-in (DEL-2); root cause `sdk:core/auth_api_client.gd:890,896` (S; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in 69c4b6b (2026-10-29).
 - **SP51** · Pin staticcheck in `nakama-runtime.yml:44` (XS; batch 6; hopnbop `docs/design/H37_systems_audit.md` 3.5). Done in 9139b38 (2026-10-29).
