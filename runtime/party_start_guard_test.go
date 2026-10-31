@@ -18,8 +18,10 @@ import (
 type fakeStartNk struct {
 	runtime.NakamaModule
 
-	ready   map[string]bool
-	deleted []string
+	ready       map[string]bool
+	deleted     []string
+	lastSubject string
+	lastContent map[string]interface{}
 }
 
 func newFakeStartNk() *fakeStartNk {
@@ -85,9 +87,12 @@ func (f *fakeStartNk) StorageDelete(
 }
 
 func (f *fakeStartNk) NotificationSend(
-	_ context.Context, _ string, _ string,
-	_ map[string]interface{}, _ int, _ string, _ bool,
+	_ context.Context, _ string, subject string,
+	content map[string]interface{}, _ int, _ string,
+	_ bool,
 ) error {
+	f.lastSubject = subject
+	f.lastContent = content
 	return nil
 }
 
@@ -195,5 +200,69 @@ func TestKickDeletesOnlyKickedReadyRow(t *testing.T) {
 	}
 	if !nk.ready["leader"] {
 		t.Fatal("survivor's ready row was deleted")
+	}
+}
+
+func TestStartNotificationCarriesMemberIDs(t *testing.T) {
+	nk := newFakeStartNk()
+	nk.ready["leader"] = true
+	nk.ready["member"] = true
+	_, err := partyStartMatchmakingRpc(
+		refreshCtx("leader"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		newPartyStartGuard(), `{"party_id":"party-1"}`)
+	if err != nil {
+		t.Fatalf("start: err = %v, want nil", err)
+	}
+	ids, ok := nk.lastContent["member_ids"].([]string)
+	if !ok || len(ids) != 2 {
+		t.Fatalf("member_ids = %v, want both members",
+			nk.lastContent["member_ids"])
+	}
+}
+
+func TestAbortReleasesStartGuard(t *testing.T) {
+	nk := newFakeStartNk()
+	nk.ready["leader"] = true
+	nk.ready["member"] = true
+	guard := newPartyStartGuard()
+	ready := func() {
+		nk.ready["leader"] = true
+		nk.ready["member"] = true
+	}
+	if _, err := partyStartMatchmakingRpc(
+		refreshCtx("leader"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		guard, `{"party_id":"party-1"}`); err != nil {
+		t.Fatalf("first start: err = %v, want nil", err)
+	}
+	if _, err := partyAbortMatchmakingRpc(
+		refreshCtx("leader"), testLogger{}, nk,
+		newTestGames(t, nil), guard,
+		`{"party_id":"party-1","reason":"cancelled"}`); err != nil {
+		t.Fatalf("abort: err = %v, want nil", err)
+	}
+	ready()
+	if _, err := partyStartMatchmakingRpc(
+		refreshCtx("leader"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		guard, `{"party_id":"party-1"}`); err != nil {
+		t.Fatalf(
+			"start after abort: err = %v, want nil", err)
+	}
+}
+
+func TestStartGuardPrunesOldEntries(t *testing.T) {
+	guard := newPartyStartGuard()
+	now := time.Unix(10000, 0)
+	if !guard.tryStart("stale", now.Add(-2*partyStartWindow)) {
+		t.Fatal("stale start refused")
+	}
+	if !guard.tryStart("fresh", now) {
+		t.Fatal("fresh start refused")
+	}
+	if len(guard.last) != 1 {
+		t.Fatalf("guard holds %d entries, want 1",
+			len(guard.last))
 	}
 }

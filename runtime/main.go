@@ -579,16 +579,18 @@ func InitModule(
 	if err := addRpc("transport_select", transportSelectRpc); err != nil {
 		return err
 	}
+	startGuard := newPartyStartGuard()
 	if err := addRpc(
 		"party_start_matchmaking",
 		partyStartMatchmakingRpcFactory(
 			games, newFriendsLimiter(),
-			newPartyStartGuard())); err != nil {
+			startGuard)); err != nil {
 		return err
 	}
 	if err := addRpc(
 		"party_abort_matchmaking",
-		partyAbortMatchmakingRpcFactory(games)); err != nil {
+		partyAbortMatchmakingRpcFactory(
+			games, startGuard)); err != nil {
 		return err
 	}
 	if err := addRpc(

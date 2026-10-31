@@ -446,6 +446,7 @@ func partyStartMatchmakingRpc(
 		"rt_party_id":           args.RtPartyID,
 		"game_mode":             args.GameMode,
 		"leader_id":             leaderID,
+		"member_ids":            memberIDs,
 		"matchmaker_properties": matchmakerProperties,
 	}
 	for _, id := range memberIDs {
@@ -504,6 +505,7 @@ type partyAbortMatchmakingResp struct {
 
 func partyAbortMatchmakingRpcFactory(
 	games *perGameConfig,
+	guard *partyStartGuard,
 ) func(
 	context.Context, runtime.Logger, *sql.DB,
 	runtime.NakamaModule, string,
@@ -516,7 +518,7 @@ func partyAbortMatchmakingRpcFactory(
 		payload string,
 	) (string, error) {
 		return partyAbortMatchmakingRpc(
-			ctx, logger, nk, games, payload)
+			ctx, logger, nk, games, guard, payload)
 	}
 }
 
@@ -547,6 +549,7 @@ func partyAbortMatchmakingRpc(
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
+	guard *partyStartGuard,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
@@ -606,6 +609,12 @@ func partyAbortMatchmakingRpc(
 	if !callerIsMember {
 		return "", runtime.NewError(
 			"only an active party member can abort matchmaking", 7)
+	}
+
+	// The attempt is over: a later start is a new attempt,
+	// so the party's start-guard entry goes now.
+	if guard != nil {
+		guard.release(args.PartyID)
 	}
 
 	content := map[string]any{

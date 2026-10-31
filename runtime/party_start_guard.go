@@ -31,10 +31,30 @@ func (g *partyStartGuard) tryStart(
 ) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.prune(now)
 	if t, ok := g.last[partyID]; ok &&
 		now.Sub(t) < partyStartWindow {
 		return false
 	}
 	g.last[partyID] = now
 	return true
+}
+
+// release drops a party's entry: the attempt is over (it
+// was aborted), so the next start is a new attempt, not
+// the same one firing twice.
+func (g *partyStartGuard) release(partyID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.last, partyID)
+}
+
+// prune drops entries older than the window, so the map
+// holds only live attempts. The caller holds the lock.
+func (g *partyStartGuard) prune(now time.Time) {
+	for partyID, t := range g.last {
+		if now.Sub(t) >= partyStartWindow {
+			delete(g.last, partyID)
+		}
+	}
 }
