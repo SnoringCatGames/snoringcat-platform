@@ -103,15 +103,21 @@ func registerAccountValidationHook(
 		})
 }
 
-// clampDisplayName returns the name as it may be stored:
-// trimmed, cut to the display name bound, invisible
+// clampDisplayName returns the name as it may be stored
+// and whether that differs from the input: trimmed, cut
+// to the display name bound, invisible and control
 // characters dropped, and never the reserved name in any
-// case. It returns "" when the name already complies.
-// Sign-in providers import names without the update hook,
-// so a name that predates the rules (or arrives over the
+// case. The result always passes validateDisplayName,
+// except when nothing valid is left (empty, or no letter
+// or digit survives cleaning): then it returns ("", true)
+// and the caller stores a generated name instead, so an
+// imported name can neither stay invalid nor diverge
+// from what a later update would accept. Sign-in
+// providers import names without the update hook, so a
+// name that predates the rules (or arrives over the
 // bound) is rewritten after authentication instead of
 // failing later updates.
-func clampDisplayName(name string) string {
+func clampDisplayName(name string) (string, bool) {
 	trimmed := strings.TrimSpace(stripInvisibleRunes(name))
 	runes := []rune(trimmed)
 	if len(runes) > maxDisplayNameRunes {
@@ -123,20 +129,22 @@ func clampDisplayName(name string) string {
 		len(runes) > 0 {
 		trimmed = string(runes[:len(runes)-1])
 	}
-	if trimmed == name {
-		return ""
+	if validateDisplayName(trimmed) != nil {
+		return "", true
 	}
-	return trimmed
+	return trimmed, trimmed != name
 }
 
-// stripInvisibleRunes drops format characters and the
-// line/paragraph separators: they render as nothing (or
-// reorder neighbouring text) in a display name.
+// stripInvisibleRunes drops format and control characters
+// and the line/paragraph separators: they render as
+// nothing (or reorder neighbouring text) in a display
+// name.
 func stripInvisibleRunes(name string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.Is(unicode.Cf, r) ||
 			unicode.Is(unicode.Zl, r) ||
-			unicode.Is(unicode.Zp, r) {
+			unicode.Is(unicode.Zp, r) ||
+			unicode.IsControl(r) {
 			return -1
 		}
 		return r
@@ -164,9 +172,21 @@ func registerAuthNameClamp(
 			return
 		}
 		name := account.GetUser().GetDisplayName()
-		clamped := clampDisplayName(name)
-		if clamped == "" {
+		clamped, changed := clampDisplayName(name)
+		if !changed {
 			return
+		}
+		if clamped == "" {
+			// Nothing valid survived cleaning: store a
+			// generated name, like every new account gets.
+			generated, genErr := generatedDisplayName()
+			if genErr != nil {
+				logger.Warn(
+					"name clamp: generated name user=%s err=%v",
+					userID, genErr)
+				return
+			}
+			clamped = generated
 		}
 		if err := nk.AccountUpdateId(
 			ctx, userID, "", nil, clamped, "", "", "", "",

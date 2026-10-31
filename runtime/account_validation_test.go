@@ -156,11 +156,14 @@ func TestValidateAvatarURLRefusesNonASCIIHost(t *testing.T) {
 }
 
 func TestClampDisplayName(t *testing.T) {
-	if got := clampDisplayName("Short Name"); got != "" {
+	if got, changed := clampDisplayName("Short Name"); changed {
 		t.Errorf("clamp short = %q, want no change", got)
 	}
 	long := strings.Repeat("é", maxDisplayNameRunes+8)
-	got := clampDisplayName(long)
+	got, changed := clampDisplayName(long)
+	if !changed {
+		t.Fatal("clamp long = no change, want a shortened name")
+	}
 	if n := utf8.RuneCountInString(got); n != maxDisplayNameRunes {
 		t.Errorf("clamp long = %d runes, want %d",
 			n, maxDisplayNameRunes)
@@ -170,9 +173,10 @@ func TestClampDisplayName(t *testing.T) {
 func TestClampDisplayNameReservedLookAlike(t *testing.T) {
 	// An imported name that matches the reserved name in
 	// any case is shortened so it no longer matches.
-	got := clampDisplayName("[Deleted]")
-	if got == "" {
-		t.Fatal("clamp = no change, want a shortened name")
+	got, changed := clampDisplayName("[Deleted]")
+	if !changed || got == "" {
+		t.Fatalf("clamp = %q changed=%v, want a shortened name",
+			got, changed)
 	}
 	if strings.EqualFold(got, reservedDisplayName) {
 		t.Errorf("clamp = %q, want a non-reserved name", got)
@@ -184,7 +188,7 @@ func TestClampDisplayNameReservedAfterTrim(t *testing.T) {
 	// runes trimming back to the reserved name.
 	name := reservedDisplayName +
 		strings.Repeat(" ", maxDisplayNameRunes) + "x"
-	got := clampDisplayName(name)
+	got, _ := clampDisplayName(name)
 	if n := utf8.RuneCountInString(got); n > maxDisplayNameRunes {
 		t.Errorf("clamp = %d runes, want at most %d",
 			n, maxDisplayNameRunes)
@@ -194,6 +198,57 @@ func TestClampDisplayNameReservedAfterTrim(t *testing.T) {
 	}
 	if got == reservedDisplayName {
 		t.Errorf("clamp = %q, want a non-reserved name", got)
+	}
+}
+
+func TestClampDisplayNameNothingValidLeft(t *testing.T) {
+	// Nothing a later update would accept survives
+	// cleaning: the clamp reports a change to the empty
+	// name, and the caller stores a generated name.
+	for _, name := range []string{
+		"", "   ", "\u200b\u200b", "!!!",
+		"\U0001F600\U0001F600", "a\nb",
+	} {
+		got, changed := clampDisplayName(name)
+		if name == "a\nb" {
+			// Control characters drop out; the letters
+			// that remain are a valid name.
+			if got != "ab" || !changed {
+				t.Errorf("clamp %q = %q changed=%v, want \"ab\"",
+					name, got, changed)
+			}
+			continue
+		}
+		if got != "" || !changed {
+			t.Errorf("clamp %q = %q changed=%v, want (\"\", true)",
+				name, got, changed)
+		}
+	}
+}
+
+func TestClampDisplayNameOutputValidates(t *testing.T) {
+	// Whatever the clamp keeps must pass the same
+	// validation a later update runs, so a name accepted
+	// at sign-in is never refused when resent.
+	inputs := []string{
+		"Short Name",
+		"  padded  ",
+		strings.Repeat("é", maxDisplayNameRunes+8),
+		"[Deleted]",
+		"\u202eAda\u200b",
+		"Ada\U0001F600",
+		"line\nbreak",
+		strings.Repeat("n", maxDisplayNameRunes+1),
+	}
+	for _, name := range inputs {
+		got, _ := clampDisplayName(name)
+		if got == "" {
+			continue
+		}
+		if err := validateDisplayName(got); err != nil {
+			t.Errorf("clamp %q = %q: validate err = %v",
+				name, got, err)
+		}
 	}
 }
 
