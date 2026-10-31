@@ -114,10 +114,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
-- **SP86** · SP33 follow-ups: ready state outlives a start and a
-  departure; one start at a time per party; a test that an unready
-  member cannot start. Reopens SP33, whose Done line cites 8cf642b, not
-  0499a41 (H104 1A SP33-A, B, D, E, F).
 - **SP87** · SP59 follow-ups: bound the `settings` keys and the
   party-prefs inputs, one live party per creator, `recent_players` off
   the client-writable list (with hopnbop allowlist seeds if 0.56.0
@@ -216,7 +212,9 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP96** · SP85 follow-up: a party holding only the invited or joining player must not count as being in a party. Done in 2cf7a55 (2026-10-30).
 - **SP97** · SP86 follow-ups: party_abort_matchmaking releases the party's start-guard entry so a fresh attempt is not refused inside the window; the start guard prunes entries older than its window; the party_matchmaking_start notification carries the member_ids roster that passed the ready gate, so followers check their own id in it instead of a ready flag the start already spent. Done in 66d6beb (2026-10-30).
+- **SP86** · SP33 follow-ups: ready state outlives a start and a departure; one start at a time per party; a test that an unready member cannot start. Done in 999b3b5 (2026-10-30).
 - **SP85** · Party invite and join, server-only checks that need no client change: a blocked target, a target already in another party, and raw group calls on party groups. Done in 1f3f8ca (2026-10-30).
 - **SP20** · `Platform.api` / `core/api_client.gd` was still created at startup; its only caller is gone. Done in 99c9195 (2026-10-29).
 - **SP21** · `README.md` claimed a `v1.4.0` tag; this repo has never had a tag. Done in 99c9195 (2026-10-29).
@@ -230,7 +228,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP29** · One player's 120 s timeout cancels the whole matched set's allocation (S; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in 6145f01489b6e003012a6e4c30b953acd41a65a0 (2026-10-29).
 - **SP30** · No match forms for anyone while an allocation runs (M; batch 3; hopnbop `docs/design/H37_systems_audit.md` 3.3). Done in de57ca1 (2026-10-29).
 - **SP44** · Guest device id is not crypto-random (SI-1); token store passphrase is weak (TS-1). Done in b2eb9cd (2026-10-29).
-- **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 8cf642b (2026-10-29).
+- **SP33** · Any member can pull everyone into a match load (M; batch 2; hopnbop `docs/design/H37_systems_audit.md` 3.2). Done in 0499a41 (2026-10-29); ready lifecycle and one-start-at-a-time in 999b3b5 (SP86), follower checks in hopnbop 3238dfd3 (H114).
 - **SP34** · The creator cannot leave while others remain (TODO L127) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.2, section 7 row 5). Done in d1768f2 (2026-10-29).
 - **SP42** · Server-side validation of names and avatar URLs (PI-1, DN-2) (M; batch 4; hopnbop `docs/design/H37_systems_audit.md` 3.1). Done in d37393f (2026-10-29).
 - **SP61** · The global crash cap starved servers; HTTP-key callers now draw only on the server budget. Done in e5ae4e6 (2026-10-29).
