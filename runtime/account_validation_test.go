@@ -18,6 +18,13 @@ func TestValidateDisplayName(t *testing.T) {
 		"Ada Lovelace",
 		"x",
 		strings.Repeat("n", maxDisplayNameRunes),
+		// ZWNJ and ZWJ between letters do orthographic
+		// work (Persian, Indic), as does a ZWJ emoji
+		// sequence after a name with letters.
+		"a\u200cb",
+		"a\u200db",
+		"\u0915\u094d\u200d\u0937",
+		"Ada \U0001F468\u200d\U0001F469\u200d\U0001F467",
 	}
 	for _, name := range good {
 		if err := validateDisplayName(name); err != nil {
@@ -34,6 +41,12 @@ func TestValidateDisplayName(t *testing.T) {
 		"\u200b\u200b",
 		"\u202eevil",
 		"!!!",
+		// A joiner at an edge, next to a space, or next
+		// to another joiner does no orthographic work.
+		"\u200dabc",
+		"abc\u200c",
+		"a \u200cb",
+		"a\u200c\u200cb",
 		"line\nbreak",
 		strings.Repeat("n", maxDisplayNameRunes+1),
 		strings.Repeat(" ", 40) +
@@ -226,6 +239,19 @@ func TestClampDisplayNameNothingValidLeft(t *testing.T) {
 	}
 }
 
+func TestClampDisplayNameJoiners(t *testing.T) {
+	// A joiner between letters is kept as-is; one at the
+	// edge drops and the rest of the name is kept.
+	if got, changed := clampDisplayName("a\u200cb"); changed {
+		t.Errorf("clamp joiner name = %q, want no change", got)
+	}
+	got, changed := clampDisplayName("\u200dabc")
+	if got != "abc" || !changed {
+		t.Errorf("clamp edge joiner = %q changed=%v, want \"abc\"",
+			got, changed)
+	}
+}
+
 func TestClampDisplayNameOutputValidates(t *testing.T) {
 	// Whatever the clamp keeps must pass the same
 	// validation a later update runs, so a name accepted
@@ -237,6 +263,8 @@ func TestClampDisplayNameOutputValidates(t *testing.T) {
 		"[Deleted]",
 		"\u202eAda\u200b",
 		"Ada\U0001F600",
+		"a\u200cb",
+		"\u200dabc",
 		"line\nbreak",
 		strings.Repeat("n", maxDisplayNameRunes+1),
 	}

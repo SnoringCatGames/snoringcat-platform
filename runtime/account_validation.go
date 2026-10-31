@@ -138,17 +138,52 @@ func clampDisplayName(name string) (string, bool) {
 // stripInvisibleRunes drops format and control characters
 // and the line/paragraph separators: they render as
 // nothing (or reorder neighbouring text) in a display
-// name.
+// name. A zero-width joiner or non-joiner between letters
+// (or marks) is kept: Persian and Indic names need them
+// to render correctly, as do ZWJ emoji sequences, so
+// only a joiner outside that context drops.
 func stripInvisibleRunes(name string) string {
-	return strings.Map(func(r rune) rune {
+	runes := []rune(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	for i, r := range runes {
+		if isKeptJoiner(runes, i) {
+			b.WriteRune(r)
+			continue
+		}
 		if unicode.Is(unicode.Cf, r) ||
 			unicode.Is(unicode.Zl, r) ||
 			unicode.Is(unicode.Zp, r) ||
 			unicode.IsControl(r) {
-			return -1
+			continue
 		}
-		return r
-	}, name)
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// isKeptJoiner reports whether the rune at i is a
+// zero-width joiner or non-joiner in a context where it
+// does orthographic work: between letters or marks
+// (Persian ZWNJ, Indic conjuncts), or, for the joiner,
+// between emoji in a ZWJ sequence. At a name edge or
+// next to anything else it is invisible noise.
+func isKeptJoiner(runes []rune, i int) bool {
+	r := runes[i]
+	if r != '\u200c' && r != '\u200d' {
+		return false
+	}
+	if i == 0 || i == len(runes)-1 {
+		return false
+	}
+	prev, next := runes[i-1], runes[i+1]
+	if (unicode.IsLetter(prev) || unicode.Is(unicode.M, prev)) &&
+		(unicode.IsLetter(next) || unicode.Is(unicode.M, next)) {
+		return true
+	}
+	return r == '\u200d' &&
+		unicode.Is(unicode.So, prev) &&
+		unicode.Is(unicode.So, next)
 }
 
 // registerAuthNameClamp installs the after-authenticate
@@ -257,8 +292,10 @@ func registerAuthNameClamp(
 // validateDisplayName checks one proposed display name
 // in the form it would be stored: trimmed of surrounding
 // space, within the bound, with no control or invisible
-// characters, at least one letter or digit, and not the
-// reserved name in any case.
+// characters (a joiner between letters or emoji does
+// orthographic work and is not counted invisible), at
+// least one letter or digit, and not the reserved name
+// in any case.
 func validateDisplayName(name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -271,7 +308,11 @@ func validateDisplayName(name string) error {
 		return runtime.NewError("display name is reserved", 3)
 	}
 	hasLetterOrDigit := false
-	for _, r := range trimmed {
+	trimmedRunes := []rune(trimmed)
+	for i, r := range trimmedRunes {
+		if isKeptJoiner(trimmedRunes, i) {
+			continue
+		}
 		if unicode.IsControl(r) ||
 			unicode.Is(unicode.Cf, r) ||
 			unicode.Is(unicode.Zl, r) ||
