@@ -114,11 +114,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
-- **SP85** · Party invite and join, server-only checks that need no
-  client change: a blocked target, a target already in another party,
-  and raw group calls on party groups. Reopens the party half of SP36;
-  consent (SP32) stays held for the release (H104 1A SP32-1, SP33-C,
-  SP36-2).
 - **SP86** · SP33 follow-ups: ready state outlives a start and a
   departure; one start at a time per party; a test that an unready
   member cannot start. Reopens SP33, whose Done line cites 8cf642b, not
@@ -221,6 +216,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP85** · Party invite and join, server-only checks that need no client change: a blocked target, a target already in another party, and raw group calls on party groups. Done in 1f3f8ca (2026-10-30).
 - **SP20** · `Platform.api` / `core/api_client.gd` was still created at startup; its only caller is gone. Done in 99c9195 (2026-10-29).
 - **SP21** · `README.md` claimed a `v1.4.0` tag; this repo has never had a tag. Done in 99c9195 (2026-10-29).
 - **SP53** · Docs: CLAUDE.md "Testing" and "Code Style" claims, MULTI_GAME_ROADMAP, a dead plan path; SP10's gofmt set. Done in 7a5399e (2026-10-29).
