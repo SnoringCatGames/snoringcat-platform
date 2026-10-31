@@ -18,6 +18,12 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Urgent
 
+- **SP106** · Since SP88 (`03884fa`, deployed 2026-10-31 01:48 UTC) the
+  name clamp replaces the generated-name after-authenticate hook for
+  Google and Facebook (Nakama keeps one per provider), so a new account
+  there keeps its provider name (H59). No account was created since
+  (prod count). Fix: hopnbop `docs/design/H124_muse_run5.md`.
+
 
 ## Waiting on Levi
 
