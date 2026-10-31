@@ -209,6 +209,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP101** · SP87 review follow-ups: name-clamp reserved-name slicing and after-auth context reads; party-group create follows the join guard (refuses a caller in a shared party, disbands parties of one); gofmt step in the runtime workflow. Done in 4bef255 (2026-10-30).
 - **SP99** · SP96 follow-ups: the after-join hook disbands the joiner's party of one only when the joiner is an active member of the joined party (a join request on a closed party ends nothing); party_join_by_code picks the parties of one from a fresh read after its add; the joiner-side refusals say 'you are already in a party'. Done in b8e20d5 (2026-10-30).
 - **SP93** · A prod query for stored avatar URLs and display names that fail the SP42 checks, then a cleanup (H104 1B F4). A read-only count on prod (2026-10-30) found no stored display name and no stored avatar URL that fails the SP42 rules; the only non-standard names are accounts that never set one and the marker that account deletion writes, both expected. Nothing to clean up.
 - **SP83** · Prod Nakama needs a request-body guard at the proxy and a memory limit on its container (H104 1B F18). Done in e17586f (2026-10-30).
