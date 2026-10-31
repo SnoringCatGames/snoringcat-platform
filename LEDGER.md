@@ -115,6 +115,16 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
+- **SP102** · SP90 follow-up: the consent screen's `save_tokens()`
+  writes over an unreadable auth file before guest sign-in can move it
+  aside; a failed move also falls through to a write, and the aside
+  name is not unique. Guard `save_tokens()`, with a startup-path test.
+  Before the next client release (hopnbop H123,
+  `docs/design/H123_muse_run4.md` 2.2).
+- **SP105** · Go files check out with CRLF on Windows, so a local
+  `gofmt -l` flags every file and hid aa3dc13's real problem (fixed in
+  102d418): a `.gitattributes` with `*.go text eol=lf` (hopnbop H123
+  2.3).
 
 ## Residuals (known, not fixed)
 
@@ -183,6 +193,14 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   player in two parties. The window is milliseconds; closing it needs
   the guard and the hook to agree on one read, which they cannot
   without a lock.
+- **SP103** · SP88 residual: `clampDisplayName` returns an empty name
+  both for a compliant name and an emptied one, and skips the
+  letter-or-digit rule, so an imported name can pass sign-in and fail a
+  later update. Its output must pass `validateDisplayName` (hopnbop
+  H123 2.4).
+- **SP104** · SP88 residual: refusing every Cf character also refuses
+  ZWNJ and ZWJ (Persian and Indic names, ZWJ emoji). Check the
+  supported locales, or record it as a known limit (hopnbop H123 2.4).
 
 ## Ideas (not scheduled)
 
