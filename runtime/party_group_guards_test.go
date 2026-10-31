@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"context"
 	"testing"
 
@@ -20,9 +21,11 @@ import (
 type fakePartyGuardNk struct {
 	runtime.NakamaModule
 
-	blocked     map[string][]string
-	memberships map[string][]*api.UserGroupList_UserGroup
-	added       []string
+	blocked       map[string][]string
+	memberships   map[string][]*api.UserGroupList_UserGroup
+	members       map[string][]*api.GroupUserList_GroupUser
+	added         []string
+	deletedGroups []string
 }
 
 func (f *fakePartyGuardNk) GroupsGetId(
@@ -43,13 +46,24 @@ func (f *fakePartyGuardNk) GroupsGetId(
 		return []*api.Group{
 			{Id: "clan-1", Name: "clan-hopnbop"},
 		}, nil
+	case "party-2":
+		return []*api.Group{
+			{Id: "party-2", Name: "party-other", MaxCount: 4},
+		}, nil
 	}
 	return nil, nil
 }
 
 func (f *fakePartyGuardNk) GroupUsersList(
-	_ context.Context, _ string, _ int, _ *int, _ string,
+	_ context.Context, groupID string, _ int, _ *int,
+	_ string,
 ) ([]*api.GroupUserList_GroupUser, string, error) {
+	if f.members != nil && groupID != "party-1" {
+		return f.members[groupID], "", nil
+	}
+	if f.members != nil && f.members["party-1"] != nil {
+		return f.members["party-1"], "", nil
+	}
 	return []*api.GroupUserList_GroupUser{
 		{User: &api.User{Id: "leader"},
 			State: wrapperspb.Int32(0)},
@@ -58,6 +72,13 @@ func (f *fakePartyGuardNk) GroupUsersList(
 		{User: &api.User{Id: "member"},
 			State: wrapperspb.Int32(2)},
 	}, "", nil
+}
+
+func (f *fakePartyGuardNk) GroupDelete(
+	_ context.Context, groupID string,
+) error {
+	f.deletedGroups = append(f.deletedGroups, groupID)
+	return nil
 }
 
 func (f *fakePartyGuardNk) StorageRead(
@@ -99,10 +120,29 @@ func (f *fakePartyGuardNk) FriendsList(
 }
 
 func (f *fakePartyGuardNk) UserGroupsList(
-	_ context.Context, userID string, _ int,
-	_ *int, _ string,
+	_ context.Context, userID string, limit int,
+	_ *int, cursor string,
 ) ([]*api.UserGroupList_UserGroup, string, error) {
-	return f.memberships[userID], "", nil
+	all := f.memberships[userID]
+	offset := 0
+	if cursor != "" {
+		n, err := strconv.Atoi(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		offset = n
+	}
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + limit
+	next := ""
+	if end < len(all) {
+		next = strconv.Itoa(end)
+	} else {
+		end = len(all)
+	}
+	return all[offset:end], next, nil
 }
 
 func (f *fakePartyGuardNk) NotificationSend(
@@ -295,5 +335,192 @@ func TestPartyGuardPassesOtherGroups(t *testing.T) {
 		ctx, testLogger{}, nil, nk, upd,
 	); err != nil || out != upd {
 		t.Fatalf("update missing: out=%v err=%v", out, err)
+	}
+}
+
+func TestPartyInviteAllowsSoloTarget(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"target": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "target"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	_, err := partyInviteRpc(
+		refreshCtx("inviter"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		`{"party_id":"party-1","target_id":"target"}`)
+	if err != nil {
+		t.Fatalf("solo target: err = %v, want nil", err)
+	}
+	if len(nk.added) != 1 || nk.added[0] != "target" {
+		t.Fatalf("added = %v, want [target]", nk.added)
+	}
+}
+
+func TestPartyJoinByCodeDisbandsSoloParty(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"joiner": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "joiner"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	_, err := partyJoinByCodeRpc(
+		refreshCtx("joiner"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		`{"code":"ABC234"}`)
+	if err != nil {
+		t.Fatalf("solo join: err = %v, want nil", err)
+	}
+	if len(nk.deletedGroups) != 1 ||
+		nk.deletedGroups[0] != "party-2" {
+		t.Fatalf(
+			"deletedGroups = %v, want [party-2]",
+			nk.deletedGroups)
+	}
+}
+
+func TestPartyJoinByCodeRefusesSharedParty(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"joiner": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "joiner"},
+				State: wrapperspb.Int32(2)},
+			{User: &api.User{Id: "other"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	_, err := partyJoinByCodeRpc(
+		refreshCtx("joiner"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		`{"code":"ABC234"}`)
+	if errorCode(err) != 6 {
+		t.Fatalf("shared join: err = %v, want code 6", err)
+	}
+	if len(nk.added) != 0 {
+		t.Fatalf("joiner was added: %v", nk.added)
+	}
+}
+
+func TestJoinGuardRefusesSharedPartyAllowsSolo(t *testing.T) {
+	shared := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"joiner": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "joiner"},
+				State: wrapperspb.Int32(2)},
+			{User: &api.User{Id: "other"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	req := &api.JoinGroupRequest{GroupId: "party-1"}
+	if _, err := beforeJoinGroupPartyGuard(
+		refreshCtx("joiner"), testLogger{}, nil, shared, req,
+	); errorCode(err) != 6 {
+		t.Fatalf("shared join: err = %v, want code 6", err)
+	}
+	solo := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"joiner": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "joiner"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	if out, err := beforeJoinGroupPartyGuard(
+		refreshCtx("joiner"), testLogger{}, nil, solo, req,
+	); err != nil || out != req {
+		t.Fatalf("solo join: out=%v err=%v", out, err)
+	}
+}
+
+func TestAfterJoinDisbandsSoloParty(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"target": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "target"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	err := afterJoinGroupHook(
+		refreshCtx("target"), testLogger{}, nil, nk,
+		&api.JoinGroupRequest{GroupId: "party-1"})
+	if err != nil {
+		t.Fatalf("after join: err = %v", err)
+	}
+	if len(nk.deletedGroups) != 1 ||
+		nk.deletedGroups[0] != "party-2" {
+		t.Fatalf(
+			"deletedGroups = %v, want [party-2]",
+			nk.deletedGroups)
+	}
+}
+
+func TestPartyMembershipsPagesThroughGroups(t *testing.T) {
+	all := []*api.UserGroupList_UserGroup{}
+	for i := 0; i < 149; i++ {
+		all = append(all, partyUserGroup(
+			"clan-x", "clan-x", 2))
+	}
+	all = append(
+		all, partyUserGroup("party-2", "party-other", 2))
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+		"target": all,
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+		"party-2": {
+			{User: &api.User{Id: "target"},
+				State: wrapperspb.Int32(2)},
+			{User: &api.User{Id: "other"},
+				State: wrapperspb.Int32(2)},
+		},
+	},
+	}
+	parties, err := partyMemberships(
+		context.Background(), nk, "target", "party-1")
+	if err != nil {
+		t.Fatalf("memberships: err = %v", err)
+	}
+	if parties["party-2"] != 2 {
+		t.Fatalf("parties = %v, want party-2 with 2", parties)
+	}
+	if sharedParty(parties) != "party-2" {
+		t.Fatalf("sharedParty = %v", sharedParty(parties))
 	}
 }

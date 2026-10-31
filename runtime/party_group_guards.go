@@ -46,6 +46,10 @@ func registerPartyGroupGuards(
 		beforeDeleteGroupPartyGuard); err != nil {
 		return err
 	}
+	if err := initializer.RegisterBeforeJoinGroup(
+		beforeJoinGroupPartyGuard); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -117,12 +121,12 @@ func beforeAddGroupUsersPartyGuard(
 			return nil, runtime.NewError(
 				"this invite is unavailable", 7)
 		}
-		otherParty, err := activePartyID(
+		targetParties, err := partyMemberships(
 			ctx, nk, targetID, in.GetGroupId())
 		if err != nil {
 			return nil, err
 		}
-		if otherParty != "" {
+		if sharedParty(targetParties) != "" {
 			return nil, runtime.NewError(
 				"that player is already in a party", 6)
 		}
@@ -196,6 +200,44 @@ func beforeDeleteGroupPartyGuard(
 	if err := partyGroupGuard(
 		ctx, nk, in.GetGroupId()); err != nil {
 		return nil, err
+	}
+	return in, nil
+}
+
+// Joining a party (accepting an invite) moves the joiner
+// into it. A joiner already in a party with other members
+// stays there; a party holding only the joiner does not
+// block the move, and the after-join hook disbands it.
+func beforeJoinGroupPartyGuard(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.JoinGroupRequest,
+) (*api.JoinGroupRequest, error) {
+	groups, err := nk.GroupsGetId(ctx, []string{in.GetGroupId()})
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) == 0 || !strings.HasPrefix(
+		groups[0].GetName(), partyGroupPrefix) {
+		return in, nil
+	}
+	joiner, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	if joiner == "" {
+		return in, nil
+	}
+	parties, err := partyMemberships(
+		ctx, nk, joiner, in.GetGroupId())
+	if err != nil {
+		logger.Warn(
+			"join guard memberships party=%s err=%v",
+			in.GetGroupId(), err)
+		return nil, err
+	}
+	if sharedParty(parties) != "" {
+		return nil, runtime.NewError(
+			"that player is already in a party", 6)
 	}
 	return in, nil
 }

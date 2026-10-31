@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -774,16 +775,18 @@ func partyInviteRpc(
 			"this invite is unavailable", 7)
 	}
 
-	// One active party per player: a target already in
-	// another party is not invited into this one.
-	otherParty, err := activePartyID(
+	// One shared party per player: a target already in a
+	// party with other members is not invited into this
+	// one. A party holding only the target does not count;
+	// it is disbanded when they accept.
+	targetParties, err := partyMemberships(
 		ctx, nk, args.TargetID, args.PartyID)
 	if err != nil {
 		logger.Error(
 			"party_invite membership check: %v", err)
 		return "", err
 	}
-	if otherParty != "" {
+	if sharedParty(targetParties) != "" {
 		return "", runtime.NewError(
 			"that player is already in a party", 6)
 	}
@@ -1321,6 +1324,33 @@ func afterJoinGroupHook(
 	// The joiner is the auth'd user and is now a real member;
 	// GroupUsersList will include them. No extras needed.
 	clearPartyReadyRows(ctx, logger, nk, in.GetGroupId(), nil)
+	// Landing in this party ends any party of one the joiner
+	// was holding: they end up in exactly one party.
+	joiner, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	if joiner != "" {
+		if groups, err := nk.GroupsGetId(
+			ctx, []string{in.GetGroupId()}); err == nil &&
+			len(groups) > 0 && strings.HasPrefix(
+			groups[0].GetName(), partyGroupPrefix) {
+			parties, err := partyMemberships(
+				ctx, nk, joiner, in.GetGroupId())
+			if err != nil {
+				logger.Warn(
+					"after join memberships user=%s err=%v",
+					joiner, err)
+			} else {
+				for _, soloID := range soloParties(parties) {
+					if err := disbandPartyGroup(
+						ctx, logger, nk, soloID); err != nil {
+						logger.Warn(
+							"after join disband solo"+
+								" party=%s err=%v",
+							soloID, err)
+					}
+				}
+			}
+		}
+	}
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -2519,6 +2549,22 @@ func partyJoinByCodeRpc(
 		}
 	}
 
+	// The invite rule applies here too: a joiner already in
+	// a party with other members cannot join a second one.
+	// A party holding only the joiner is disbanded below,
+	// once the join lands.
+	joinerParties, err := partyMemberships(
+		ctx, nk, userID, partyID)
+	if err != nil {
+		logger.Error(
+			"party_join_by_code membership check: %v", err)
+		return "", err
+	}
+	if sharedParty(joinerParties) != "" {
+		return "", runtime.NewError(
+			"that player is already in a party", 6)
+	}
+
 	// Add the caller directly as state=2 (Member). Empty callerID
 	// invokes server authority, which bypasses the closed-group
 	// invite-and-accept dance — exactly what we want for join-by-
@@ -2530,6 +2576,16 @@ func partyJoinByCodeRpc(
 			"GroupUsersAdd(party=%s user=%s): %v",
 			partyID, userID, err)
 		return "", err
+	}
+
+	for _, soloID := range soloParties(joinerParties) {
+		if err := disbandPartyGroup(
+			ctx, logger, nk, soloID); err != nil {
+			logger.Warn(
+				"party_join_by_code disband solo"+
+					" party=%s err=%v",
+				soloID, err)
+		}
 	}
 
 	// Fan out the same notification the AfterJoinGroup hook would
@@ -2704,32 +2760,85 @@ func usersBlockEachOther(
 	return ok, nil
 }
 
-// activePartyID returns the id of the party group the user
-// is an active member of (any edge state but a pending
-// invite), ignoring exceptID, or "" when there is none.
-func activePartyID(
+// partyMemberships returns the parties the user is an
+// active member of (any edge state but a pending invite),
+// keyed by party id with that party's active member
+// count, skipping exceptID. It pages through all of the
+// user's groups.
+func partyMemberships(
 	ctx context.Context,
 	nk runtime.NakamaModule,
 	userID string,
 	exceptID string,
-) (string, error) {
-	memberships, _, err := nk.UserGroupsList(
-		ctx, userID, 100, nil, "")
-	if err != nil {
-		return "", err
+) (map[string]int, error) {
+	parties := map[string]int{}
+	cursor := ""
+	for {
+		memberships, next, err := nk.UserGroupsList(
+			ctx, userID, 100, nil, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, membership := range memberships {
+			group := membership.GetGroup()
+			if group == nil || group.GetId() == exceptID {
+				continue
+			}
+			if !strings.HasPrefix(
+				group.GetName(), partyGroupPrefix) {
+				continue
+			}
+			if membership.GetState().GetValue() == 3 {
+				continue
+			}
+			parties[group.GetId()] = 0
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
 	}
-	for _, membership := range memberships {
-		group := membership.GetGroup()
-		if group == nil || group.GetId() == exceptID {
-			continue
+	for partyID := range parties {
+		members, _, err := nk.GroupUsersList(
+			ctx, partyID, 100, nil, "")
+		if err != nil {
+			return nil, err
 		}
-		if !strings.HasPrefix(
-			group.GetName(), partyGroupPrefix) {
-			continue
+		count := 0
+		for _, m := range members {
+			if m.User == nil || m.User.Id == "" {
+				continue
+			}
+			if m.State != nil && m.State.Value == 3 {
+				continue
+			}
+			count++
 		}
-		if membership.GetState().GetValue() != 3 {
-			return group.GetId(), nil
+		parties[partyID] = count
+	}
+	return parties, nil
+}
+
+// sharedParty returns a party where the user is active
+// alongside at least one other active member, or "".
+func sharedParty(parties map[string]int) string {
+	for partyID, count := range parties {
+		if count > 1 {
+			return partyID
 		}
 	}
-	return "", nil
+	return ""
+}
+
+// soloParties returns the parties where the user is the
+// only active member, in a stable order.
+func soloParties(parties map[string]int) []string {
+	out := []string{}
+	for partyID, count := range parties {
+		if count == 1 {
+			out = append(out, partyID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

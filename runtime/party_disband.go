@@ -52,12 +52,34 @@ func partyDisbandRpc(
 		return "", err
 	}
 
+	if err := disbandPartyGroup(ctx, logger, nk, args.PartyID); err != nil {
+		return "", err
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"party_id":  args.PartyID,
+		"disbanded": true,
+	})
+	return string(out), nil
+}
+
+// disbandPartyGroup ends a party for everyone in it: the
+// members hear about it, the group and every party-scoped
+// row are deleted, and the invite code pair is cleared.
+// Callers that move a player out of a party of one use it
+// so the player ends up in exactly one party.
+func disbandPartyGroup(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+) error {
 	// Collect members before the delete: they get the
 	// notification, and their ready rows are party state too.
 	members, _, err := nk.GroupUsersList(
-		ctx, args.PartyID, 100, nil, "")
+		ctx, partyID, 100, nil, "")
 	if err != nil {
-		return "", err
+		return err
 	}
 	memberIDs := []string{}
 	for _, m := range members {
@@ -66,21 +88,21 @@ func partyDisbandRpc(
 		}
 	}
 	notifyPartyMembers(
-		ctx, logger, nk, args.PartyID,
+		ctx, logger, nk, partyID,
 		partyEventDisbanded, memberIDs)
 
-	if err := nk.GroupDelete(ctx, args.PartyID); err != nil {
+	if err := nk.GroupDelete(ctx, partyID); err != nil {
 		logger.Error(
 			"party_disband delete party=%s err=%v",
-			args.PartyID, err)
-		return "", err
+			partyID, err)
+		return err
 	}
 
 	deletes := []*runtime.StorageDelete{}
 	for _, uid := range memberIDs {
 		deletes = append(deletes, &runtime.StorageDelete{
 			Collection: partyReadyCollection,
-			Key:        args.PartyID,
+			Key:        partyID,
 			UserID:     uid,
 		})
 	}
@@ -92,21 +114,21 @@ func partyDisbandRpc(
 	} {
 		deletes = append(deletes, &runtime.StorageDelete{
 			Collection: collection,
-			Key:        args.PartyID,
+			Key:        partyID,
 			UserID:     "",
 		})
 	}
 	if err := nk.StorageDelete(ctx, deletes); err != nil {
 		logger.Warn(
 			"party_disband row cleanup party=%s err=%v",
-			args.PartyID, err)
+			partyID, err)
 	}
 	// Clear the invite code pair when one exists.
 	reads, _ := nk.StorageRead(
 		ctx,
 		[]*runtime.StorageRead{{
 			Collection: partyInviteCodeCollection,
-			Key:        partyInviteCodeReverseKey(args.PartyID),
+			Key:        partyInviteCodeReverseKey(partyID),
 			UserID:     "",
 		}},
 	)
@@ -115,14 +137,9 @@ func partyDisbandRpc(
 		if json.Unmarshal([]byte(reads[0].Value), &codeRow) == nil {
 			if code, _ := codeRow["code"].(string); code != "" {
 				deleteStalePartyInviteCode(
-					ctx, logger, nk, code, args.PartyID)
+					ctx, logger, nk, code, partyID)
 			}
 		}
 	}
-
-	out, _ := json.Marshal(map[string]any{
-		"party_id":  args.PartyID,
-		"disbanded": true,
-	})
-	return string(out), nil
+	return nil
 }
