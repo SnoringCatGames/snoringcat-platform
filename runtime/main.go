@@ -304,6 +304,9 @@ func InitModule(
 	if err := registerPartyKickHook(initializer); err != nil {
 		return err
 	}
+	if err := registerPartyGroupGuards(initializer); err != nil {
+		return err
+	}
 	if err := registerStorageAllowlistHook(initializer); err != nil {
 		return err
 	}

@@ -729,6 +729,33 @@ func partyInviteRpc(
 			"only an active party member can invite", 7)
 	}
 
+	// A block in either direction ends the invite here:
+	// neither player can pull the other into a party.
+	blocked, err := usersBlockEachOther(
+		ctx, nk, userID, args.TargetID)
+	if err != nil {
+		logger.Error("party_invite block check: %v", err)
+		return "", err
+	}
+	if blocked {
+		return "", runtime.NewError(
+			"this invite is unavailable", 7)
+	}
+
+	// One active party per player: a target already in
+	// another party is not invited into this one.
+	otherParty, err := activePartyID(
+		ctx, nk, args.TargetID, args.PartyID)
+	if err != nil {
+		logger.Error(
+			"party_invite membership check: %v", err)
+		return "", err
+	}
+	if otherParty != "" {
+		return "", runtime.NewError(
+			"that player is already in a party", 6)
+	}
+
 	// Add as the leader (an admin). resolvePartyLeader honors a
 	// transfer override, and the auto-transfer path promotes new
 	// leaders to Nakama admin so this add succeeds for them too.
@@ -2426,6 +2453,28 @@ func partyJoinByCodeRpc(
 		}
 	}
 
+	// A block between the joiner and any active member ends
+	// the join: blocks apply to parties in both directions.
+	for _, m := range members {
+		if m.User == nil || m.User.Id == userID {
+			continue
+		}
+		if m.State != nil && m.State.Value == 3 {
+			continue
+		}
+		blocked, err := usersBlockEachOther(
+			ctx, nk, userID, m.User.Id)
+		if err != nil {
+			logger.Error(
+				"party_join_by_code block check: %v", err)
+			return "", err
+		}
+		if blocked {
+			return "", runtime.NewError(
+				"this join is unavailable", 7)
+		}
+	}
+
 	// Add the caller directly as state=2 (Member). Empty callerID
 	// invokes server authority, which bypasses the closed-group
 	// invite-and-accept dance — exactly what we want for join-by-
@@ -2548,4 +2597,59 @@ func clearPartyReadyRows(
 			"clear ready: StorageDelete party=%s err=%v",
 			partyID, err)
 	}
+}
+
+// usersBlockEachOther reports whether either user has the
+// other on their block list. Party invites and joins use
+// it so a block applies to parties in both directions,
+// the way it already applies to chat and matchmaking.
+func usersBlockEachOther(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	a string,
+	b string,
+) (bool, error) {
+	blockedByA, err := blockedUserIDSet(ctx, nk, a)
+	if err != nil {
+		return false, err
+	}
+	if _, ok := blockedByA[b]; ok {
+		return true, nil
+	}
+	blockedByB, err := blockedUserIDSet(ctx, nk, b)
+	if err != nil {
+		return false, err
+	}
+	_, ok := blockedByB[a]
+	return ok, nil
+}
+
+// activePartyID returns the id of the party group the user
+// is an active member of (any edge state but a pending
+// invite), ignoring exceptID, or "" when there is none.
+func activePartyID(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	userID string,
+	exceptID string,
+) (string, error) {
+	memberships, _, err := nk.UserGroupsList(
+		ctx, userID, 100, nil, "")
+	if err != nil {
+		return "", err
+	}
+	for _, membership := range memberships {
+		group := membership.GetGroup()
+		if group == nil || group.GetId() == exceptID {
+			continue
+		}
+		if !strings.HasPrefix(
+			group.GetName(), partyGroupPrefix) {
+			continue
+		}
+		if membership.GetState().GetValue() != 3 {
+			return group.GetId(), nil
+		}
+	}
+	return "", nil
 }

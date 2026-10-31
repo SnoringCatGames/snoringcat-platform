@@ -1,0 +1,201 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"strings"
+
+	"github.com/heroiclabs/nakama-common/api"
+	"github.com/heroiclabs/nakama-common/runtime"
+)
+
+// Membership and metadata changes on party groups go through
+// the party RPCs and hooks, which enforce the party rules
+// (who leads, who may be added, what a party is called). The
+// Before hooks below refuse the raw group calls for `party-`
+// groups (a leader's add is held to the invite RPC's checks
+// instead), so those rules cannot be stepped around with the
+// group API directly. Non-party groups pass through
+// untouched. The runtime's own module calls are not API
+// calls, so the party RPCs keep working.
+
+func registerPartyGroupGuards(
+	initializer runtime.Initializer,
+) error {
+	if err := initializer.RegisterBeforeAddGroupUsers(
+		beforeAddGroupUsersPartyGuard); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeBanGroupUsers(
+		beforeBanGroupUsersPartyGuard); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforePromoteGroupUsers(
+		beforePromoteGroupUsersPartyGuard); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeDemoteGroupUsers(
+		beforeDemoteGroupUsersPartyGuard); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeUpdateGroup(
+		beforeUpdateGroupPartyGuard); err != nil {
+		return err
+	}
+	if err := initializer.RegisterBeforeDeleteGroup(
+		beforeDeleteGroupPartyGuard); err != nil {
+		return err
+	}
+	return nil
+}
+
+// partyGroupGuard refuses the call when the group is a party
+// group. A group that does not resolve passes through, and
+// Nakama reports the bad id itself.
+func partyGroupGuard(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	groupID string,
+) error {
+	groups, err := nk.GroupsGetId(ctx, []string{groupID})
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	if !strings.HasPrefix(
+		groups[0].GetName(), partyGroupPrefix) {
+		return nil
+	}
+	return runtime.NewError(
+		"party groups are managed by the party system", 7)
+}
+
+// A raw add to a party group is the one raw call with a
+// legitimate shape: the party leader adding a player,
+// which the clients' own invite flows and the party_invite
+// RPC both perform. It is held to the invite RPC's checks
+// (caller leads the party, no block either way, target not
+// already in a party); every other raw add is refused.
+func beforeAddGroupUsersPartyGuard(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.AddGroupUsersRequest,
+) (*api.AddGroupUsersRequest, error) {
+	groups, err := nk.GroupsGetId(ctx, []string{in.GetGroupId()})
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) == 0 || !strings.HasPrefix(
+		groups[0].GetName(), partyGroupPrefix) {
+		return in, nil
+	}
+	callerID, _ := ctx.Value(
+		runtime.RUNTIME_CTX_USER_ID).(string)
+	leaderID, err := resolvePartyLeader(
+		ctx, nk, in.GetGroupId(), groups[0].GetCreatorId())
+	if err != nil {
+		logger.Warn(
+			"add guard resolve leader party=%s err=%v",
+			in.GetGroupId(), err)
+		return nil, err
+	}
+	if callerID == "" || callerID != leaderID {
+		return nil, runtime.NewError(
+			"only the party leader can add members", 7)
+	}
+	for _, targetID := range in.GetUserIds() {
+		blocked, err := usersBlockEachOther(
+			ctx, nk, callerID, targetID)
+		if err != nil {
+			return nil, err
+		}
+		if blocked {
+			return nil, runtime.NewError(
+				"this invite is unavailable", 7)
+		}
+		otherParty, err := activePartyID(
+			ctx, nk, targetID, in.GetGroupId())
+		if err != nil {
+			return nil, err
+		}
+		if otherParty != "" {
+			return nil, runtime.NewError(
+				"that player is already in a party", 6)
+		}
+	}
+	return in, nil
+}
+
+func beforeBanGroupUsersPartyGuard(
+	ctx context.Context,
+	_ runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.BanGroupUsersRequest,
+) (*api.BanGroupUsersRequest, error) {
+	if err := partyGroupGuard(
+		ctx, nk, in.GetGroupId()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
+
+func beforePromoteGroupUsersPartyGuard(
+	ctx context.Context,
+	_ runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.PromoteGroupUsersRequest,
+) (*api.PromoteGroupUsersRequest, error) {
+	if err := partyGroupGuard(
+		ctx, nk, in.GetGroupId()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
+
+func beforeDemoteGroupUsersPartyGuard(
+	ctx context.Context,
+	_ runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.DemoteGroupUsersRequest,
+) (*api.DemoteGroupUsersRequest, error) {
+	if err := partyGroupGuard(
+		ctx, nk, in.GetGroupId()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
+
+func beforeUpdateGroupPartyGuard(
+	ctx context.Context,
+	_ runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.UpdateGroupRequest,
+) (*api.UpdateGroupRequest, error) {
+	if err := partyGroupGuard(
+		ctx, nk, in.GetGroupId()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
+
+func beforeDeleteGroupPartyGuard(
+	ctx context.Context,
+	_ runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.DeleteGroupRequest,
+) (*api.DeleteGroupRequest, error) {
+	if err := partyGroupGuard(
+		ctx, nk, in.GetGroupId()); err != nil {
+		return nil, err
+	}
+	return in, nil
+}
