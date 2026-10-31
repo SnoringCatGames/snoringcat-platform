@@ -57,7 +57,8 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   (weekly-cost-review 2026-10-21); question
 - **SP92** · Report H104 1B F18 (a Nakama 3.25.0 server issue) to
   Heroic Labs privately, through their security contact rather than a
-  public issue; after the proxy guard is deployed.
+  public issue; after the proxy guard is deployed. Report drafted
+  to the vendor's security contact; Levi sends it.
 
 ## In progress
 
