@@ -114,11 +114,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
-- **SP87** · SP59 follow-ups: bound the `settings` keys and the
-  party-prefs inputs, one live party per creator, `recent_players` off
-  the client-writable list (with hopnbop allowlist seeds if 0.56.0
-  never writes it), tests that fail with the hook unregistered (H104 1B
-  F14 to F17).
 - **SP88** · SP42 follow-ups: exact avatar host patterns (done in
   bade4f3, SP88 host patterns), names stored
   as checked, invisible characters and `[Deleted]` look-alikes refused,
@@ -212,6 +207,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP87** · SP59 follow-ups: bound the `settings` keys and the party-prefs inputs, one live party per creator, `recent_players` off the client-writable list (with hopnbop allowlist seeds if 0.56.0 never writes it), tests that fail with the hook unregistered (H104 1B F14 to F17). Done in d4e12c9 (2026-10-30).
 - **SP96** · SP85 follow-up: a party holding only the invited or joining player must not count as being in a party. Done in 2cf7a55 (2026-10-30).
 - **SP97** · SP86 follow-ups: party_abort_matchmaking releases the party's start-guard entry so a fresh attempt is not refused inside the window; the start guard prunes entries older than its window; the party_matchmaking_start notification carries the member_ids roster that passed the ready gate, so followers check their own id in it instead of a ready flag the start already spent. Done in 66d6beb (2026-10-30).
 - **SP86** · SP33 follow-ups: ready state outlives a start and a departure; one start at a time per party; a test that an unready member cannot start. Done in 999b3b5 (2026-10-30).
