@@ -108,10 +108,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   3.4)
 
 
-- **SP91** · Presence rows written before 475d22a keep their old
-  permissions: migrate them if the 0.56.0 compliance matrix stays
-  green, and fix the comment that says no migration is needed. Plus
-  SP36 nits (H104 1A SP36-1, SP36-3 to 5).
+
 - **SP98** · Exercise the proxy request-body guard in CI: the dev
   compliance stack has no proxy, so nothing automated covers the guard
   the production Caddyfile enforces. Add a Caddy service to the dev
@@ -199,6 +196,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP91** · Presence rows written before server-only permissions are rewritten to 0/0 by a startup migration (idempotent; the comment that said no migration was needed is corrected), the rich-presence constant's doc comment is reattached, the presence RPC returns fixed error messages, and the cascade check asserts its presence read succeeded. Done in 4d534b6 (2026-10-30).
 - **SP90** · SDK auth store (SP44): a failed load is recorded; an unreadable auth file is moved aside for a new guest instead of being minted over; a readable file with no guest id mints one; a key that cannot be written falls back to the previous passphrase. TS-1 accepted as obfuscation, stated in the store header and the H37 audit. Done in 8832a3b (2026-10-30).
 - **SP89** · SDK auth: refresh results take their own route (never a link result, stored only while the store holds the token the attempt used); delete refuses during a link or unlink, waits out a refresh, and fails through delete_completed. Done in 7d39613 (2026-10-30).
 - **SP88** · SP42 follow-ups: exact avatar host patterns; names stored as checked (trimmed on write, invisible characters and reserved-name look-alikes refused, letter or digit required); a compliance test that the account update hook is wired. Done in 03884fa (2026-10-30).
