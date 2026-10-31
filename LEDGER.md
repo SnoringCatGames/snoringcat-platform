@@ -18,6 +18,12 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Urgent
 
+- **SP83** · Prod Nakama needs a request-body guard at the proxy and a
+  memory limit on its container (H104 1B F18). Muse prepares and tests
+  the change; it is committed and deployed together once Levi approves
+  the deploy. Details: hopnbop `.claude/probes/H104/stage1-B.md`
+  (local).
+
 
 ## Waiting on Levi
 
@@ -55,6 +61,11 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   CVE-2026-99999 (PwnEscape, disclosed 10-15, still Investigating).
   Check whether the guest needs the patch and pick a reboot window
   (weekly-cost-review 2026-10-21); question
+- **SP92** · Report H104 1B F18 (a Nakama 3.25.0 server issue) to
+  Heroic Labs privately, through their security contact rather than a
+  public issue; after the proxy guard is deployed.
+- **SP93** · A prod query for stored avatar URLs and display names that
+  fail the SP42 checks, then a cleanup (H104 1B F4).
 
 ## In progress
 
@@ -102,6 +113,40 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP62** · Unknown config keys are ignored, and the other sync gaps
   (C4, C5) (XS to S; batch 7; hopnbop `docs/design/H37_systems_audit.md`
   3.4)
+- **SP84** · SP47 does not take effect: a deleted account keeps its
+  sessions and sockets (DEL-3 still open). Revoke both in
+  `delete_account`, fail closed, and add a compliance test that a
+  refresh after a delete fails. Reopens SP47 (H104 1B F11 to F13).
+- **SP85** · Party invite and join, server-only checks that need no
+  client change: a blocked target, a target already in another party,
+  and raw group calls on party groups. Reopens the party half of SP36;
+  consent (SP32) stays held for the release (H104 1A SP32-1, SP33-C,
+  SP36-2).
+- **SP86** · SP33 follow-ups: ready state outlives a start and a
+  departure; one start at a time per party; a test that an unready
+  member cannot start. Reopens SP33, whose Done line cites 8cf642b, not
+  0499a41 (H104 1A SP33-A, B, D, E, F).
+- **SP87** · SP59 follow-ups: bound the `settings` keys and the
+  party-prefs inputs, one live party per creator, `recent_players` off
+  the client-writable list (with hopnbop allowlist seeds if 0.56.0
+  never writes it), tests that fail with the hook unregistered (H104 1B
+  F14 to F17).
+- **SP88** · SP42 follow-ups: exact avatar host patterns, names stored
+  as checked, invisible characters and `[Deleted]` look-alikes refused,
+  a compliance test that the hook is wired (H104 1B F3 runtime half,
+  F5, F6).
+- **SP89** · SDK auth: a refresh result can be taken as a link result,
+  or written back after a delete or sign-out; the delete needs its own
+  failure path and must wait for a pending link or refresh (H104 1A
+  SP41-2, SP41-3; 1B F9, F10).
+- **SP90** · SDK auth store (SP44): an unreadable `auth.cfg` re-mints a
+  guest, a guest file without an id locks out, `_install_key` ignores a
+  failed save. TS-1 is accepted as obfuscation (Claude, 2026-10-30):
+  document it in the code and the audit (H104 1A SP44-1 to 4).
+- **SP91** · Presence rows written before 475d22a keep their old
+  permissions: migrate them if the 0.56.0 compliance matrix stays
+  green, and fix the comment that says no migration is needed. Plus
+  SP36 nits (H104 1A SP36-1, SP36-3 to 5).
 
 ## Residuals (known, not fixed)
 
@@ -169,6 +214,9 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   clean) (M; hopnbop `docs/design/H37_systems_audit.md` 3.5 list)
 - **SP57** · Run one real DR rebuild (M; hopnbop
   `docs/design/H37_systems_audit.md` 3.5, 2.2)
+- **SP94** · SP32 consent could be server-only (a pending-invite state
+  plus an invitation row), so it might not need a client release; check
+  it against the 0.56.0 compliance matrix first (H104 1A SP32-2).
 
 ## Done
 
