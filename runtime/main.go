@@ -581,7 +581,9 @@ func InitModule(
 	}
 	if err := addRpc(
 		"party_start_matchmaking",
-		partyStartMatchmakingRpcFactory(games)); err != nil {
+		partyStartMatchmakingRpcFactory(
+			games, newFriendsLimiter(),
+			newPartyStartGuard())); err != nil {
 		return err
 	}
 	if err := addRpc(

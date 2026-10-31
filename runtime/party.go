@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
@@ -212,6 +213,8 @@ type partyStartMatchmakingResp struct {
 // group prefix is the only namespace separator.
 func partyStartMatchmakingRpcFactory(
 	games *perGameConfig,
+	limiter *friendsLimiter,
+	guard *partyStartGuard,
 ) func(
 	context.Context, runtime.Logger, *sql.DB,
 	runtime.NakamaModule, string,
@@ -224,7 +227,7 @@ func partyStartMatchmakingRpcFactory(
 		payload string,
 	) (string, error) {
 		return partyStartMatchmakingRpc(
-			ctx, logger, nk, games, payload)
+			ctx, logger, nk, games, limiter, guard, payload)
 	}
 }
 
@@ -267,6 +270,8 @@ func partyStartMatchmakingRpc(
 	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	games *perGameConfig,
+	limiter *friendsLimiter,
+	guard *partyStartGuard,
 	payload string,
 ) (string, error) {
 	userID, err := requireClientSession(ctx)
@@ -284,6 +289,12 @@ func partyStartMatchmakingRpc(
 	if args.PartyID == "" {
 		return "", runtime.NewError("party_id required", 3)
 	}
+	if limiter != nil && !limiter.allowFriendCodeCall(userID) {
+		return "", runtime.NewError(
+			"start rate limit exceeded; wait a minute"+
+				" and try again", 8)
+	}
+
 	// rt_party_id is deliberately NOT required.
 	//
 	// Clients predating the realtime-party flow don't send one, and
@@ -403,6 +414,18 @@ func partyStartMatchmakingRpc(
 		return "", runtime.NewError(
 			"not all party members are ready", 9)
 	}
+
+	// One start at a time per party: a second start inside
+	// the roster-join window can only be the same attempt
+	// firing twice.
+	if guard != nil && !guard.tryStart(args.PartyID, time.Now()) {
+		return "", runtime.NewError(
+			"matchmaking was just started for this party", 8)
+	}
+
+	// The start spends the party's readiness: every member
+	// readies again for the next match.
+	clearPartyReadyRows(ctx, logger, nk, args.PartyID, nil)
 
 	// Dispatch the start notification to every OTHER active member.
 	//
@@ -776,6 +799,12 @@ func partyInviteRpc(
 		return "", runtime.NewError(
 			"failed to invite: "+err.Error(), 13)
 	}
+
+	// A target who was in this party before keeps no ready
+	// state from then: they ready again like any new member.
+	deletePartyReadyRows(
+		ctx, logger, nk, args.PartyID,
+		[]string{args.TargetID})
 
 	// Notify the invitee + refresh the party. Mirrors
 	// party_join_by_code's explicit fan-out; harmless if the
@@ -1308,6 +1337,10 @@ func afterLeaveGroupHook(
 	if leaver != "" {
 		extras = append(extras, leaver)
 	}
+	// The leaver's own ready row goes with them; survivors
+	// keep theirs (SP34).
+	deletePartyReadyRows(
+		ctx, logger, nk, in.GetGroupId(), extras)
 	// HOLD (SP34): surviving members keep their ready rows
 	// when someone leaves; only a join resets readiness.
 	// If the leaver was the current (override-aware) leader, auto-
@@ -1346,6 +1379,8 @@ func afterKickGroupUsersHook(
 		autoTransferIfLeaderDeparted(
 			ctx, logger, nk, in.GetGroupId(), uid)
 	}
+	deletePartyReadyRows(
+		ctx, logger, nk, in.GetGroupId(), in.GetUserIds())
 	notifyPartyMembers(
 		ctx, logger, nk,
 		in.GetGroupId(),
@@ -2542,6 +2577,42 @@ func deleteStalePartyInviteCode(
 		logger.Warn(
 			"delete stale invite code (party=%s code=%s): %v",
 			partyID, code, err)
+	}
+}
+
+// deletePartyReadyRows deletes the ready rows of exactly
+// the named users in one party, leaving everyone else's
+// readiness alone.
+func deletePartyReadyRows(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+	partyID string,
+	userIDs []string,
+) {
+	if partyID == "" {
+		return
+	}
+	seen := map[string]bool{}
+	deletes := []*runtime.StorageDelete{}
+	for _, uid := range userIDs {
+		if uid == "" || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		deletes = append(deletes, &runtime.StorageDelete{
+			Collection: partyReadyCollection,
+			Key:        partyID,
+			UserID:     uid,
+		})
+	}
+	if len(deletes) == 0 {
+		return
+	}
+	if err := nk.StorageDelete(ctx, deletes); err != nil {
+		logger.Warn(
+			"delete ready rows: StorageDelete party=%s err=%v",
+			partyID, err)
 	}
 }
 
