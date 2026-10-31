@@ -430,9 +430,16 @@ func registerPrivacyHooks(initializer runtime.Initializer) error {
 		func() error {
 			return initializer.RegisterAfterSessionRefresh(func(
 				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
+				nk runtime.NakamaModule, _ *api.Session,
 				_ *api.SessionRefreshRequest,
 			) error {
+				// A resumed session runs no after-authenticate
+				// hook, so the SP108 naming for nameless
+				// accounts happens here too, inside this one
+				// registered function (SP106's rule). Naming
+				// first: the pending-deletion re-clear inside
+				// enforceSignInPrivacy has the last word.
+				nameExistingIfNameless(ctx, logger, nk)
 				enforceSignInPrivacy(ctx, logger, db)
 				return nil
 			})

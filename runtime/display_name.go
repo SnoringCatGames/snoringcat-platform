@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
@@ -89,4 +90,45 @@ func assignGeneratedNameOnCreate(
 			"assign generated display name for %s: %v", userID, err)
 	}
 	return nil
+}
+
+// nameExistingIfNameless gives an existing account whose
+// stored display name is empty a generated one (SP108).
+// Accounts created while the naming hooks were shadowed
+// (SP106) never got a name, and the public leaderboard
+// hides a nameless account; this heals them at their next
+// sign-in or session refresh. A stored name is never
+// replaced: the deletion marker included, which sign-in
+// privacy re-clears after this runs.
+func nameExistingIfNameless(
+	ctx context.Context,
+	logger runtime.Logger,
+	nk runtime.NakamaModule,
+) {
+	userID, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
+	if userID == "" {
+		return
+	}
+	account, err := nk.AccountGetId(ctx, userID)
+	if err != nil || account == nil || account.GetUser() == nil {
+		logger.Warn(
+			"name nameless account: read user=%s err=%v",
+			userID, err)
+		return
+	}
+	if strings.TrimSpace(
+		account.GetUser().GetDisplayName()) != "" {
+		return
+	}
+	name, err := generatedDisplayName()
+	if err != nil {
+		logger.Warn("generated display name: %v", err)
+		return
+	}
+	if err := nk.AccountUpdateId(
+		ctx, userID, "", nil, name, "", "", "", "",
+	); err != nil {
+		logger.Warn(
+			"name nameless account for %s: %v", userID, err)
+	}
 }

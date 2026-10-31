@@ -31,6 +31,16 @@ type recordingInitializer struct {
 		runtime.NakamaModule, *api.Session,
 		*api.AuthenticateSteamRequest,
 	) error
+	deviceFn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.AuthenticateDeviceRequest,
+	) error
+	refreshFn func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+		*api.SessionRefreshRequest,
+	) error
 }
 
 func (c *recordingInitializer) record(name string) {
@@ -166,6 +176,7 @@ func (c *recordingInitializer) RegisterAfterAuthenticateApple(fn func(context.Co
 
 func (c *recordingInitializer) RegisterAfterAuthenticateDevice(fn func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, *api.Session, *api.AuthenticateDeviceRequest) error) error {
 	c.record("AfterAuthenticateDevice")
+	c.deviceFn = fn
 	return nil
 }
 
@@ -211,6 +222,7 @@ func (c *recordingInitializer) RegisterAfterLinkApple(fn func(context.Context, r
 
 func (c *recordingInitializer) RegisterAfterSessionRefresh(fn func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, *api.Session, *api.SessionRefreshRequest) error) error {
 	c.record("AfterSessionRefresh")
+	c.refreshFn = fn
 	return nil
 }
 
@@ -358,6 +370,98 @@ func TestCreatedSteamAccountGetsGeneratedName(t *testing.T) {
 	}
 	if err := validateDisplayName(got); err != nil {
 		t.Errorf("generated name %q fails validation: %v", got, err)
+	}
+}
+
+func TestExistingNamelessDeviceAccountGetsGeneratedName(t *testing.T) {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	if initializer.deviceFn == nil {
+		t.Fatal("no Device after-auth hook was registered")
+	}
+	nk := &fakeAfterAuthNk{displayName: ""}
+	err := initializer.deviceFn(
+		afterAuthCtx(), testLogger{}, nil, nk,
+		&api.Session{Created: false},
+		&api.AuthenticateDeviceRequest{})
+	if err != nil {
+		t.Fatalf("hook: err = %v", err)
+	}
+	if len(nk.updated) != 1 {
+		t.Fatalf("updates = %v, want one generated name", nk.updated)
+	}
+	if err := validateDisplayName(nk.updated[0]); err != nil {
+		t.Errorf("generated name %q fails validation: %v",
+			nk.updated[0], err)
+	}
+}
+
+func TestExistingNamedDeviceAccountKeepsItsName(t *testing.T) {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	nk := &fakeAfterAuthNk{displayName: "BraveBunny42"}
+	err := initializer.deviceFn(
+		afterAuthCtx(), testLogger{}, nil, nk,
+		&api.Session{Created: false},
+		&api.AuthenticateDeviceRequest{})
+	if err != nil {
+		t.Fatalf("hook: err = %v", err)
+	}
+	if len(nk.updated) != 0 {
+		t.Errorf("updates = %v, want the stored name kept", nk.updated)
+	}
+}
+
+func TestSessionRefreshNamesNamelessAccount(t *testing.T) {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerPrivacyHooks(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	if initializer.refreshFn == nil {
+		t.Fatal("no after-session-refresh hook was registered")
+	}
+	nk := &fakeAfterAuthNk{displayName: ""}
+	err := initializer.refreshFn(
+		afterAuthCtx(), testLogger{}, nil, nk,
+		&api.Session{}, &api.SessionRefreshRequest{})
+	if err != nil {
+		t.Fatalf("hook: err = %v", err)
+	}
+	if len(nk.updated) != 1 {
+		t.Fatalf("updates = %v, want one generated name", nk.updated)
+	}
+	if err := validateDisplayName(nk.updated[0]); err != nil {
+		t.Errorf("generated name %q fails validation: %v",
+			nk.updated[0], err)
+	}
+}
+
+func TestSessionRefreshKeepsStoredName(t *testing.T) {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerPrivacyHooks(initializer); err != nil {
+		t.Fatalf("register: err = %v", err)
+	}
+	nk := &fakeAfterAuthNk{displayName: "BraveBunny42"}
+	err := initializer.refreshFn(
+		afterAuthCtx(), testLogger{}, nil, nk,
+		&api.Session{}, &api.SessionRefreshRequest{})
+	if err != nil {
+		t.Fatalf("hook: err = %v", err)
+	}
+	if len(nk.updated) != 0 {
+		t.Errorf("updates = %v, want the stored name kept", nk.updated)
 	}
 }
 

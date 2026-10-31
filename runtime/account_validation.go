@@ -196,7 +196,9 @@ func isKeptJoiner(runes []rune, i int) bool {
 //   - a created account gets a generated display name
 //     (H59), never the provider's profile name;
 //   - an existing account whose stored name breaks the
-//     display-name rules gets the clamped name (SP88);
+//     display-name rules gets the clamped name (SP88),
+//     and one whose stored name is empty gets a
+//     generated name (SP108);
 //   - sign-in privacy runs on every sign-in
 //     (enforceSignInPrivacy).
 //
@@ -276,7 +278,14 @@ func registerAfterAuthenticateHooks(
 				_ = assignGeneratedNameOnCreate(
 					ctx, logger, nk, out.GetCreated())
 			} else if clamps {
+				// The clamp already stores a generated
+				// name when nothing valid remains, an
+				// empty stored name included (SP103).
 				clampRun(ctx, logger, nk)
+			} else if generates {
+				// An existing account with an empty name
+				// gets a generated one (SP108).
+				nameExistingIfNameless(ctx, logger, nk)
 			}
 			if privacy {
 				enforceSignInPrivacy(ctx, logger, db)
