@@ -61,6 +61,11 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   Heroic Labs privately, through their security contact rather than a
   public issue; after the proxy guard is deployed. Report drafted
   to the vendor's security contact; Levi sends it.
+- **SP114** · Backfill the 15 nameless prod accounts (2026-10-31) with
+  generated names: one UPDATE in the runtime's format and word lists,
+  touching only empty names (the 2 `[deleted]` markers stay), then
+  counts; SP112 then watches for new ones. Prod data change, so it
+  needs Levi's OK.
 
 ## In progress
 
@@ -128,6 +133,10 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   accounts created 2026-10-20 03:01:48 to 2026-10-31 08:32:17 UTC,
   SP108's deploy (0 then; 11 empty, 2 markers). No change means no
   returns or a broken heal: probe it.
+- **SP113** · `cancelPendingDeletion` (`runtime/privacy.go`) sets
+  `display_name` to NULL when a player cancels deletion, so the account
+  stays nameless until its next sign-in or refresh. Assign
+  `generatedDisplayName()` in the same UPDATE instead.
 
 ## Residuals (known, not fixed)
 
