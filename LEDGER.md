@@ -22,8 +22,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   memory limit on its container (H104 1B F18). Patch prepared and
   tested locally 2026-10-30 (hopnbop `.claude/probes/H104/F18/`);
   it is committed and deployed together once Levi approves the
-  the change; it is committed and deployed together once Levi approves
-  the deploy. Details: hopnbop `.claude/probes/H104/stage1-B.md`
+  deploy. Details: hopnbop `.claude/probes/H104/stage1-B.md`
   (local).
 
 
