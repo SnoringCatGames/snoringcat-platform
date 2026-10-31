@@ -151,9 +151,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 - **SP2** · phase-b's UptimeRobot step still calls the v2 API
   (`scripts/phase-b.ps1:373-416`), whose `newMonitor` this free plan
   refuses (v3 works), so a rebuild can't recreate the monitors.
-- **SP84 residual** · A session issued in the same second as the
-  delete outlives the revocation until its access token expires,
-  since Nakama revokes by issue second. Refresh stays blocked.
 - **SP3** · The host's cost-monitor `.env` lacks `GITHUB_TOKEN`
   (`cost-monitor.sh:759`), so its GitHub Actions spend is a placeholder
   zero that weekly-cost-review quotes (unchecked on the host).
@@ -208,6 +205,9 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   done in 3c65a1e (2026-10-29): storage allowlist plus size cap
   deployed (run 40929281553). Left for Levi: the per-IP Caddy
   zone (prod host config); residual
+- **SP95** · SP84 follow-up: a session issued in the same second as the
+  delete outlives the revocation until its access token expires, since
+  Nakama revokes by issue second. Refresh stays blocked.
 
 ## Ideas (not scheduled)
 

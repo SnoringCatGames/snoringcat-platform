@@ -271,6 +271,10 @@ func test_cancel_clears_marker_on_account_without_display_name() -> void:
 		deleted.status_code, 200,
 		"delete_account: status=%d body=%s"
 			% [deleted.status_code, _body(deleted)])
+	# delete_account revoked the old session; sign in again
+	# for the cancel, as a returning player would.
+	token = await _device_token(str(user.device_id))
+	assert_false(token.is_empty(), "re-sign-in after delete failed")
 	var cancelled: Dictionary = await _helper.session_rpc(
 		"cancel_account_deletion", token, null)
 	assert_eq(
