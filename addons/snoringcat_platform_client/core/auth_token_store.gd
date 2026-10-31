@@ -14,6 +14,14 @@ extends RefCounted
 ## on-demand before matchmaking and held only in memory for
 ## the duration of the session.
 ##
+## The encryption is obfuscation, not secrecy (TS-1, accepted
+## 2026-10-30): the install key sits in a file beside the auth
+## file, so anyone who can read the player's user folder can
+## read both. It keeps tokens out of casual view (a screenshot
+## of the folder, a support bundle listing file contents) and
+## stops one game's build reading another's by a shared
+## constant; it does not protect a copied user folder.
+##
 ## Extracted from hopnbop/src/core/auth_token_store.gd
 ## at tag pre-platform-extraction. Renamed AuthTokenStore →
 ## PlatformAuthTokenStore.
@@ -45,6 +53,11 @@ var linked_providers: Array[String] = []
 var consent_accepted_at := 0
 var consent_legal_version := ""
 var profile_image_url := ""
+## True when an auth file exists but the last load could not
+## read it (wrong key, damaged bytes). Callers must not mint
+## a fresh identity over such a file: the account it holds
+## would be orphaned (SP44).
+var load_failed := false
 
 
 func _init(base_file_path := "user://auth.cfg") -> void:
@@ -196,6 +209,20 @@ func has_auth_file() -> bool:
 	return FileAccess.file_exists(_auth_file_path)
 
 
+## Moves an unreadable auth file aside (auth.cfg.unreadable)
+## so a fresh guest can start without destroying the old
+## file. Returns whether the file was moved.
+func move_unreadable_file_aside() -> bool:
+	var aside_path := _auth_file_path + ".unreadable"
+	var err := DirAccess.rename_absolute(
+		ProjectSettings.globalize_path(_auth_file_path),
+		ProjectSettings.globalize_path(aside_path))
+	if err != OK:
+		return false
+	load_failed = false
+	return true
+
+
 ## Path of the per-install key file next to the auth file.
 func _key_file_path() -> String:
 	return _auth_file_path.get_basename() + "_key.cfg"
@@ -219,7 +246,13 @@ func _install_key(create: bool) -> String:
 		return ""
 	var key := Crypto.new().generate_random_bytes(32).hex_encode()
 	config.set_value(_SECTION, "install_key", key)
-	config.save(_key_file_path())
+	# The key lands before any auth file encrypted under it
+	# (save_tokens asks for the passphrase first). If it
+	# cannot be written, report no key: the caller saves
+	# under the previous passphrase rather than encrypting
+	# under a key that is not on disk.
+	if config.save(_key_file_path()) != OK:
+		return ""
 	return key
 
 
@@ -291,7 +324,12 @@ func load_tokens() -> void:
 			_auth_file_path, _legacy_passphrase()
 		)
 	if err != OK:
+		# A missing file is a fresh install; a file that
+		# exists but cannot be read is recorded, so no
+		# caller mints a new identity over it.
+		load_failed = FileAccess.file_exists(_auth_file_path)
 		return
+	load_failed = false
 	is_anonymous = config.get_value(
 		_SECTION, "is_anonymous", false
 	)
@@ -347,6 +385,9 @@ func _get_passphrase() -> String:
 
 ## Passphrase for the next save: the install key, created
 ## on first save so new installs are random-keyed and old
-## files re-key the first time they are saved again.
+## files re-key the first time they are saved again. When
+## the key cannot be written, the previous (legacy)
+## passphrase is used, so the file stays readable.
 func _save_passphrase() -> String:
-	return _install_key(true)
+	var key := _install_key(true)
+	return key if not key.is_empty() else _legacy_passphrase()

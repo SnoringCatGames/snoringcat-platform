@@ -286,6 +286,18 @@ func submit_platform_token(
 ## get_guest_jwt() when the player starts matchmaking.
 func login_anonymous() -> void:
 	var store: PlatformAuthTokenStore = Platform.token_store
+	if store.load_failed and store.has_auth_file():
+		# The saved sign-in cannot be read. Move it aside
+		# rather than minting over it, and say plainly that
+		# a new guest is starting.
+		if store.move_unreadable_file_aside():
+			auth_status_changed.emit(
+				"Saved sign-in could not be read; "
+				+ "starting as a new guest")
+		else:
+			push_warning(
+				"[PlatformAuthApiClient] Unreadable auth "
+				+ "file could not be moved aside")
 	store.is_anonymous = true
 	store.display_name = _generate_anonymous_name()
 	store.local_player_id = _generate_state_nonce()
@@ -1044,10 +1056,12 @@ func _do_anon_auth() -> void:
 	var store: PlatformAuthTokenStore = Platform.token_store
 	var device_id := store.local_player_id
 	if device_id.is_empty():
-		if store.has_auth_file():
+		if store.load_failed:
 			# A saved identity exists but could not be read.
 			# Minting a fresh one would orphan the guest
-			# account (SP44), so fail instead.
+			# account (SP44), so fail instead. A file that
+			# loaded and holds no id has no account to
+			# orphan, and mints below.
 			_is_refreshing = false
 			guest_jwt_obtained.emit(
 				false,
