@@ -140,6 +140,73 @@ func test_raw_group_calls_on_a_party_are_refused() -> void:
 			% [clan_deleted.status_code, clan_deleted.text])
 
 
+
+func test_second_party_create_ends_the_first() -> void:
+	if not await _mint_users(1):
+		return
+	var a: Dictionary = _users[0]
+	var first_id := await _make_party(a, "party-")
+	if first_id.is_empty():
+		return
+	var second_id := await _make_party(a, "party-")
+	if second_id.is_empty():
+		return
+	assert_ne(first_id, second_id)
+
+	var mine: Dictionary = await _helper.http_get(
+		"/v2/user/" + str(a.user_id) + "/group",
+		"bearer:" + str(a.token))
+	assert_true(
+		_is_2xx(mine),
+		"list own groups: status=%d body=%s"
+		% [mine.status_code, mine.text])
+	var ids: Array = []
+	if mine.body is Dictionary:
+		for entry in mine.body.get("user_groups", []):
+			ids.append(str(entry.get("group", {}).get("id", "")))
+	assert_false(
+		ids.has(first_id),
+		"first party should be gone after the second create")
+	assert_true(
+		ids.has(second_id),
+		"second party should be listed for its creator")
+
+
+func test_party_prefs_inputs_are_bounded() -> void:
+	if not await _mint_users(1):
+		return
+	var a: Dictionary = _users[0]
+	var party_id := await _make_party(a, "party-")
+	if party_id.is_empty():
+		return
+
+	var big := "".rpad(5000, "a")
+	var resp: Dictionary = await _helper.session_rpc(
+		"party_set_level_prefs", str(a.token),
+		{"party_id": party_id, "prefs": {"blob": big}})
+	assert_ne(
+		resp.status_code, 200,
+		"oversized level prefs should be refused: %s"
+		% resp.text)
+
+	var ok: Dictionary = await _helper.session_rpc(
+		"party_set_level_prefs", str(a.token),
+		{"party_id": party_id,
+			"prefs": {"inclusion": ["level_1"]}})
+	assert_eq(
+		ok.status_code, 200,
+		"small level prefs: status=%d body=%s"
+		% [ok.status_code, ok.text])
+
+	var long_mode := "".rpad(65, "a")
+	var mode_resp: Dictionary = await _helper.session_rpc(
+		"party_set_prefs", str(a.token),
+		{"party_id": party_id, "mode_id": long_mode})
+	assert_ne(
+		mode_resp.status_code, 200,
+		"over-long mode id should be refused: %s"
+		% mode_resp.text)
+
 func _mint_users(count: int) -> bool:
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")

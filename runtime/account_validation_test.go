@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestValidateDisplayName(t *testing.T) {
@@ -77,5 +78,17 @@ func TestValidateAvatarURLRefusesNonASCIIHost(t *testing.T) {
 	raw := "https://avatars.a\u212aamai.steamstatic.com/a.jpg"
 	if err := validateAvatarURL(raw); errorCode(err) != 3 {
 		t.Errorf("url: err = %v, want code 3", err)
+	}
+}
+
+func TestClampDisplayName(t *testing.T) {
+	if got := clampDisplayName("Short Name"); got != "" {
+		t.Errorf("clamp short = %q, want no change", got)
+	}
+	long := strings.Repeat("é", maxDisplayNameRunes+8)
+	got := clampDisplayName(long)
+	if n := utf8.RuneCountInString(got); n != maxDisplayNameRunes {
+		t.Errorf("clamp long = %d runes, want %d",
+			n, maxDisplayNameRunes)
 	}
 }

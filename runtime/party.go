@@ -1789,6 +1789,9 @@ func partySetModeRpc(
 	if args.ModeID == "" {
 		return "", runtime.NewError("mode_id required", 3)
 	}
+	if err := validatePartyModeID(args.ModeID); err != nil {
+		return "", err
+	}
 
 	// Confirm the group is a party (name prefix) and the caller
 	// is the current leader. resolvePartyLeader honors an existing
@@ -1955,7 +1958,10 @@ func partySetLevelPrefsRpc(
 	if err != nil {
 		return "", err
 	}
-	prefs := json.RawMessage("{}")
+	if err := validatePartyPrefsBlob(args.Prefs); err != nil {
+		return "", err
+	}
+		prefs := json.RawMessage("{}")
 	if len(args.Prefs) > 0 {
 		prefs = args.Prefs
 	}
@@ -2025,6 +2031,10 @@ func partySetCheatPrefsRpc(
 	}
 	userID, err := requirePartyLeader(ctx, nk, games, args.PartyID)
 	if err != nil {
+		return "", err
+	}
+	if err := validatePartyNetworkedCheats(
+		args.NetworkedCheats); err != nil {
 		return "", err
 	}
 	if args.NetworkedCheats == nil {

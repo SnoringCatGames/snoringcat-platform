@@ -17,7 +17,7 @@ const _Helper = preload(
 )
 const _DEVICE_ID := "compliance-anon-fixed-1"
 const _COLLECTION := "settings"
-const _KEY := "compliance-roundtrip"
+const _KEY := "global"
 
 var _helper
 

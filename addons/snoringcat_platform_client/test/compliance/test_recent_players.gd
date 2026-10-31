@@ -86,6 +86,9 @@ func test_list_recent_players_sorts_by_matched_at_desc_and_caps() -> void:
 	if _helper.server_key_basic_header().is_empty():
 		pending("NAKAMA_SERVER_KEY env var not set")
 		return
+	if not _helper.get_console_refusal().is_empty():
+		pending(_helper.get_console_refusal())
+		return
 
 	var users: Array = await _helper.multi_session_anon(
 		1, "compliance-recent-seeded")
@@ -160,15 +163,12 @@ func test_list_recent_players_sorts_by_matched_at_desc_and_caps() -> void:
 				% [required, str(first_entry)])
 
 
-## Writes a recent_players storage row owned by the calling user
-## via Nakama's standard /v2/storage write endpoint. NOTE: the
-## permission_write here is `1` (owner-writable) which diverges
-## from the production runtime's `0` (server-only). The test
-## isn't trying to mimic the write-permission surface — it just
-## needs rows in place so the LIST RPC has something to return.
-## The list response shape is the production-locked contract; the
-## permission value is internal and isn't exposed by
-## list_recent_players.
+## Writes a recent_players storage row owned by the
+## calling user through the console, at the server-owned
+## permissions (0/0) production rows carry (SP87: the
+## collection is not client-writable). The list response
+## shape is the production-locked contract; the write
+## route is fixture plumbing.
 func _seed_row(
 	token: String,
 	fake_other_id: String,
@@ -180,20 +180,9 @@ func _seed_row(
 		"display_name": "Seeded %s" % fake_other_id,
 		"matched_at": matched_at,
 	})
-	var body := {
-		"objects": [{
-			"collection": "recent_players",
-			"key": fake_other_id,
-			"value": value,
-			"permission_read": 1,
-			"permission_write": 1,
-		}],
-	}
-	var result: Dictionary = await _helper.http_put(
-		"/v2/storage", body, "bearer:" + token)
-	return (
-		result.status_code >= 200 and result.status_code < 300)
-
+	return await _helper.console_write_storage(
+		"recent_players", fake_other_id,
+		str(_user.user_id), value)
 
 ## Builds a Nakama-shaped UUID string seeded by `i` so each
 ## seeded row has a distinct, recognizable user_id for assertion

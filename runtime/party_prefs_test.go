@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/heroiclabs/nakama-common/api"
@@ -86,5 +87,75 @@ func TestSetPrefsRefusedForMember(t *testing.T) {
 		`{"party_id":"party-1","mode_id":"ffa"}`)
 	if errorCode(err) != 7 {
 		t.Fatalf("member set prefs: err = %v, want code 7", err)
+	}
+}
+
+func TestSetPrefsRefusesOversizedInputs(t *testing.T) {
+	bigPrefs := `{"party_id":"party-1","prefs":{"blob":"` +
+		strings.Repeat("a", partyPrefsMaxBytes) + `"}}`
+	longMode := `{"party_id":"party-1","mode_id":"` +
+		strings.Repeat("a", partyModeIDMaxBytes+1) + `"}`
+	manyCheats := `{"party_id":"party-1",` +
+		`"are_cheats_enabled":true,"networked_cheats":[`
+	for i := 0; i <= partyNetworkedCheatsMaxCount; i++ {
+		manyCheats += `"c",`
+	}
+	manyCheats = manyCheats[:len(manyCheats)-1] + `]}`
+	longCheat := `{"party_id":"party-1",` +
+		`"are_cheats_enabled":true,"networked_cheats":["` +
+		strings.Repeat("a", partyNetworkedCheatMaxBytes+1) + `"]}`
+	for name, payload := range map[string]string{
+		"prefs blob":  bigPrefs,
+		"mode id":     longMode,
+		"cheat count": manyCheats,
+		"cheat name":  longCheat,
+	} {
+		nk := &fakePrefsNk{}
+		_, err := partySetPrefsRpc(
+			prefsCtx("u1"), testLogger{}, nk,
+			newTestGames(t, nil), payload)
+		if errorCode(err) != 3 {
+			t.Fatalf(
+				"%s: err = %v, want code 3", name, err)
+		}
+		if nk.writeCalls != 0 {
+			t.Fatalf(
+				"%s: writes = %d, want 0",
+				name, nk.writeCalls)
+		}
+	}
+}
+
+func TestSetLevelPrefsRefusesOversizedBlob(t *testing.T) {
+	nk := &fakePrefsNk{}
+	payload := `{"party_id":"party-1","prefs":{"blob":"` +
+		strings.Repeat("a", partyPrefsMaxBytes) + `"}}`
+	_, err := partySetLevelPrefsRpc(
+		prefsCtx("u1"), testLogger{}, nk,
+		newTestGames(t, nil), payload)
+	if errorCode(err) != 3 {
+		t.Fatalf("level prefs: err = %v, want code 3", err)
+	}
+	if nk.writeCalls != 0 {
+		t.Fatalf("writes = %d, want 0", nk.writeCalls)
+	}
+}
+
+func TestSetCheatPrefsRefusesTooManyCheats(t *testing.T) {
+	nk := &fakePrefsNk{}
+	payload := `{"party_id":"party-1",` +
+		`"are_cheats_enabled":true,"networked_cheats":[`
+	for i := 0; i <= partyNetworkedCheatsMaxCount; i++ {
+		payload += `"c",`
+	}
+	payload = payload[:len(payload)-1] + `]}`
+	_, err := partySetCheatPrefsRpc(
+		prefsCtx("u1"), testLogger{}, nk,
+		newTestGames(t, nil), payload)
+	if errorCode(err) != 3 {
+		t.Fatalf("cheat prefs: err = %v, want code 3", err)
+	}
+	if nk.writeCalls != 0 {
+		t.Fatalf("writes = %d, want 0", nk.writeCalls)
 	}
 }

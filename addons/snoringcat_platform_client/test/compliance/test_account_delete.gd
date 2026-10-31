@@ -349,23 +349,18 @@ func test_delete_clears_identifying_data_at_once() -> void:
 		"/v2/friend?ids=" + str(other.user_id), null, "bearer:" + token)
 	await _helper.http_post(
 		"/v2/friend?ids=" + user_id, null, "bearer:" + str(other.token))
-	# The row match_end would write in the other player's list.
-	var recent: Dictionary = await _helper.http_put(
-		"/v2/storage",
-		{"objects": [{
-			"collection": "recent_players",
-			"key": user_id,
-			"value": JSON.stringify({
-				"user_id": user_id,
-				"username": str(player.username),
-				"display_name": "Scrub %s" % run,
-				"matched_at": Time.get_unix_time_from_system() as int,
-			}),
-			"permission_read": 1,
-			"permission_write": 1,
-		}]},
-		"bearer:" + str(other.token))
-	assert_true(recent.status_code < 300, "recent_players seed failed")
+	# The row match_end would write in the other player's
+	# list, seeded through the console: recent_players is
+	# server-owned, not client-writable (SP87).
+	var recent_ok: bool = await _helper.console_write_storage(
+		"recent_players", user_id, str(other.user_id),
+		JSON.stringify({
+			"user_id": user_id,
+			"username": str(player.username),
+			"display_name": "Scrub %s" % run,
+			"matched_at": Time.get_unix_time_from_system() as int,
+		}))
+	assert_true(recent_ok, "recent_players seed failed")
 	var party: Dictionary = await _helper.http_post(
 		"/v2/group",
 		{"name": "party-scrub-%s" % run, "open": false, "max_count": 4},

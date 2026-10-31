@@ -524,3 +524,65 @@ func TestPartyMembershipsPagesThroughGroups(t *testing.T) {
 		t.Fatalf("sharedParty = %v", sharedParty(parties))
 	}
 }
+
+func TestCreateGroupDisbandsCallersEarlierParty(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"leader": {
+				partyUserGroup("party-1", "party-hopnbop", 0),
+			},
+		},
+	}
+	req := &api.CreateGroupRequest{Name: "party-new"}
+	out, err := beforeCreateGroupPartyGuard(
+		refreshCtx("leader"), testLogger{}, nil, nk, req)
+	if err != nil || out != req {
+		t.Fatalf("create: out=%v err=%v", out, err)
+	}
+	if len(nk.deletedGroups) != 1 ||
+		nk.deletedGroups[0] != "party-1" {
+		t.Fatalf(
+			"deletedGroups = %v, want [party-1]",
+			nk.deletedGroups)
+	}
+}
+
+func TestCreateGroupLeavesPartiesLedByOthers(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"member": {
+				partyUserGroup("party-1", "party-hopnbop", 2),
+			},
+		},
+	}
+	req := &api.CreateGroupRequest{Name: "party-new"}
+	out, err := beforeCreateGroupPartyGuard(
+		refreshCtx("member"), testLogger{}, nil, nk, req)
+	if err != nil || out != req {
+		t.Fatalf("create: out=%v err=%v", out, err)
+	}
+	if len(nk.deletedGroups) != 0 {
+		t.Fatalf(
+			"deletedGroups = %v, want none", nk.deletedGroups)
+	}
+}
+
+func TestCreateGroupIgnoresNonPartyNames(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"leader": {
+				partyUserGroup("party-1", "party-hopnbop", 0),
+			},
+		},
+	}
+	req := &api.CreateGroupRequest{Name: "clan-new"}
+	out, err := beforeCreateGroupPartyGuard(
+		refreshCtx("leader"), testLogger{}, nil, nk, req)
+	if err != nil || out != req {
+		t.Fatalf("create: out=%v err=%v", out, err)
+	}
+	if len(nk.deletedGroups) != 0 {
+		t.Fatalf(
+			"deletedGroups = %v, want none", nk.deletedGroups)
+	}
+}

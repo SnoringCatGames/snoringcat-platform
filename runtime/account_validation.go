@@ -99,6 +99,106 @@ func registerAccountValidationHook(
 		})
 }
 
+// clampDisplayName returns the name cut to the display
+// name bound, or "" when it already fits. Sign-in providers
+// import names without the update hook, so a name that
+// predates the bound (or arrives over it) is cut to fit
+// after authentication instead of failing later updates.
+func clampDisplayName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	runes := []rune(trimmed)
+	if len(runes) <= maxDisplayNameRunes {
+		return ""
+	}
+	out := strings.TrimSpace(
+		string(runes[:maxDisplayNameRunes]))
+	if out == reservedDisplayName {
+		out = string([]rune(out)[:maxDisplayNameRunes-1])
+	}
+	return out
+}
+
+// registerAuthNameClamp installs the after-authenticate
+// clamp for the providers that import a profile name at
+// sign-in (Facebook, Google, Steam).
+func registerAuthNameClamp(
+	initializer runtime.Initializer,
+) error {
+	clamp := func(
+		ctx context.Context,
+		logger runtime.Logger,
+		nk runtime.NakamaModule,
+		userID string,
+	) {
+		account, err := nk.AccountGetId(ctx, userID)
+		if err != nil || account == nil ||
+			account.GetUser() == nil {
+			logger.Warn(
+				"name clamp: account read user=%s err=%v",
+				userID, err)
+			return
+		}
+		name := account.GetUser().GetDisplayName()
+		clamped := clampDisplayName(name)
+		if clamped == "" {
+			return
+		}
+		if err := nk.AccountUpdateId(
+			ctx, userID, "", nil, clamped, "", "", "", "",
+		); err != nil {
+			logger.Warn(
+				"name clamp: account update user=%s err=%v",
+				userID, err)
+		}
+	}
+	if err := initializer.RegisterAfterAuthenticateFacebook(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			_ *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateFacebookRequest,
+		) error {
+			clamp(ctx, logger, nk,
+			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateGoogle(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			_ *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateGoogleRequest,
+		) error {
+			clamp(ctx, logger, nk,
+			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateSteam(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			_ *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateSteamRequest,
+		) error {
+			clamp(ctx, logger, nk,
+			ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string))
+			return nil
+		}); err != nil {
+		return err
+	}
+	return nil
+}
+
 // validateDisplayName checks one proposed display name.
 func validateDisplayName(name string) error {
 	trimmed := strings.TrimSpace(name)

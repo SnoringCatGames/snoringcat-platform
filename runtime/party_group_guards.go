@@ -50,9 +50,53 @@ func registerPartyGroupGuards(
 		beforeJoinGroupPartyGuard); err != nil {
 		return err
 	}
+	if err := initializer.RegisterBeforeCreateGroup(
+		beforeCreateGroupPartyGuard); err != nil {
+		return err
+	}
 	return nil
 }
 
+// A player holds one live party they created. Creating a
+// `party-` group ends any party the caller created earlier
+// (the full disband, so its members hear about it and its
+// rows go with it) instead of letting stale parties pile up.
+// Parties the caller only belongs to are left alone.
+func beforeCreateGroupPartyGuard(
+	ctx context.Context,
+	logger runtime.Logger,
+	_ *sql.DB,
+	nk runtime.NakamaModule,
+	in *api.CreateGroupRequest,
+) (*api.CreateGroupRequest, error) {
+	if !strings.HasPrefix(in.GetName(), partyGroupPrefix) {
+		return in, nil
+	}
+	userID, _ := ctx.Value(
+		runtime.RUNTIME_CTX_USER_ID).(string)
+	if userID == "" {
+		return in, nil
+	}
+	memberships, err := partyMemberships(ctx, nk, userID, "")
+	if err != nil {
+		return nil, err
+	}
+	for partyID := range memberships {
+		groups, err := nk.GroupsGetId(ctx, []string{partyID})
+		if err != nil {
+			return nil, err
+		}
+		if len(groups) == 0 ||
+			groups[0].GetCreatorId() != userID {
+			continue
+		}
+		if err := disbandPartyGroup(
+			ctx, logger, nk, partyID); err != nil {
+			return nil, err
+		}
+	}
+	return in, nil
+}
 // partyGroupGuard refuses the call when the group is a party
 // group. A group that does not resolve passes through, and
 // Nakama reports the bad id itself.

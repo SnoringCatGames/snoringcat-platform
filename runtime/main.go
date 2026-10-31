@@ -307,10 +307,13 @@ func InitModule(
 	if err := registerPartyGroupGuards(initializer); err != nil {
 		return err
 	}
-	if err := registerStorageAllowlistHook(initializer); err != nil {
+	if err := registerStorageAllowlistHook(initializer, games); err != nil {
 		return err
 	}
 	if err := registerAccountValidationHook(initializer); err != nil {
+		return err
+	}
+	if err := registerAuthNameClamp(initializer); err != nil {
 		return err
 	}
 	if err := registerPartyChatHook(

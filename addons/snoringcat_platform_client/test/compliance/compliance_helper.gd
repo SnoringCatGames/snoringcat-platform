@@ -555,6 +555,30 @@ func console_update_account(user_id: String, fields: Dictionary) -> bool:
 	return result.status_code >= 200 and result.status_code < 300
 
 
+## Writes one storage row through the console, with the
+## server-owned permissions (0/0) the runtime writes its
+## own rows with. Client storage writes are allowlisted
+## (SP87), so fixtures that need a server-owned row in
+## place seed it here instead. Callers gate on
+## get_console_refusal() first.
+func console_write_storage(
+	collection: String,
+	key: String,
+	owner_user_id: String,
+	value: String,
+) -> bool:
+	var result := await console_request(
+		HTTPClient.METHOD_PUT,
+		"/v2/console/storage/%s/%s/%s"
+			% [collection, key, owner_user_id],
+		JSON.stringify({
+			"value": value,
+			"permission_read": 0,
+			"permission_write": 0,
+		}))
+	return (
+		result.status_code >= 200 and result.status_code < 300)
+
 ## Sends one console API request, signing in first. Refuses (with
 ## push_error, a test failure) per get_console_refusal(). Returns
 ## {status_code, body, text}.

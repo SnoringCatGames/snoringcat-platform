@@ -23,6 +23,44 @@ type partySetPrefsArgs struct {
 	NetworkedCheats  []string        `json:"networked_cheats"`
 }
 
+// The party prefs rows are server-owned, so the storage hook
+// never sees these writes. The caps below bound what one call
+// can store: the client's prefs blob is a small dictionary,
+// a mode id names one of the game's modes, and the cheat list
+// holds short cheat names.
+const (
+	partyPrefsMaxBytes           = 4096
+	partyModeIDMaxBytes          = 64
+	partyNetworkedCheatsMaxCount = 64
+	partyNetworkedCheatMaxBytes  = 64
+)
+
+func validatePartyPrefsBlob(prefs json.RawMessage) error {
+	if len(prefs) > partyPrefsMaxBytes {
+		return runtime.NewError("prefs too large", 3)
+	}
+	return nil
+}
+
+func validatePartyModeID(modeID string) error {
+	if len(modeID) > partyModeIDMaxBytes {
+		return runtime.NewError("mode_id too long", 3)
+	}
+	return nil
+}
+
+func validatePartyNetworkedCheats(cheats []string) error {
+	if len(cheats) > partyNetworkedCheatsMaxCount {
+		return runtime.NewError("too many networked_cheats", 3)
+	}
+	for _, cheat := range cheats {
+		if len(cheat) > partyNetworkedCheatMaxBytes {
+			return runtime.NewError("networked_cheat too long", 3)
+		}
+	}
+	return nil
+}
+
 func partySetPrefsRpcFactory(
 	games *perGameConfig,
 ) func(
@@ -54,6 +92,18 @@ func partySetPrefsRpc(
 	}
 	userID, err := requirePartyLeader(ctx, nk, games, args.PartyID)
 	if err != nil {
+		return "", err
+	}
+	if args.ModeID != nil {
+		if err := validatePartyModeID(*args.ModeID); err != nil {
+			return "", err
+		}
+	}
+	if err := validatePartyPrefsBlob(args.Prefs); err != nil {
+		return "", err
+	}
+	if err := validatePartyNetworkedCheats(
+		args.NetworkedCheats); err != nil {
 		return "", err
 	}
 
