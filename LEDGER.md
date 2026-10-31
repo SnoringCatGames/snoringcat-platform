@@ -182,11 +182,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   player in two parties. The window is milliseconds; closing it needs
   the guard and the hook to agree on one read, which they cannot
   without a lock.
-- **SP103** · SP88 residual: `clampDisplayName` returns an empty name
-  both for a compliant name and an emptied one, and skips the
-  letter-or-digit rule, so an imported name can pass sign-in and fail a
-  later update. Its output must pass `validateDisplayName` (hopnbop
-  H123 2.4).
 - **SP104** · SP88 residual: refusing every Cf character also refuses
   ZWNJ and ZWJ (Persian and Indic names, ZWJ emoji). Check the
   supported locales, or record it as a known limit (hopnbop H123 2.4).
@@ -203,6 +198,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP103** · The name clamp's kept output always passes `validateDisplayName` (control characters drop too); when nothing valid remains, the after-auth hook stores a generated name instead of keeping the invalid imported one. Done in f2d0698 (2026-10-30).
 - **SP105** · Go files check out with LF (`*.go text eol=lf` in `.gitattributes`, checkout refreshed to w/lf), so a local `gofmt -l runtime` lists nothing instead of every file. Done in 7540b74 (2026-10-30).
 - **SP102** · The consent path can no longer overwrite an unreadable auth file: `save_tokens()` moves it aside first (unique aside name) and writes nothing when the move fails; `login_anonymous()` keeps only its status message; `_do_anon_auth` no longer clears a refresh flag it never sets. Done in cd982de (2026-10-30).
 - **SP91** · Presence rows written before server-only permissions are rewritten to 0/0 by a startup migration (idempotent; the comment that said no migration was needed is corrected), the rich-presence constant's doc comment is reattached, the presence RPC returns fixed error messages, and the cascade check asserts its presence read succeeded. Done in 4d534b6 (2026-10-30).
