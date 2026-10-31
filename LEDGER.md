@@ -117,10 +117,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
-- **SP109** · `TestNoHookRegisteredTwice`
-  (`runtime/after_auth_hooks_test.go`) runs a hand-kept copy of
-  InitModule's registrar list; make InitModule and the test call one
-  registration function (hopnbop H125).
+
 ## Residuals (known, not fixed)
 
 - **SP2** · phase-b's UptimeRobot step still calls the v2 API
@@ -202,6 +199,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP109** · `InitModule` and `TestNoHookRegisteredTwice` call the same `registerHooks` function, so no registrar can escape the duplicate check. Done in 457bd23 (2026-10-31).
 - **SP108** · An existing account with an empty display name gets a generated one at sign-in and at session refresh, so the nameless accounts created while the naming hooks were shadowed heal with no prod script. Done in c48ab05 (2026-10-31).
 - **SP107** · Steam does all three after-sign-in behaviors again, so a created Steam account gets a generated name (H59). Done in 29e01f9 (2026-10-31).
 - **SP106** · One after-authenticate function per provider now runs the generated name at creation, the SP88 clamp and sign-in privacy (three registrars had silently replaced each other; privacy, registered last, was the survivor). Done in 8363d0c (2026-10-31).
