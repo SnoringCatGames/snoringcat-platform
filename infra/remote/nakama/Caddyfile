@@ -48,6 +48,17 @@ nakama.snoringcat.games {
 	import accesslog
 	encode gzip
 
+	# Request-body guard. No client sends a compressed
+	# request body (the SDK and the game use plain JSON),
+	# so refuse encoded requests outright, and cap every
+	# other body at the API's own request size limit.
+	@encoded header Content-Encoding *
+	respond @encoded "unsupported content encoding" 415
+	@capped not path /ws
+	request_body @capped {
+		max_size 256KiB
+	}
+
 	# Per-IP rate limit on the unauthenticated authentication
 	# endpoints. 30 attempts per IP per 5 min is generous for
 	# legit (typo-and-retry) flows but kills brute-force quickly.

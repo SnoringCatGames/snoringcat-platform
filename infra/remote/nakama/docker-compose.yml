@@ -49,6 +49,12 @@ services:
     image: heroiclabs/nakama:3.25.0
     container_name: nakama
     restart: unless-stopped
+    # Memory ceiling on a 4 GB host shared with Postgres,
+    # Caddy and the observability stack. If Nakama's heap
+    # ever runs away, the kernel kills and restarts this
+    # container instead of picking a victim host-wide.
+    mem_limit: 2.5g
+    memswap_limit: 2.5g
     entrypoint:
       - /bin/sh
       - -ec
@@ -106,6 +112,10 @@ services:
       LOCAL_PUBLIC_IP: ${LOCAL_PUBLIC_IP}
       LOCAL_UDP_PORT_RANGE: ${LOCAL_UDP_PORT_RANGE}
       LOCAL_TCP_PORT_RANGE: ${LOCAL_TCP_PORT_RANGE}
+      # Keep the Go heap under the container limit: the
+      # garbage collector tightens well before the
+      # kernel has to kill the container.
+      GOMEMLIMIT: "2GiB"
       # geoip lookup is over HTTP to the sidecar (see the
       # geoip-sidecar service below). Default URL points at the
       # docker DNS hostname; override with GEOIP_SIDECAR_URL=off
