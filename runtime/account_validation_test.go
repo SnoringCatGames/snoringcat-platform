@@ -36,7 +36,12 @@ func TestValidateAvatarURL(t *testing.T) {
 		"",
 		"https://lh3.googleusercontent.com/a/avatar.png",
 		"https://scontent.fbcdn.net/a.png",
+		"https://scontent-lax3-1.xx.fbcdn.net/a.png",
+		"https://platform-lookaside.fbsbx.com/a.png",
 		"https://avatars.steamstatic.com/a.jpg",
+		"https://avatars.akamai.steamstatic.com/a.jpg",
+		"https://avatars.fastly.steamstatic.com/a.jpg",
+		"https://avatars.cloudflare.steamstatic.com/a.jpg",
 	}
 	for _, raw := range good {
 		if err := validateAvatarURL(raw); err != nil {
@@ -47,6 +52,13 @@ func TestValidateAvatarURL(t *testing.T) {
 		"http://lh3.googleusercontent.com/a.png",
 		"https://tracker.invalid/pixel.png",
 		"https://googleusercontent.com.evil.invalid/a.png",
+		"https://cdn.googleusercontent.com/a.png",
+		"https://lhx.googleusercontent.com/a.png",
+		"https://www.facebook.com/a.png",
+		"https://steamstatic.com/a.jpg",
+		"https://user@lh3.googleusercontent.com/a.png",
+		"https://lh3.googleusercontent.com:8443/a.png",
+		"https://lh3.googleusercontent.com/a.png#x",
 		"https://lh3.googleusercontent.com/" +
 			strings.Repeat("a", maxAvatarURLBytes),
 	}

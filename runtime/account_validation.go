@@ -31,13 +31,43 @@ const (
 	reservedDisplayName = "[deleted]"
 )
 
-// avatarHostSuffixes mirrors the client allowlist (H60): the
-// host itself or any subdomain may serve avatars.
-var avatarHostSuffixes = []string{
-	"googleusercontent.com",
-	"fbcdn.net",
-	"fbsbx.com",
-	"steamstatic.com",
+// avatarURLAllowedHost reports whether a host may serve
+// avatars. The patterns are the client's
+// (ProfileImageCache, SP88): exact provider hosts, so
+// other subdomains of the same parents do not qualify.
+func avatarURLAllowedHost(host string) bool {
+	switch host {
+	case "platform-lookaside.fbsbx.com",
+		"avatars.steamstatic.com",
+		"avatars.akamai.steamstatic.com",
+		"avatars.fastly.steamstatic.com",
+		"avatars.cloudflare.steamstatic.com":
+		return true
+	}
+	if strings.HasSuffix(host, ".googleusercontent.com") {
+		label := strings.TrimSuffix(
+			host, ".googleusercontent.com")
+		if !strings.HasPrefix(label, "lh") {
+			return false
+		}
+		digits := label[2:]
+		if digits == "" {
+			return false
+		}
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if strings.HasSuffix(host, ".fbcdn.net") {
+		head := strings.TrimSuffix(host, ".fbcdn.net")
+		return head == "scontent" ||
+			strings.HasPrefix(head, "scontent.") ||
+			strings.HasPrefix(head, "scontent-")
+	}
+	return false
 }
 
 // registerAccountValidationHook installs the
@@ -103,11 +133,14 @@ func validateAvatarURL(raw string) error {
 	if err != nil || parsed.Scheme != "https" {
 		return runtime.NewError("avatar URL must be https", 3)
 	}
-	host := strings.ToLower(parsed.Hostname())
-	for _, suffix := range avatarHostSuffixes {
-		if host == suffix || strings.HasSuffix(host, "."+suffix) {
-			return nil
-		}
+	if parsed.User != nil || parsed.Port() != "" ||
+		strings.Contains(raw, "#") {
+		return runtime.NewError("avatar URL is malformed", 3)
 	}
-	return runtime.NewError("avatar host is not allowed", 3)
+	if !avatarURLAllowedHost(
+		strings.ToLower(parsed.Hostname())) {
+		return runtime.NewError(
+			"avatar host is not allowed", 3)
+	}
+	return nil
 }
