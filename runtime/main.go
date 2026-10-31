@@ -839,9 +839,23 @@ func beforeSessionRefresh(
 	}
 	userID, _ := ctx.Value(
 		runtime.RUNTIME_CTX_USER_ID).(string)
+	if userID == "" {
+		// Nakama calls this hook before it parses the
+		// refresh token, so the context carries no user
+		// id. Read the token's unverified uid claim
+		// instead: it only feeds the deny check below,
+		// and Nakama verifies the token right after.
+		userID = refreshTokenUserID(in.GetToken())
+	}
 	if userID != "" {
 		pending, err := hasPendingDeletion(ctx, nk, userID)
 		if err != nil {
+			// Fail open (a storage blip must not sign
+			// every player out), but count it so the
+			// gap is visible in metrics.
+			nk.MetricsCounterAdd(
+				"snoringcat_refresh_deletion_check_errors_total",
+				nil, 1)
 			logger.Warn(
 				"session refresh deletion check user=%s: %v",
 				userID, err)

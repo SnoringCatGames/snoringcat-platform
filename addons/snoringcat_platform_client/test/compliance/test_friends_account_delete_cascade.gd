@@ -134,6 +134,14 @@ func test_delete_account_removes_deleter_from_other_friend_lists() -> void:
 		int(inner.get("grace_days", 0)), 30,
 		"delete_account grace_days != 30: %s" % delete_result.text)
 
+	# delete_account revoked A's session; A's own checks below
+	# run on a fresh sign-in, as A's client would after the
+	# delete. Rewriting a.token keeps the later steps as they
+	# were.
+	a.token = await _device_token(str(a.device_id))
+	assert_false(
+		str(a.token).is_empty(), "re-sign-in after delete failed")
+
 	# Step 4: B's friends list no longer contains A. Nakama's
 	# FriendsDelete (called by the cascade) deletes both sides
 	# of the relationship, so B loses A even though B is the
@@ -164,7 +172,8 @@ func test_delete_account_removes_deleter_from_other_friend_lists() -> void:
 	# Step 6: A's display name is anonymized to "[deleted]"
 	# while username + account survive (Stage 1.5: no ban, so
 	# A retains sign-in capability for the cancellation
-	# surface). A's session token from pre-delete still works.
+	# surface). A signs in again for these reads; the pre-delete
+	# session ended with the delete.
 	var a_account: Dictionary = await _helper.http_get(
 		"/v2/account", "bearer:" + str(a.token))
 	assert_eq(
@@ -217,6 +226,20 @@ func test_delete_account_removes_deleter_from_other_friend_lists() -> void:
 ## perspective of the session that owns `token`. Returns -1 when
 ## the target isn't in the friend list at all (the post-cascade
 ## expected state).
+## Signs in with an existing device id and returns the new
+## session token ("" on failure). delete_account revokes the
+## old session, so reads after it need a fresh sign-in.
+func _device_token(device_id: String) -> String:
+	var result: Dictionary = await _helper.http_post(
+		"/v2/account/authenticate/device?create=false",
+		_helper.device_auth_body(device_id),
+		"basic_server_key")
+	if (result.status_code != 200
+			or not (result.body is Dictionary)):
+		return ""
+	return str(result.body.get("token", ""))
+
+
 func _fetch_friend_state(token: String, target_id: String) -> int:
 	var result: Dictionary = await _helper.http_get(
 		"/v2/friend", "bearer:" + token)

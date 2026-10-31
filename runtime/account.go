@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"time"
@@ -376,6 +377,28 @@ func deleteAccountRpc(
 			userID, err)
 	}
 
+	// 4. Revoke every session and drop every live socket.
+	// SessionLogout ends all access and refresh tokens at
+	// once; the disconnect ends the realtime connections.
+	// This fails closed on purpose: a delete that leaves a
+	// working session behind has not taken effect, so the
+	// RPC errors and the player can retry. The queue record
+	// from step 1 stays either way for the cron.
+	if err := nk.SessionLogout(userID, "", ""); err != nil {
+		logger.Error(
+			"revoke sessions for deleted account %s: %v",
+			userID, err)
+		return "", runtime.NewError(
+			"failed to revoke sessions", 13)
+	}
+	if err := disconnectUserSockets(ctx, nk, userID); err != nil {
+		logger.Error(
+			"disconnect sockets for deleted account %s: %v",
+			userID, err)
+		return "", runtime.NewError(
+			"failed to disconnect sessions", 13)
+	}
+
 	// Stage 1.5: no more UsersBanId. The user remains able to
 	// authenticate during the 30-day grace window so the
 	// cancellation flow can prompt them on next sign-in via
@@ -524,13 +547,10 @@ func getAccountDeletionStatusRpcFactory(
 	}
 }
 
-// getAccountDeletionStatusRpc returns whether the caller's
-// account has an active soft-deletion queue row. Clients hit
-// this on auth_completed and, if pending=true, prompt the user
 // hasPendingDeletion reports whether the user has a soft-delete
-// queued. Session revocation on delete (SP47) reads it from the
-// refresh hook: a queued account cannot refresh, so a second
-// device's session ends when its access token expires. A fresh
+// queued. Session revocation on delete reads it from the
+// refresh hook: a queued account cannot refresh, and the
+// delete itself ends every session at once. A fresh
 // authenticate still works, which is how the player reaches
 // the cancel prompt.
 func hasPendingDeletion(
@@ -552,6 +572,59 @@ func hasPendingDeletion(
 	return len(reads) > 0, nil
 }
 
+// disconnectUserSockets drops every realtime socket the user
+// holds. Every socket joins the notifications stream, so
+// listing that stream finds them all; disconnecting by
+// session ends the whole socket, not just the stream.
+func disconnectUserSockets(
+	ctx context.Context,
+	nk runtime.NakamaModule,
+	userID string,
+) error {
+	presences, err := nk.StreamUserList(
+		// Nakama tracks those presences as hidden, so both
+		// include flags are set: with neither, ListByStream
+		// returns nothing.
+		streamModeNotifications, userID, "", "", true, true)
+	if err != nil {
+		return err
+	}
+	for _, presence := range presences {
+		if err := nk.SessionDisconnect(
+			ctx, presence.GetSessionId()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refreshTokenUserID reads the uid claim from a session
+// token without verifying it. The refresh hook runs before
+// Nakama parses the token, so the context has no user id;
+// the claim only feeds the pending-deletion deny check,
+// and Nakama verifies the token itself right after the
+// hook. A malformed token yields "", which skips the check.
+func refreshTokenUserID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		UserID string `json:"uid"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.UserID
+}
+
+// getAccountDeletionStatusRpc returns whether the caller's
+// account has an active soft-deletion queue row. Clients hit
+// this on auth_completed and, if pending=true, prompt the user
 // to either confirm or cancel via cancel_account_deletion.
 // Stage 1.5.
 func getAccountDeletionStatusRpc(

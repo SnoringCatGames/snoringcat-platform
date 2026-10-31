@@ -69,9 +69,10 @@ const (
 
 // Nakama's stream modes for chat channels (server/tracker.go).
 const (
-	streamModeRoom   = 2
-	streamModeGroup  = 3
-	streamModeDirect = 4
+	streamModeNotifications = 0
+	streamModeRoom          = 2
+	streamModeGroup         = 3
+	streamModeDirect        = 4
 )
 
 // Nakama's user_edge states (friend state).

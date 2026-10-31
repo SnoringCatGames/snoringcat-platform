@@ -187,6 +187,11 @@ func test_soft_delete_then_cancel_keeps_account_without_profile() -> void:
 		int(deleted.inner.get("scheduled_for", 0)), expected_at, 60,
 		"delete_account scheduled_for: %s" % _body(deleted))
 
+	# delete_account revoked the old session; the rest of the
+	# flow runs on a fresh sign-in, as the player's client does.
+	token = await _device_token(str(user.device_id))
+	assert_false(token.is_empty(), "re-sign-in after delete failed")
+
 	assert_eq(
 		await _fetch_display_name(token), _ANONYMIZED_DISPLAY_NAME,
 		"display_name should be anonymized after delete_account")
@@ -396,6 +401,11 @@ func test_delete_clears_identifying_data_at_once() -> void:
 		"delete_account: status=%d body=%s"
 			% [deleted.status_code, _body(deleted)])
 
+	# delete_account revoked the old session; read the account
+	# back through a fresh sign-in.
+	token = await _device_token(str(player.device_id))
+	assert_false(token.is_empty(), "re-sign-in after delete failed")
+
 	var after := await _export(token)
 	var account: Dictionary = after.get("account", {})
 	assert_eq(
@@ -482,6 +492,91 @@ func test_delete_clears_identifying_data_at_once() -> void:
 		"the kept account should still sign in")
 
 
+func test_delete_account_revokes_sessions() -> void:
+	# delete_account ends the account's sessions at once: the
+	# pre-delete refresh token can no longer mint a session and
+	# the pre-delete access token no longer authorizes reads.
+	# A fresh sign-in still works (the grace-window cancel flow
+	# depends on it).
+	if not _helper.is_live_mode():
+		pending("mock mode not yet implemented")
+		return
+	if _helper.server_key_basic_header().is_empty():
+		pending("NAKAMA_SERVER_KEY env var not set")
+		return
+	var user: Dictionary = await _one_shot_user("compliance-revoke")
+	if user.is_empty():
+		pending("multi_session_anon did not return a user")
+		return
+	var token: String = str(user.token)
+	var refresh_token: String = str(user.refresh_token)
+
+	var before: Dictionary = await _helper.http_get(
+		"/v2/account", "bearer:" + token)
+	assert_eq(
+		before.status_code, 200,
+		"pre-delete read should work: %s" % _body(before))
+
+	# Nakama invalidates sessions by issue second; give the
+	# token an earlier issue second than the delete so the
+	# access-token check below is deterministic.
+	await Engine.get_main_loop().create_timer(1.2).timeout
+
+	# Two realtime sockets for this account, like two devices.
+	# The delete must close both, not just refuse HTTP calls.
+	var session: Variant = _sock_helper.session_from_token(token)
+	if session == null:
+		pending("could not build a session from the token")
+		return
+	var sockets: Array = []
+	for i in 2:
+		var sock: Variant = _sock_helper.create_socket()
+		if sock == null:
+			pending("the Nakama autoload is unavailable")
+			return
+		if not await _sock_helper.connect_with_timeout(
+				sock, session, 5.0):
+			pending("the realtime socket did not connect")
+			return
+		sockets.append(sock)
+
+	var deleted: Dictionary = await _helper.session_rpc(
+		"delete_account", token, null)
+	assert_eq(
+		deleted.status_code, 200,
+		"delete_account: status=%d body=%s"
+			% [deleted.status_code, _body(deleted)])
+
+	var refreshed: Dictionary = await _helper.http_post(
+		"/v2/account/session/refresh",
+		_helper.session_refresh_body(refresh_token),
+		"basic_server_key")
+	assert_eq(
+		refreshed.status_code, 401,
+		"refresh after delete should be refused: status=%d body=%s"
+			% [refreshed.status_code, _body(refreshed)])
+
+	var after: Dictionary = await _helper.http_get(
+		"/v2/account", "bearer:" + token)
+	assert_eq(
+		after.status_code, 401,
+		"pre-delete access token should be dead: status=%d body=%s"
+			% [after.status_code, _body(after)])
+
+	for sock in sockets:
+		var closed: bool = await _sock_helper.wait_until(
+			func() -> bool:
+				return not sock.is_connected_to_host(),
+			5.0)
+		assert_true(
+			closed,
+			"the delete should close the account's sockets")
+
+	assert_eq(
+		await _device_sign_in(str(user.device_id)), 200,
+		"a fresh sign-in still works after delete (cancel flow)")
+
+
 ## Mints one one-shot anonymous user and registers it for cleanup.
 ## Returns {} on failure.
 func _one_shot_user(prefix: String) -> Dictionary:
@@ -518,6 +613,20 @@ func _export(token: String) -> Dictionary:
 		fail_test("export_player_data: status=%d" % result.status_code)
 		return {}
 	return result.inner
+
+
+## Signs in with an existing device id and returns the new
+## session token ("" on failure). delete_account revokes the
+## old session, so reads after it need a fresh sign-in.
+func _device_token(device_id: String) -> String:
+	var result: Dictionary = await _helper.http_post(
+		"/v2/account/authenticate/device?create=false",
+		_helper.device_auth_body(device_id),
+		"basic_server_key")
+	if (result.status_code != 200
+			or not (result.body is Dictionary)):
+		return ""
+	return str(result.body.get("token", ""))
 
 
 ## Signs in with an existing device id, without creating an
