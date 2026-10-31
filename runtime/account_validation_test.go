@@ -59,6 +59,8 @@ func TestValidateAvatarURL(t *testing.T) {
 		"https://user@lh3.googleusercontent.com/a.png",
 		"https://lh3.googleusercontent.com:8443/a.png",
 		"https://lh3.googleusercontent.com/a.png#x",
+		"https://lh3.googleusercontent.com?x=1",
+		"https://lh3.googleusercontent.com\\a.png",
 		"https://lh3.googleusercontent.com/" +
 			strings.Repeat("a", maxAvatarURLBytes),
 	}

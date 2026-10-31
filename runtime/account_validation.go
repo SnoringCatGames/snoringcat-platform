@@ -129,16 +129,31 @@ func validateAvatarURL(raw string) error {
 	if len(raw) > maxAvatarURLBytes {
 		return runtime.NewError("avatar URL is too long", 3)
 	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" {
-		return runtime.NewError("avatar URL must be https", 3)
-	}
-	if parsed.User != nil || parsed.Port() != "" ||
-		strings.Contains(raw, "#") {
+	if strings.Contains(raw, "#") ||
+		strings.Contains(raw, "\\") {
 		return runtime.NewError("avatar URL is malformed", 3)
 	}
-	if !avatarURLAllowedHost(
-		strings.ToLower(parsed.Hostname())) {
+	if !strings.HasPrefix(raw, "https://") {
+		return runtime.NewError("avatar URL must be https", 3)
+	}
+	if _, err := url.Parse(raw); err != nil {
+		return runtime.NewError("avatar URL is malformed", 3)
+	}
+	// The host is the text before the first '/'; it may
+	// contain only hostname characters.
+	authority := raw[len("https://"):]
+	if i := strings.Index(authority, "/"); i >= 0 {
+		authority = authority[:i]
+	}
+	host := strings.ToLower(authority)
+	for _, r := range host {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') &&
+			r != '.' && r != '-' {
+			return runtime.NewError(
+				"avatar URL is malformed", 3)
+		}
+	}
+	if !avatarURLAllowedHost(host) {
 		return runtime.NewError(
 			"avatar host is not allowed", 3)
 	}
