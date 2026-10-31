@@ -150,6 +150,16 @@ func test_lists_ranked_scores_without_credentials() -> void:
 	assert_eq(
 		deletion.status_code, 200,
 		"delete_account: %s" % _helper.redact_tokens(deletion.text))
+	# delete_account ended that session; the player signs
+	# back in to keep playing through the grace window, so
+	# the steps below use the fresh token.
+	var renewed: String = await _helper.nakama_anon_session(
+		str(deleted.device_id))
+	assert_false(
+		renewed.is_empty(), "deleted player re-sign-in failed")
+	if renewed.is_empty():
+		return
+	deleted.token = renewed
 
 	var request_id: String = await _matchmake(_users, run_id)
 	if request_id.is_empty():
