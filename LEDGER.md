@@ -115,12 +115,6 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
   stack built from the production image, point the suite at it, and
   assert an encoded request and an oversized body are refused at the
   proxy (SP83 follow-up).
-- **SP102** · SP90 follow-up: the consent screen's `save_tokens()`
-  writes over an unreadable auth file before guest sign-in can move it
-  aside; a failed move also falls through to a write, and the aside
-  name is not unique. Guard `save_tokens()`, with a startup-path test.
-  Before the next client release (hopnbop H123,
-  `docs/design/H123_muse_run4.md` 2.2).
 - **SP105** · Go files check out with CRLF on Windows, so a local
   `gofmt -l` flags every file and hid aa3dc13's real problem (fixed in
   102d418): a `.gitattributes` with `*.go text eol=lf` (hopnbop H123
@@ -214,6 +208,7 @@ entries move to `docs/ledger_done.md`; the next ID counts both files.
 
 ## Done
 
+- **SP102** · The consent path can no longer overwrite an unreadable auth file: `save_tokens()` moves it aside first (unique aside name) and writes nothing when the move fails; `login_anonymous()` keeps only its status message; `_do_anon_auth` no longer clears a refresh flag it never sets. Done in cd982de (2026-10-30).
 - **SP91** · Presence rows written before server-only permissions are rewritten to 0/0 by a startup migration (idempotent; the comment that said no migration was needed is corrected), the rich-presence constant's doc comment is reattached, the presence RPC returns fixed error messages, and the cascade check asserts its presence read succeeded. Done in 4d534b6 (2026-10-30).
 - **SP90** · SDK auth store (SP44): a failed load is recorded; an unreadable auth file is moved aside for a new guest instead of being minted over; a readable file with no guest id mints one; a key that cannot be written falls back to the previous passphrase. TS-1 accepted as obfuscation, stated in the store header and the H37 audit. Done in 8832a3b (2026-10-30).
 - **SP89** · SDK auth: refresh results take their own route (never a link result, stored only while the store holds the token the attempt used); delete refuses during a link or unlink, waits out a refresh, and fails through delete_completed. Done in 7d39613 (2026-10-30).
