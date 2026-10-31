@@ -393,59 +393,13 @@ func registerPrivacyHooks(initializer runtime.Initializer) error {
 		return fmt.Errorf("before link email: %w", err)
 	}
 
-	// Every sign-in, link, and session refresh. Each closure only
+	// Links and session refreshes. Sign-in itself runs
+	// enforceSignInPrivacy inside the one after-authenticate
+	// function per provider (registerAfterAuthenticateHooks,
+	// SP106); Nakama keeps only one such function, so it
+	// cannot also be registered here. Each closure only
 	// adapts Nakama's per-request signature.
 	registrations := []func() error{
-		func() error {
-			return initializer.RegisterAfterAuthenticateDevice(func(
-				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
-				_ *api.AuthenticateDeviceRequest,
-			) error {
-				enforceSignInPrivacy(ctx, logger, db)
-				return nil
-			})
-		},
-		func() error {
-			return initializer.RegisterAfterAuthenticateGoogle(func(
-				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
-				_ *api.AuthenticateGoogleRequest,
-			) error {
-				enforceSignInPrivacy(ctx, logger, db)
-				return nil
-			})
-		},
-		func() error {
-			return initializer.RegisterAfterAuthenticateFacebook(func(
-				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
-				_ *api.AuthenticateFacebookRequest,
-			) error {
-				enforceSignInPrivacy(ctx, logger, db)
-				return nil
-			})
-		},
-		func() error {
-			return initializer.RegisterAfterAuthenticateApple(func(
-				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
-				_ *api.AuthenticateAppleRequest,
-			) error {
-				enforceSignInPrivacy(ctx, logger, db)
-				return nil
-			})
-		},
-		func() error {
-			return initializer.RegisterAfterAuthenticateSteam(func(
-				ctx context.Context, logger runtime.Logger, db *sql.DB,
-				_ runtime.NakamaModule, _ *api.Session,
-				_ *api.AuthenticateSteamRequest,
-			) error {
-				enforceSignInPrivacy(ctx, logger, db)
-				return nil
-			})
-		},
 		func() error {
 			return initializer.RegisterAfterLinkGoogle(func(
 				ctx context.Context, logger runtime.Logger, db *sql.DB,

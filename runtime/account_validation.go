@@ -186,10 +186,24 @@ func isKeptJoiner(runes []rune, i int) bool {
 		unicode.Is(unicode.So, next)
 }
 
-// registerAuthNameClamp installs the after-authenticate
-// clamp for the providers that import a profile name at
-// sign-in (Facebook, Google, Steam).
-func registerAuthNameClamp(
+// registerAfterAuthenticateHooks installs the one
+// after-authenticate function for each provider. Nakama
+// keeps a single function per provider: a later
+// RegisterAfterAuthenticate* call for the same provider
+// replaces the earlier one (SP106). Every after-sign-in
+// behavior therefore runs inside these functions:
+//
+//   - a created account gets a generated display name
+//     (H59), never the provider's profile name;
+//   - an existing account whose stored name breaks the
+//     display-name rules gets the clamped name (SP88);
+//   - sign-in privacy runs on every sign-in
+//     (enforceSignInPrivacy).
+//
+// Google and Facebook do all three. Steam clamps and
+// runs privacy. Apple and device generate and run
+// privacy. Custom generates only.
+func registerAfterAuthenticateHooks(
 	initializer runtime.Initializer,
 ) error {
 	clamp := func(
@@ -231,7 +245,7 @@ func registerAuthNameClamp(
 				userID, err)
 		}
 	}
-	run := func(
+	clampRun := func(
 		ctx context.Context,
 		logger runtime.Logger,
 		nk runtime.NakamaModule,
@@ -244,30 +258,55 @@ func registerAuthNameClamp(
 		}
 		clamp(ctx, logger, nk, userID)
 	}
-	if err := initializer.RegisterAfterAuthenticateFacebook(
-		func(
+	// work runs one provider's after-sign-in behaviors.
+	work := func(
+		generates, clamps, privacy bool,
+	) func(
+		context.Context, runtime.Logger, *sql.DB,
+		runtime.NakamaModule, *api.Session,
+	) {
+		return func(
 			ctx context.Context,
 			logger runtime.Logger,
-			_ *sql.DB,
+			db *sql.DB,
 			nk runtime.NakamaModule,
 			out *api.Session,
-			_ *api.AuthenticateFacebookRequest,
-		) error {
-			run(ctx, logger, nk)
-			return nil
-		}); err != nil {
-		return err
+		) {
+			if generates && out.GetCreated() {
+				_ = assignGeneratedNameOnCreate(
+					ctx, logger, nk, out.GetCreated())
+			} else if clamps {
+				clampRun(ctx, logger, nk)
+			}
+			if privacy {
+				enforceSignInPrivacy(ctx, logger, db)
+			}
+		}
 	}
 	if err := initializer.RegisterAfterAuthenticateGoogle(
 		func(
 			ctx context.Context,
 			logger runtime.Logger,
-			_ *sql.DB,
+			db *sql.DB,
 			nk runtime.NakamaModule,
 			out *api.Session,
 			_ *api.AuthenticateGoogleRequest,
 		) error {
-			run(ctx, logger, nk)
+			work(true, true, true)(ctx, logger, db, nk, out)
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateFacebook(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			db *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateFacebookRequest,
+		) error {
+			work(true, true, true)(ctx, logger, db, nk, out)
 			return nil
 		}); err != nil {
 		return err
@@ -276,12 +315,54 @@ func registerAuthNameClamp(
 		func(
 			ctx context.Context,
 			logger runtime.Logger,
-			_ *sql.DB,
+			db *sql.DB,
 			nk runtime.NakamaModule,
 			out *api.Session,
 			_ *api.AuthenticateSteamRequest,
 		) error {
-			run(ctx, logger, nk)
+			work(false, true, true)(ctx, logger, db, nk, out)
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateApple(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			db *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateAppleRequest,
+		) error {
+			work(true, false, true)(ctx, logger, db, nk, out)
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateDevice(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			db *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateDeviceRequest,
+		) error {
+			work(true, false, true)(ctx, logger, db, nk, out)
+			return nil
+		}); err != nil {
+		return err
+	}
+	if err := initializer.RegisterAfterAuthenticateCustom(
+		func(
+			ctx context.Context,
+			logger runtime.Logger,
+			db *sql.DB,
+			nk runtime.NakamaModule,
+			out *api.Session,
+			_ *api.AuthenticateCustomRequest,
+		) error {
+			work(true, false, false)(ctx, logger, db, nk, out)
 			return nil
 		}); err != nil {
 		return err

@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"fmt"
 	"math/big"
 
-	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
@@ -17,9 +15,10 @@ import (
 // and leaderboard name. Players never enter a name anywhere;
 // every account gets a generated one. Social providers hand
 // Nakama a profile name when the account is created, so the
-// after-authenticate hooks below replace it at creation time
-// (out.Created), before anything can display it. The name is
-// then stable: later sign-ins keep the stored one.
+// after-authenticate hooks (registerAfterAuthenticateHooks)
+// replace it at creation time (out.Created), before anything
+// can display it. The name is then stable: later sign-ins
+// keep the stored one.
 
 var displayNameAdjectives = []string{
 	"Swift", "Brave", "Calm", "Daring", "Eager", "Fancy",
@@ -88,80 +87,6 @@ func assignGeneratedNameOnCreate(
 	); err != nil {
 		logger.Warn(
 			"assign generated display name for %s: %v", userID, err)
-	}
-	return nil
-}
-
-// registerDisplayNameHooks wires the after-authenticate hooks
-// for every auth path that can create an account.
-func registerDisplayNameHooks(
-	initializer runtime.Initializer,
-) error {
-	if err := initializer.RegisterAfterAuthenticateGoogle(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateGoogleRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
-	}
-	if err := initializer.RegisterAfterAuthenticateFacebook(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateFacebookRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
-	}
-	if err := initializer.RegisterAfterAuthenticateApple(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateAppleRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
-	}
-	if err := initializer.RegisterAfterAuthenticateDevice(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateDeviceRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
-	}
-	if err := initializer.RegisterAfterAuthenticateCustom(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateCustomRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
-	}
-	if err := initializer.RegisterAfterAuthenticateSteam(
-		func(
-			ctx context.Context, logger runtime.Logger,
-			_ *sql.DB, nk runtime.NakamaModule,
-			out *api.Session, _ *api.AuthenticateSteamRequest,
-		) error {
-			return assignGeneratedNameOnCreate(
-				ctx, logger, nk, out.GetCreated())
-		}); err != nil {
-		return err
 	}
 	return nil
 }

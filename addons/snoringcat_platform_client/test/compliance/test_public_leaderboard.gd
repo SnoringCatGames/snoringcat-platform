@@ -141,6 +141,16 @@ func test_lists_ranked_scores_without_credentials() -> void:
 	]:
 		if not await _set_display_name(named[0], named[1]):
 			return
+	# Fresh accounts get a generated name at creation (SP106);
+	# clear the nameless player's through the console so the
+	# route's hide rule for pre-H59 accounts still applies.
+	if not _helper.get_console_refusal().is_empty():
+		pending(_helper.get_console_refusal())
+		return
+	assert_true(
+		await _helper.console_update_account(
+			str(nameless.user_id), {"display_name": ""}),
+		"console could not clear the display name")
 	# The deleted player asks for deletion first and keeps playing
 	# through the grace window, so their record is written after the
 	# cascade cleared the board, and only the route's own rules can

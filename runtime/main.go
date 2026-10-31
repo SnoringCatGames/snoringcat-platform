@@ -295,9 +295,11 @@ func InitModule(
 		return err
 	}
 
-	// H59: social accounts get a generated display name at
-	// creation, never the provider's profile name.
-	if err := registerDisplayNameHooks(initializer); err != nil {
+	// One after-authenticate function per provider (SP106):
+	// Nakama keeps only the last one registered, so the
+	// generated name at creation (H59), the display-name
+	// clamp (SP88) and sign-in privacy all run inside it.
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
 		return err
 	}
 
@@ -317,9 +319,6 @@ func InitModule(
 		return err
 	}
 	if err := registerAccountValidationHook(initializer); err != nil {
-		return err
-	}
-	if err := registerAuthNameClamp(initializer); err != nil {
 		return err
 	}
 	if err := registerPartyChatHook(

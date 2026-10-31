@@ -280,49 +280,11 @@ func TestClampDisplayNameOutputValidates(t *testing.T) {
 	}
 }
 
-type capturingAuthClampInitializer struct {
-	runtime.Initializer
-
-	googleFn func(
-		context.Context, runtime.Logger, *sql.DB,
-		runtime.NakamaModule, *api.Session,
-		*api.AuthenticateGoogleRequest,
-	) error
-}
-
-func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateFacebook(
-	func(
-		context.Context, runtime.Logger, *sql.DB,
-		runtime.NakamaModule, *api.Session,
-		*api.AuthenticateFacebookRequest,
-	) error,
-) error {
-	return nil
-}
-
-func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateSteam(
-	func(
-		context.Context, runtime.Logger, *sql.DB,
-		runtime.NakamaModule, *api.Session,
-		*api.AuthenticateSteamRequest,
-	) error,
-) error {
-	return nil
-}
-func (c *capturingAuthClampInitializer) RegisterAfterAuthenticateGoogle(
-	fn func(
-		context.Context, runtime.Logger, *sql.DB,
-		runtime.NakamaModule, *api.Session,
-		*api.AuthenticateGoogleRequest,
-	) error,
-) error {
-	c.googleFn = fn
-	return nil
-}
-
 func TestAuthNameClampWithoutUserIDIsANoOp(t *testing.T) {
-	initializer := &capturingAuthClampInitializer{}
-	if err := registerAuthNameClamp(initializer); err != nil {
+	initializer := &recordingInitializer{
+		counts: map[string]int{},
+	}
+	if err := registerAfterAuthenticateHooks(initializer); err != nil {
 		t.Fatalf("register: err = %v", err)
 	}
 	if initializer.googleFn == nil {

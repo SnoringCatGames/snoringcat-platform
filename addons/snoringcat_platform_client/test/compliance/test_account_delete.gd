@@ -247,19 +247,30 @@ func test_soft_delete_then_cancel_keeps_account_without_profile() -> void:
 
 
 func test_cancel_clears_marker_on_account_without_display_name() -> void:
-	# Anonymous sign-in sets no display name, so this is the common
-	# case. Cancelling must clear the "[deleted]" marker rather than
-	# leave the player looking deleted to everyone.
+	# Accounts created before generated names shipped can still
+	# have no display name. Cancelling must clear the "[deleted]"
+	# marker rather than leave the player looking deleted to
+	# everyone.
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")
 		return
 	if _helper.server_key_basic_header().is_empty():
 		pending("NAKAMA_SERVER_KEY env var not set")
 		return
+	if not _helper.get_console_refusal().is_empty():
+		pending(_helper.get_console_refusal())
+		return
 	var user: Dictionary = await _one_shot_user("compliance-softdel-anon")
 	if user.is_empty():
 		pending("multi_session_anon did not return a user")
 		return
+	# A fresh account gets a generated name at creation now
+	# (SP106); clear it through the console to model the
+	# pre-H59 account this test covers.
+	assert_true(
+		await _helper.console_update_account(
+			str(user.user_id), {"display_name": ""}),
+		"console could not clear the display name")
 	var token: String = str(user.token)
 	assert_eq(
 		await _fetch_display_name(token), "",
