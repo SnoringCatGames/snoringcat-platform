@@ -148,6 +148,32 @@ func test_accept_refused_when_solo_party_gained_a_member() -> void:
 		"the refused accept changed nothing")
 
 
+
+func test_join_request_leaves_the_solo_party() -> void:
+	if not await _mint_users(2):
+		return
+	var a: Dictionary = _users[0]
+	var b: Dictionary = _users[1]
+	var solo_id := await _make_party(a, b, "solo")
+	var party_id := await _make_party(a, a, "")
+	if solo_id.is_empty() or party_id.is_empty():
+		return
+	# b asks to join the closed party with no live invite:
+	# a join request, not a membership.
+	var join: Dictionary = await _helper.http_post(
+		"/v2/group/" + party_id + "/join",
+		null, "bearer:" + str(b.token))
+	assert_true(
+		_is_2xx(join),
+		"join request: status=%d body=%s"
+		% [join.status_code, join.text])
+	assert_ne(
+		await _fetch_user_group_state(b, party_id), 2,
+		"b is not an active member of the closed party")
+	await _assert_active_member(
+		b, solo_id,
+		"the party of one survives a join request")
+
 func _mint_users(count: int) -> bool:
 	if not _helper.is_live_mode():
 		pending("mock mode not yet implemented")

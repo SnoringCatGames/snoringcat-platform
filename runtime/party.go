@@ -1321,11 +1321,11 @@ func afterJoinGroupHook(
 	nk runtime.NakamaModule,
 	in *api.JoinGroupRequest,
 ) error {
-	// The joiner is the auth'd user and is now a real member;
-	// GroupUsersList will include them. No extras needed.
 	clearPartyReadyRows(ctx, logger, nk, in.GetGroupId(), nil)
 	// Landing in this party ends any party of one the joiner
-	// was holding: they end up in exactly one party.
+	// was holding: they end up in exactly one party. A join
+	// that only left a request (a closed party with no live
+	// invite) makes nobody a member, so it ends nothing.
 	joiner, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
 	if joiner != "" {
 		if groups, err := nk.GroupsGetId(
@@ -1333,13 +1333,16 @@ func afterJoinGroupHook(
 			len(groups) > 0 && strings.HasPrefix(
 			groups[0].GetName(), partyGroupPrefix) {
 			parties, err := partyMemberships(
-				ctx, nk, joiner, in.GetGroupId())
+				ctx, nk, joiner, "")
 			if err != nil {
 				logger.Warn(
 					"after join memberships user=%s err=%v",
 					joiner, err)
-			} else {
+			} else if _, landed := parties[in.GetGroupId()]; landed {
 				for _, soloID := range soloParties(parties) {
+					if soloID == in.GetGroupId() {
+						continue
+					}
 					if err := disbandPartyGroup(
 						ctx, logger, nk, soloID); err != nil {
 						logger.Warn(
@@ -2572,7 +2575,7 @@ func partyJoinByCodeRpc(
 	}
 	if sharedParty(joinerParties) != "" {
 		return "", runtime.NewError(
-			"that player is already in a party", 6)
+			"you are already in a party", 6)
 	}
 
 	// Add the caller directly as state=2 (Member). Empty callerID
@@ -2588,13 +2591,25 @@ func partyJoinByCodeRpc(
 		return "", err
 	}
 
-	for _, soloID := range soloParties(joinerParties) {
-		if err := disbandPartyGroup(
-			ctx, logger, nk, soloID); err != nil {
-			logger.Warn(
-				"party_join_by_code disband solo"+
-					" party=%s err=%v",
-				soloID, err)
+	// Pick the parties of one from a fresh read: one that
+	// gained a member since the check above is no longer
+	// the joiner's alone to end.
+	freshParties, err := partyMemberships(
+		ctx, nk, userID, partyID)
+	if err != nil {
+		logger.Warn(
+			"party_join_by_code re-read memberships"+
+				" user=%s err=%v",
+			userID, err)
+	} else {
+		for _, soloID := range soloParties(freshParties) {
+			if err := disbandPartyGroup(
+				ctx, logger, nk, soloID); err != nil {
+				logger.Warn(
+					"party_join_by_code disband solo"+
+						" party=%s err=%v",
+					soloID, err)
+			}
 		}
 	}
 

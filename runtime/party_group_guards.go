@@ -281,7 +281,7 @@ func beforeJoinGroupPartyGuard(
 	}
 	if sharedParty(parties) != "" {
 		return nil, runtime.NewError(
-			"that player is already in a party", 6)
+			"you are already in a party", 6)
 	}
 	return in, nil
 }

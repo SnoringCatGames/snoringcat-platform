@@ -26,6 +26,10 @@ type fakePartyGuardNk struct {
 	members       map[string][]*api.GroupUserList_GroupUser
 	added         []string
 	deletedGroups []string
+	// gainedMember, when set, replaces members for a group
+	// once an add has landed, so a test can give a party a
+	// second member between a check and its re-read.
+	gainedMember map[string][]*api.GroupUserList_GroupUser
 }
 
 func (f *fakePartyGuardNk) GroupsGetId(
@@ -58,6 +62,11 @@ func (f *fakePartyGuardNk) GroupUsersList(
 	_ context.Context, groupID string, _ int, _ *int,
 	_ string,
 ) ([]*api.GroupUserList_GroupUser, string, error) {
+	if len(f.added) > 0 && f.gainedMember != nil {
+		if m, ok := f.gainedMember[groupID]; ok {
+			return m, "", nil
+		}
+	}
 	if f.members != nil && groupID != "party-1" {
 		return f.members[groupID], "", nil
 	}
@@ -467,6 +476,7 @@ func TestAfterJoinDisbandsSoloParty(t *testing.T) {
 	nk := &fakePartyGuardNk{
 		memberships: map[string][]*api.UserGroupList_UserGroup{
 			"target": {
+				partyUserGroup("party-1", "party-hopnbop", 2),
 				partyUserGroup("party-2", "party-other", 2),
 			},
 		},
@@ -584,5 +594,73 @@ func TestCreateGroupIgnoresNonPartyNames(t *testing.T) {
 	if len(nk.deletedGroups) != 0 {
 		t.Fatalf(
 			"deletedGroups = %v, want none", nk.deletedGroups)
+	}
+}
+
+func TestAfterJoinLeavesSoloPartyOnJoinRequest(t *testing.T) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"target": {
+				partyUserGroup("party-1", "party-hopnbop", 3),
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+			"party-2": {
+				{User: &api.User{Id: "target"},
+					State: wrapperspb.Int32(2)},
+			},
+		},
+	}
+	err := afterJoinGroupHook(
+		refreshCtx("target"), testLogger{}, nil, nk,
+		&api.JoinGroupRequest{GroupId: "party-1"})
+	if err != nil {
+		t.Fatalf("after join: err = %v", err)
+	}
+	if len(nk.deletedGroups) != 0 {
+		t.Fatalf(
+			"deletedGroups = %v, want none: a join that"+
+				" only left a request ends nothing",
+			nk.deletedGroups)
+	}
+}
+
+func TestPartyJoinByCodeKeepsPartyThatGainedAMember(
+	t *testing.T,
+) {
+	nk := &fakePartyGuardNk{
+		memberships: map[string][]*api.UserGroupList_UserGroup{
+			"joiner": {
+				partyUserGroup("party-2", "party-other", 2),
+			},
+		},
+		members: map[string][]*api.GroupUserList_GroupUser{
+			"party-2": {
+				{User: &api.User{Id: "joiner"},
+					State: wrapperspb.Int32(2)},
+			},
+		},
+		gainedMember: map[string][]*api.GroupUserList_GroupUser{
+			"party-2": {
+				{User: &api.User{Id: "joiner"},
+					State: wrapperspb.Int32(2)},
+				{User: &api.User{Id: "other"},
+					State: wrapperspb.Int32(2)},
+			},
+		},
+	}
+	_, err := partyJoinByCodeRpc(
+		refreshCtx("joiner"), testLogger{}, nk,
+		newTestGames(t, nil), newFriendsLimiter(),
+		`{"code":"ABC234"}`)
+	if err != nil {
+		t.Fatalf("code join: err = %v, want nil", err)
+	}
+	if len(nk.deletedGroups) != 0 {
+		t.Fatalf(
+			"deletedGroups = %v, want none: the party"+
+				" gained a member before the disband",
+			nk.deletedGroups)
 	}
 }
