@@ -420,14 +420,26 @@ func unlink_provider(provider: Provider) -> void:
 func delete_account() -> void:
 	if _is_deleting:
 		return
+	# A link or unlink still waiting for its result shares
+	# the failure routing; refuse up front through
+	# delete_completed instead of failing into that flow.
+	if _is_linking or _is_unlinking:
+		delete_completed.emit(
+			false, "Another account action is in progress")
+		return
 	_is_deleting = true
 	auth_status_changed.emit("Deleting account...")
+	# Wait out a refresh already in flight, so its result
+	# cannot land after the delete clears the store. Setting
+	# _is_deleting above already holds new auto-refreshes.
+	while _is_refreshing:
+		await auth_completed
 	# Deletion applies to a guest's device account too
 	# (H58); a local-only guest needs the session first.
 	if not Platform.token_store.is_token_valid():
 		await _ensure_guest_session()
 	if not Platform.token_store.is_token_valid():
-		_emit_failure("Not authenticated")
+		_fail_delete("Not authenticated")
 		return
 	_send_delete_request()
 
@@ -897,12 +909,12 @@ func _send_delete_request() -> void:
 	# would hard-delete immediately with no chance to cancel.
 	var session := Platform.build_session_from_store()
 	if session == null:
-		_emit_failure("Not authenticated")
+		_fail_delete("Not authenticated")
 		return
 	var rpc_result = await Platform.get_nakama_client().rpc_async(
 		session, "delete_account", "")
 	if rpc_result.is_exception():
-		_emit_failure(
+		_fail_delete(
 			_describe_nakama_exception(
 				rpc_result.get_exception()))
 		return
@@ -1141,12 +1153,11 @@ func _do_session_refresh(_body: Dictionary) -> void:
 			refresh_token_used,
 		)
 		return
-	# Cleared on success too. Leaving it set made refresh_token()
-	# and _check_auto_refresh no-ops for the rest of the process
-	# after the first successful refresh.
-	_is_refreshing = false
-	_handle_auth_success(_session_to_response_dict(
-		session, Platform.token_store.provider))
+	_handle_refresh_success(
+		_session_to_response_dict(
+			session, Platform.token_store.provider),
+		refresh_token_used,
+	)
 
 
 func _do_link(body: Dictionary) -> void:
@@ -1259,8 +1270,9 @@ func _do_unlink(body: Dictionary) -> void:
 	})
 
 
-func _handle_auth_success(data: Dictionary) -> void:
-	# Check protocol version.
+## Emits version_mismatch when the server's protocol
+## version differs from the client's build setting.
+func _check_protocol_version(data: Dictionary) -> void:
 	var server_protocol: int = data.get(
 		"protocol_version", -1)
 	if server_protocol > 0:
@@ -1275,6 +1287,10 @@ func _handle_auth_success(data: Dictionary) -> void:
 				str(client_protocol),
 				str(server_protocol),
 			)
+
+
+func _handle_auth_success(data: Dictionary) -> void:
+	_check_protocol_version(data)
 
 	# Update linked providers from response. Copy the list before
 	# clearing the store's, in case it is the store's own array.
@@ -1311,6 +1327,39 @@ func _handle_auth_success(data: Dictionary) -> void:
 		)
 		_reset_refresh_backoff()
 
+	auth_status_changed.emit("Authenticated")
+	auth_completed.emit(true, "")
+
+
+## Finishes a successful session refresh. Refresh results
+## take their own route: a refresh that finishes while a
+## link waits for its own result is not the link's result,
+## and it never touches link state.
+##
+## The refreshed session is stored only when the store
+## still holds the refresh token this attempt used. A
+## delete, a sign-out or a newer sign-in that landed while
+## the request was in flight replaced it, and the store's
+## current session stands; waiting callers are told the
+## result was superseded so they return.
+func _handle_refresh_success(
+	data: Dictionary,
+	refresh_token_used: String,
+) -> void:
+	# Cleared here too. Leaving it set made refresh_token()
+	# and _check_auto_refresh no-ops for the rest of the
+	# process after the first successful refresh.
+	_is_refreshing = false
+	if Platform.token_store.refresh_token != refresh_token_used:
+		auth_completed.emit(false, "superseded")
+		return
+	_check_protocol_version(data)
+	if data.has("jwt_token"):
+		Platform.token_store.store_from_response(data)
+		_last_refresh_time = (
+			Time.get_unix_time_from_system()
+		)
+		_reset_refresh_backoff()
 	auth_status_changed.emit("Authenticated")
 	auth_completed.emit(true, "")
 
@@ -1357,6 +1406,13 @@ func _handle_delete_success() -> void:
 	# Forgets the player's consent too, unlike an automatic sign-out.
 	Platform.token_store.clear_tokens()
 	delete_completed.emit(true, "")
+
+
+## Finishes a failed delete through delete_completed, the
+## delete flow's own signal, whatever else is in progress.
+func _fail_delete(error: String) -> void:
+	_is_deleting = false
+	delete_completed.emit(false, error)
 
 
 func _emit_failure(error: String) -> void:
